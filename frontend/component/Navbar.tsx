@@ -29,8 +29,9 @@ const Navbar = () => {
         </div>
 
         <Link href="/repair">
-          <button className="btn-neon">
-            Book a Repair
+          <button className="btn-neon cursor-pointer flex items-center gap-2 group relative">
+            <span className="relative z-10 font-bold uppercase text-[11px] tracking-widest transition-colors duration-300">Book a repair</span>
+            <div className="w-1.5 h-1.5 rounded-full bg-neon-cyan animate-pulse group-hover:scale-125 transition-transform" />
           </button>
         </Link>
       </div>

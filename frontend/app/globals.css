@@ -4,7 +4,7 @@
   --color-neon-cyan: #00f2ff;
   --color-neon-teal: #008c9e;
   --color-dark-bg: #050505;
-  --font-inter: "Inter", sans-serif;
+  --font-outfit: "Outfit", sans-serif;
 }
 
 :root {
@@ -18,7 +18,7 @@
 body {
   background-color: var(--background);
   color: var(--foreground);
-  font-family: var(--font-inter);
+  font-family: var(--font-outfit);
   -webkit-font-smoothing: antialiased;
 }
 

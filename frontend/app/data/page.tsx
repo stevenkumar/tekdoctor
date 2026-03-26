@@ -69,7 +69,7 @@ const ServiceCard = ({ title, shortDesc, fullQuote, Icon, index }: ServiceProps)
                   "{fullQuote}"
                 </p>
                 <Link href="/repair">
-                <button className="mt-4 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black bg-cyan-400 rounded-md hover:bg-cyan-300 transition-colors shadow-[0_0_10px_rgba(0,242,255,0.4)]">
+                <button className="mt-4 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black bg-cyan-400 rounded-md hover:bg-cyan-300 transition-colors shadow-[0_0_10px_rgba(0,242,255,0.4)] cursor-pointer">
                   Book This Repair
                 </button>
                 </Link>
