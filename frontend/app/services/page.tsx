@@ -46,11 +46,20 @@ const servicesData = [
 
 export default function ServicesPage() {
   return (
-    <main className="min-h-screen bg-black text-white p-6 md:p-12">
-      <div className="max-w-7xl mx-auto pt-10">
-        <h1 className="text-4xl md:text-5xl font-black uppercase tracking-tighter mb-12 text-center">
+    <main className="bg-black text-white standard-padding">
+      <div className="max-w-7xl mx-auto">
+        {/* <h1 className="text-4xl md:text-5xl font-black uppercase tracking-tighter mb-12 text-center">
           Our Expert <span className="text-cyan-400 drop-shadow-[0_0_10px_rgba(0,242,255,0.6)]">Services</span>
-        </h1>
+        </h1> */}
+
+        <div className="mb-12 border-l-4 border-cyan-400 pl-6">
+          <h1 className="text-4xl md:text-5xl font-black text-white uppercase tracking-tighter">
+            Our Expert <span className="text-cyan-400">Services</span>
+          </h1>
+          <p className="mt-2 text-zinc-500 font-mono text-sm uppercase tracking-widest">
+            We provide a comprehensive range of services to meet all your technology needs.
+          </p>
+        </div>
         
         {/* Masonry-style Grid - alignItems 'start' prevents layout jumps when expanding */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-6 items-start">

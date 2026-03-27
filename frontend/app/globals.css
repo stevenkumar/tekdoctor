@@ -57,5 +57,9 @@ body {
     @apply border-neon-cyan/60;
     box-shadow: 0 0 15px rgba(0, 242, 255, 0.2);
   }
-}
 
+  /* Global Page Spacing Standard */
+  .standard-padding {
+    @apply px-6 sm:px-8 md:px-12 py-12 md:py-20;
+  }
+}
