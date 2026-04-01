@@ -3,9 +3,11 @@
 
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Package, CheckCircle2, Clock, Wrench } from 'lucide-react';
+import { Search, Package, CheckCircle2, Clock, Wrench, Cpu, History, User, ExternalLink } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 
 export default function ServiceTracker() {
+  const { user, isAuthenticated } = useAuth();
   const [ticketId, setTicketId] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [showStatus, setShowStatus] = useState(false);
@@ -15,6 +17,7 @@ export default function ServiceTracker() {
     e.preventDefault();
     if (!ticketId) return;
     setIsSearching(true);
+    setShowStatus(false); // Reset previous status
     
     // Simulate API delay
     setTimeout(() => {
@@ -34,6 +37,18 @@ export default function ServiceTracker() {
           </div>
 
           <div className="relative z-10 text-center mb-10">
+            {isAuthenticated && (
+              <motion.div 
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex items-center justify-center gap-2 mb-6"
+              >
+                <div className="px-2 py-0.5 rounded border border-cyan-500/30 bg-cyan-500/5">
+                  <span className="text-[9px] font-mono text-cyan-400 uppercase tracking-widest">Authorized_Link</span>
+                </div>
+                <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest">Welcome, {user?.name}</span>
+              </motion.div>
+            )}
             <h2 className="text-3xl font-black uppercase tracking-tighter text-white mb-2">
               Track Your <span className="text-cyan-400">Repair</span>
             </h2>
@@ -61,7 +76,6 @@ export default function ServiceTracker() {
             </button>
           </form>
 
-          {/* Result Section */}
           <AnimatePresence>
             {showStatus && (
               <motion.div 
@@ -69,12 +83,33 @@ export default function ServiceTracker() {
                 animate={{ opacity: 1, height: 'auto' }}
                 className="mt-12 pt-10 border-t border-zinc-800/50"
               >
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
-                  
+                {/* User & Device Metadata Summary */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-12">
+                   <div className="bg-black/40 border border-zinc-800/50 p-5 rounded-2xl flex items-center gap-4 group hover:border-cyan-500/30 transition-all">
+                     <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl text-cyan-400 group-hover:scale-110 transition-transform">
+                       <Cpu size={18} />
+                     </div>
+                     <div>
+                       <p className="text-[9px] font-mono text-zinc-600 uppercase tracking-[0.2em] mb-0.5">Asset_Locked</p>
+                       <p className="text-sm font-bold text-zinc-200">Workstation_M1_Custom</p>
+                     </div>
+                   </div>
+                   <div className="bg-black/40 border border-zinc-800/50 p-5 rounded-2xl flex items-center gap-4 group hover:border-cyan-500/30 transition-all">
+                     <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl text-cyan-400 group-hover:scale-110 transition-transform">
+                       <Clock size={18} className="animate-pulse" />
+                     </div>
+                     <div>
+                       <p className="text-[9px] font-mono text-zinc-600 uppercase tracking-[0.2em] mb-0.5">Estimated_TAT</p>
+                       <p className="text-sm font-bold text-cyan-400">24-48 Hours Remaining</p>
+                     </div>
+                   </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-center mb-12">
                   {/* Step 1: Received */}
                   <div className="space-y-3 opacity-100">
-                    <div className="w-10 h-10 bg-cyan-500 rounded-full flex items-center justify-center mx-auto text-black shadow-[0_0_15px_rgba(0,242,255,0.4)]">
-                      <CheckCircle2 size={20} />
+                    <div className="w-12 h-12 bg-cyan-500 rounded-full flex items-center justify-center mx-auto text-black shadow-[0_0_20px_rgba(0,242,255,0.3)]">
+                      <CheckCircle2 size={24} />
                     </div>
                     <p className="text-xs font-bold text-white uppercase tracking-widest">Received</p>
                     <p className="text-[10px] text-zinc-500 font-mono italic">March 24, 2:15 PM</p>
@@ -82,28 +117,52 @@ export default function ServiceTracker() {
 
                   {/* Step 2: Diagnostic/In-Progress */}
                   <div className="space-y-3">
-                    <div className="w-10 h-10 border-2 border-cyan-500 rounded-full flex items-center justify-center mx-auto text-cyan-400 animate-pulse">
-                      <Wrench size={20} />
+                    <div className="w-12 h-12 border-2 border-cyan-500 bg-cyan-500/5 rounded-full flex items-center justify-center mx-auto text-cyan-400 animate-pulse">
+                      <Wrench size={24} />
                     </div>
                     <p className="text-xs font-bold text-cyan-400 uppercase tracking-widest">In Progress</p>
-                    <p className="text-[10px] text-zinc-500 font-mono italic">Engineer: Tech-Alpha</p>
+                    <p className="text-[10px] text-zinc-500 font-mono italic">Engineer: TECH_ALPHA</p>
                   </div>
 
                   {/* Step 3: Ready for Pickup */}
                   <div className="space-y-3 opacity-30">
-                    <div className="w-10 h-10 border-2 border-zinc-700 rounded-full flex items-center justify-center mx-auto text-zinc-700">
-                      <Package size={20} />
+                    <div className="w-12 h-12 border-2 border-zinc-700 rounded-full flex items-center justify-center mx-auto text-zinc-700">
+                      <Package size={24} />
                     </div>
                     <p className="text-xs font-bold text-zinc-600 uppercase tracking-widest">Ready</p>
                     <p className="text-[10px] text-zinc-500 font-mono italic">TBD</p>
                   </div>
-
                 </div>
 
-                <div className="mt-10 p-4 bg-cyan-950/20 border border-cyan-500/20 rounded-xl">
-                  <p className="text-xs text-center text-cyan-200">
-                    <span className="font-bold">Latest Update:</span> Component-level repair successful. Currently undergoing stress testing for thermal stability.
-                  </p>
+                {/* Technical Activity Log */}
+                <div className="mt-10 space-y-4">
+                  <div className="flex items-center gap-2 mb-4">
+                    <History size={14} className="text-zinc-600" />
+                    <span className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest">Technical_Transmission_Log</span>
+                  </div>
+                  
+                  <div className="space-y-1">
+                    {[
+                      { time: "2:15 PM", msg: "Device incoming: Ticket ID initiated." },
+                      { time: "3:45 PM", msg: "Initial diagnostic scan complete. Thermal anomalies detected." },
+                      { time: "9:00 AM", msg: "Replacement components sourced from inventory." },
+                      { time: "LAST", msg: "Component-level repair successful. Undergoing thermal stability stress test.", current: true },
+                    ].map((log, i) => (
+                      <div key={i} className={`flex items-start gap-4 p-3 rounded-lg border transition-all ${
+                        log.current ? 'bg-cyan-500/5 border-cyan-500/20' : 'border-transparent opacity-40 hover:opacity-100'
+                      }`}>
+                         <span className="text-[9px] font-mono text-cyan-500 w-16 pt-1">{log.time}</span>
+                         <p className={`text-xs ${log.current ? 'text-cyan-100' : 'text-zinc-400'}`}>{log.msg}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mt-12 flex justify-center">
+                   <button className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-zinc-500 hover:text-cyan-400 transition-colors">
+                     <ExternalLink size={12} />
+                     Contact Assigned Engineer
+                   </button>
                 </div>
               </motion.div>
             )}

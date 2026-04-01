@@ -1,7 +1,46 @@
-import React from 'react'
+'use client';
+
+import React, { useState } from 'react'
+
 const Contact = () => {
+  const [formData, setFormData] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    subject: '',
+    message: ''
+  });
+  const [status, setStatus] = useState({ type: '', message: '' });
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setStatus({ type: '', message: '' });
+
+    try {
+      const res = await fetch('http://127.0.0.1:5000/api/contact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData),
+      });
+
+      if (!res.ok) throw new Error('Failed to send message');
+
+      setStatus({ type: 'success', message: 'Message sent! We will contact you soon.' });
+      setFormData({ name: '', email: '', phone: '', subject: '', message: '' });
+    } catch (err: any) {
+      setStatus({ type: 'error', message: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    setFormData({ ...formData, [e.target.name]: e.target.value });
+  };
+
   return (
-    
     <div className="min-h-screen bg-background text-foreground">
       <main className="container mx-auto px-4 py-12">
         <div className="max-w-4xl mx-auto">
@@ -16,11 +55,22 @@ const Contact = () => {
             {/* Contact Form */}
             <div className="bg-zinc-900/50 p-8 rounded-xl border border-zinc-800">
               <h3 className="text-xl font-bold mb-6">Send Us a Message</h3>
-              <form className="space-y-4">
+              
+              {status.message && (
+                <div className={`p-4 rounded-lg mb-6 text-sm ${status.type === 'success' ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+                  {status.message}
+                </div>
+              )}
+
+              <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
                   <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Full Name</label>
                   <input 
                     type="text" 
+                    name="name"
+                    required
+                    value={formData.name}
+                    onChange={handleChange}
                     className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-neon-cyan focus:ring-1 focus:ring-neon-cyan"
                     placeholder="Your full name"
                   />
@@ -29,6 +79,10 @@ const Contact = () => {
                   <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Email Address</label>
                   <input 
                     type="email" 
+                    name="email"
+                    required
+                    value={formData.email}
+                    onChange={handleChange}
                     className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-neon-cyan focus:ring-1 focus:ring-neon-cyan"
                     placeholder="e-mail"
                   />
@@ -37,6 +91,9 @@ const Contact = () => {
                   <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Phone Number</label>
                   <input 
                     type="tel" 
+                    name="phone"
+                    value={formData.phone}
+                    onChange={handleChange}
                     className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-neon-cyan focus:ring-1 focus:ring-neon-cyan"
                     placeholder="+91 "
                   />
@@ -45,6 +102,10 @@ const Contact = () => {
                   <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Subject</label>
                   <input 
                     type="text" 
+                    name="subject"
+                    required
+                    value={formData.subject}
+                    onChange={handleChange}
                     className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-neon-cyan focus:ring-1 focus:ring-neon-cyan"
                     placeholder="How can we help you?"
                   />
@@ -53,15 +114,20 @@ const Contact = () => {
                   <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Message</label>
                   <textarea 
                     rows={4} 
+                    name="message"
+                    required
+                    value={formData.message}
+                    onChange={handleChange}
                     className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-neon-cyan focus:ring-1 focus:ring-neon-cyan"
                     placeholder="Tell us about your needs..."
                   />
                 </div>
                 <button 
                   type="submit" 
-                  className="w-full bg-neon-cyan text-black font-bold py-3 rounded-lg hover:bg-white transition-colors cursor-pointer"
+                  disabled={loading}
+                  className="w-full bg-neon-cyan text-black font-bold py-3 rounded-lg hover:bg-white transition-colors cursor-pointer disabled:opacity-50"
                 >
-                  Send Message
+                  {loading ? 'Sending...' : 'Send Message'}
                 </button>
               </form>
             </div>
@@ -79,7 +145,7 @@ const Contact = () => {
                     </div>
                     <div>
                       <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-1">Email</p>
-                      <p className="text-sm">[EMAIL_ADDRESS]</p>
+                      <p className="text-sm">support@tekdoctor.in</p>
                     </div>
                   </div>
                   <div className="flex items-start gap-4">
@@ -135,8 +201,8 @@ const Contact = () => {
         </div>
       </main>
     </div>
-    
   )
 }
 
-export default Contact  
+export default Contact
+  
