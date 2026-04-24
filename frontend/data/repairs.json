@@ -1,0 +1,22 @@
+[
+  {
+    "id": "repair-001",
+    "userId": "user-abc",
+    "userName": "Alice Smith",
+    "deviceName": "Laptop",
+    "issueDescription": "Screen flickering",
+    "submittedAt": "2023-10-27T10:00:00Z",
+    "status": "Received",
+    "lastUpdatedAt": "2023-10-27T10:00:00Z"
+  },
+  {
+    "id": "repair-002",
+    "userId": "user-xyz",
+    "userName": "Bob Johnson",
+    "deviceName": "Desktop",
+    "issueDescription": "Not booting up",
+    "submittedAt": "2023-10-26T15:30:00Z",
+    "status": "In Progress",
+    "lastUpdatedAt": "2023-10-27T09:00:00Z"
+  }
+]
