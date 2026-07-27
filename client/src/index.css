@@ -1,0 +1,107 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-neon-cyan: #00f2ff;
+  --color-neon-teal: #008c9e;
+  --color-dark-bg: #050505;
+  --font-outfit: "Outfit", sans-serif;
+  
+  @keyframes spin-slow {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  @keyframes spin-4s {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  --animate-spin-slow: spin-slow 8s linear infinite;
+  --animate-spin-4s: spin-4s 4s linear infinite;
+  --animate-animation-delay-3s: animation-delay 3s;
+}
+
+:root {
+  --background: #050505;
+  --foreground: #ffffff;
+  --neon-cyan: #00f2ff;
+  --neon-cyan-rgb: 0, 242, 255;
+  --neon-border: 1px solid rgba(var(--neon-cyan-rgb), 0.5);
+  --neon-glow: 0 0 10px rgba(var(--neon-cyan-rgb), 0.3);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-outfit);
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .neon-border {
+    border: var(--neon-border);
+    box-shadow: var(--neon-glow);
+    transition: all 0.3s ease;
+  }
+
+  .neon-border:hover {
+    box-shadow: 0 0 20px rgba(var(--neon-cyan-rgb), 0.6);
+    border-color: var(--neon-cyan);
+  }
+
+  .btn-neon {
+    @apply px-6 py-2 border border-neon-cyan/50 text-neon-cyan uppercase text-xs tracking-widest rounded-md transition-all duration-300;
+    box-shadow: 0 0 5px rgba(var(--neon-cyan-rgb), 0.2);
+  }
+
+  .btn-neon:hover {
+    @apply bg-neon-cyan text-black;
+    box-shadow: 0 0 20px rgba(var(--neon-cyan-rgb), 0.6);
+  }
+
+  .neon-text {
+    @apply text-neon-cyan;
+    text-shadow: 0 0 8px rgba(var(--neon-cyan-rgb), 0.5);
+  }
+
+  .card-neon {
+    @apply bg-zinc-900/50 border border-neon-cyan/20 p-6 rounded-lg transition-all duration-300;
+  }
+
+  .card-neon:hover {
+    @apply border-neon-cyan/60;
+    box-shadow: 0 0 15px rgba(var(--neon-cyan-rgb), 0.2);
+  }
+
+  /* Global Page Spacing Standard */
+  .standard-padding {
+    @apply px-6 sm:px-8 md:px-12 py-12 md:py-20;
+  }
+
+  /* Custom Scrollbar Styling */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: rgba(24, 24, 27, 0.5);
+    border-radius: 10px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(63, 63, 70, 0.8);
+    border-radius: 10px;
+    transition: background 0.3s ease;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: rgba(var(--neon-cyan-rgb), 0.5);
+  }
+
+  .animate-spin-4s {
+    animation: spin-4s 4s linear infinite;
+  }
+
+  .animation-delay-3s {
+    animation-delay: 3s;
+  }
+}

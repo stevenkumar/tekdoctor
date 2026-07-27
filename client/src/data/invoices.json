@@ -1,0 +1,88 @@
+[
+  {
+    "id": "inv-001",
+    "userId": "user-abc",
+    "clientName": "Alice Smith",
+    "amount": 5500.00,
+    "currency": "USD",
+    "invoiceDate": "2026-04-20T10:00:00Z",
+    "dueDate": "2026-05-20T10:00:00Z",
+    "status": "Paid",
+    "lineItems": [
+      { "description": "Laptop Screen Replacement", "quantity": 1, "unitPrice": 5000, "total": 5000 },
+      { "description": "Labor & Installation", "quantity": 5, "unitPrice": 100, "total": 500 }
+    ],
+    "notes": "Thank you for your business!",
+    "createdAt": "2026-04-20T10:00:00Z",
+    "lastUpdatedAt": "2026-04-25T10:00:00Z"
+  },
+  {
+    "id": "inv-002",
+    "userId": "user-abc",
+    "clientName": "Tech Solutions Inc",
+    "amount": 8750.50,
+    "currency": "USD",
+    "invoiceDate": "2026-04-15T14:30:00Z",
+    "dueDate": "2026-05-15T14:30:00Z",
+    "status": "Sent",
+    "lineItems": [
+      { "description": "Network Configuration", "quantity": 1, "unitPrice": 5000, "total": 5000 },
+      { "description": "Server Setup & Testing", "quantity": 7, "unitPrice": 500, "total": 3500 },
+      { "description": "Documentation", "quantity": 1, "unitPrice": 250.50, "total": 250.50 }
+    ],
+    "notes": "Payment terms: Net 30",
+    "createdAt": "2026-04-15T14:30:00Z",
+    "lastUpdatedAt": "2026-04-22T10:00:00Z"
+  },
+  {
+    "id": "inv-003",
+    "userId": "user-def",
+    "clientName": "Bob Johnson",
+    "amount": 2200.00,
+    "currency": "USD",
+    "invoiceDate": "2026-04-10T09:15:00Z",
+    "dueDate": "2026-04-25T09:15:00Z",
+    "status": "Overdue",
+    "lineItems": [
+      { "description": "Desktop Computer Repair", "quantity": 1, "unitPrice": 2000, "total": 2000 },
+      { "description": "Software Installation", "quantity": 2, "unitPrice": 100, "total": 200 }
+    ],
+    "notes": "Please remit payment at your earliest convenience",
+    "createdAt": "2026-04-10T09:15:00Z",
+    "lastUpdatedAt": "2026-04-20T14:00:00Z"
+  },
+  {
+    "id": "inv-004",
+    "userId": "user-abc",
+    "clientName": "Enterprise Corp",
+    "amount": 12500.00,
+    "currency": "USD",
+    "invoiceDate": "2026-04-25T11:00:00Z",
+    "dueDate": "2026-06-25T11:00:00Z",
+    "status": "Draft",
+    "lineItems": [
+      { "description": "Hardware Supply - Bulk Order", "quantity": 50, "unitPrice": 200, "total": 10000 },
+      { "description": "Installation Service", "quantity": 10, "unitPrice": 250, "total": 2500 }
+    ],
+    "notes": "Draft invoice - pending approval",
+    "createdAt": "2026-04-25T11:00:00Z",
+    "lastUpdatedAt": "2026-04-25T11:00:00Z"
+  },
+  {
+    "id": "inv-005",
+    "userId": "user-ghi",
+    "clientName": "Carol Davis",
+    "amount": 3250.75,
+    "currency": "USD",
+    "invoiceDate": "2026-04-18T13:45:00Z",
+    "dueDate": "2026-05-18T13:45:00Z",
+    "status": "Paid",
+    "lineItems": [
+      { "description": "Monitor Setup (x2)", "quantity": 2, "unitPrice": 1500, "total": 3000 },
+      { "description": "Cable & Connector Kit", "quantity": 1, "unitPrice": 250.75, "total": 250.75 }
+    ],
+    "notes": "Payment received on time. Thank you!",
+    "createdAt": "2026-04-18T13:45:00Z",
+    "lastUpdatedAt": "2026-04-25T10:00:00Z"
+  }
+]

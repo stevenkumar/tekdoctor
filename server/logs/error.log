@@ -1,0 +1,475 @@
+2026-06-11 12:17:39 [error]: Database connection could not be established. Exiting process.
+2026-06-11 12:18:56 [error]: Database connection could not be established. Exiting process.
+2026-06-12 13:13:43 [error]: Database connection could not be established. Exiting process.
+2026-06-12 13:14:13 [error]: Database connection could not be established. Exiting process.
+2026-06-12 13:19:14 [error]: Database connection could not be established. Exiting process.
+2026-06-12 13:19:58 [error]: Database connection could not be established. Exiting process.
+2026-07-06 12:59:31 [error]: Database connection could not be established. Exiting process.
+2026-07-06 13:09:09 [error]: Database connection could not be established. Exiting process.
+2026-07-06 15:00:06 [error]: Database connection could not be established. Exiting process.
+2026-07-06 16:27:12 [error]: Database connection could not be established. Exiting process.
+2026-07-08 12:24:45 [error]: Database connection could not be established. Exiting process.
+2026-07-09 13:09:38 [error]: Database connection could not be established. Exiting process.
+2026-07-09 13:10:03 [error]: Database connection could not be established. Exiting process.
+2026-07-10 12:02:06 [error]: Database connection could not be established. Exiting process.
+2026-07-11 13:02:44 [error]: Unknown column 'company_id' in 'field list'
+Request details: POST /api/admin/companies
+Stack: Error: Unknown column 'company_id' in 'field list'
+    at createCompany (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\controllers\admin.controller.js:208:26)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-13 18:33:58 [error]: 
+Request details: GET /api/public/site-data
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:58 [error]: 
+Request details: GET /api/public/site-data
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:58 [error]: 
+Request details: GET /api/repair-request/my-tasks
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:58 [error]: 
+Request details: GET /api/repair-request/my-tasks
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/repair-request/my-tasks
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/repair-request/my-tasks
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/notifications
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/public/site-data
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/notifications
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/company/stats
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/notifications
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/company/stats
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/notifications
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/company/stats
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/notifications
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/company/stats
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/public/site-data
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/admin/dashboard-stats
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/repair-request/my-tasks
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/repair-request/my-tasks
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/repair-request/my-tasks
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:33:59 [error]: 
+Request details: GET /api/repair-request/my-tasks
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-13 18:34:00 [error]: 
+Request details: GET /api/admin/dashboard-stats
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-14 12:26:03 [error]: 
+Request details: GET /api/notifications
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-14 12:26:03 [error]: 
+Request details: GET /api/repair-request/my-tasks
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-14 12:26:03 [error]: 
+Request details: GET /api/notifications
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-14 12:26:03 [error]: 
+Request details: GET /api/repair-request/my-tasks
+Stack: AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1142:49)
+    at afterConnectMultiple (node:net:1723:7)
+2026-07-14 13:02:45 [error]: Unknown column 'company_id' in 'field list'
+Request details: POST /api/admin/companies
+Stack: Error: Unknown column 'company_id' in 'field list'
+    at createCompany (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\controllers\admin.controller.js:208:26)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-14 14:09:52 [error]: Unknown column 'company_id' in 'field list'
+Request details: POST /api/admin/companies
+Stack: Error: Unknown column 'company_id' in 'field list'
+    at createCompany (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\controllers\admin.controller.js:208:26)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-14 14:12:07 [error]: Unknown column 'company_id' in 'field list'
+Request details: POST /api/admin/companies
+Stack: Error: Unknown column 'company_id' in 'field list'
+    at createCompany (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\controllers\admin.controller.js:208:26)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-14 17:01:37 [error]: Error: Invalid login: 535-5.7.8 Username and Password not accepted. For more information, go to
+535 5.7.8  https://support.google.com/mail/?p=BadCredentials 5a478bee46e88-311935fd091sm57383339eec.24 - gsmtp
+    at SMTPConnection._formatError (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\nodemailer\lib\smtp-connection\index.js:938:19)
+    at SMTPConnection._actionAUTHComplete (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\nodemailer\lib\smtp-connection\index.js:1784:34)
+    at SMTPConnection.<anonymous> (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\nodemailer\lib\smtp-connection\index.js:669:26)
+    at SMTPConnection._processResponse (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\nodemailer\lib\smtp-connection\index.js:1150:20)
+    at SMTPConnection._onData (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\nodemailer\lib\smtp-connection\index.js:898:14)
+    at SMTPConnection._onSocketData (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\nodemailer\lib\smtp-connection\index.js:224:44)
+    at TLSSocket.emit (node:events:508:28)
+    at addChunk (node:internal/streams/readable:563:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:514:3)
+    at Readable.push (node:internal/streams/readable:394:5)
+2026-07-14 18:00:50 [error]: Database connection could not be established. Exiting process.
+2026-07-15 12:44:44 [error]: connection is not defined
+Request details: PUT /api/testimonials/2
+Stack: ReferenceError: connection is not defined
+    at editTestimonialAdmin (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\controllers\testimonial.controller.js:127:26)
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\middleware\auth.middleware.js:63:5
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:149:13)
+    at authenticate (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\middleware\auth.middleware.js:21:5)
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:149:13)
+    at Route.dispatch (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:119:3)
+2026-07-15 12:44:47 [error]: connection is not defined
+Request details: PUT /api/testimonials/2
+Stack: ReferenceError: connection is not defined
+    at editTestimonialAdmin (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\controllers\testimonial.controller.js:127:26)
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\middleware\auth.middleware.js:63:5
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:149:13)
+    at authenticate (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\middleware\auth.middleware.js:21:5)
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:149:13)
+    at Route.dispatch (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:119:3)
+2026-07-15 12:44:47 [error]: connection is not defined
+Request details: PUT /api/testimonials/2
+Stack: ReferenceError: connection is not defined
+    at editTestimonialAdmin (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\controllers\testimonial.controller.js:127:26)
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\middleware\auth.middleware.js:63:5
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:149:13)
+    at authenticate (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\middleware\auth.middleware.js:21:5)
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:149:13)
+    at Route.dispatch (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:119:3)
+2026-07-15 12:44:49 [error]: connection is not defined
+Request details: PUT /api/testimonials/2
+Stack: ReferenceError: connection is not defined
+    at editTestimonialAdmin (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\controllers\testimonial.controller.js:127:26)
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\middleware\auth.middleware.js:63:5
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:149:13)
+    at authenticate (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\middleware\auth.middleware.js:21:5)
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:149:13)
+    at Route.dispatch (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\tekdoctor\backend\node_modules\express\lib\router\route.js:119:3)
+2026-07-18 13:06:37 [error]: Database connection could not be established. Exiting process.
+2026-07-20 12:06:36 [error]: CORS policy deviation: origin http://localhost:3001 is not allowed.
+Request details: POST /api/auth/signin
+Stack: Error: CORS policy deviation: origin http://localhost:3001 is not allowed.
+    at origin (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\server.js:92:23)
+    at C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\cors\lib\index.js:219:13
+    at optionsCallback (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\cors\lib\index.js:199:9)
+    at corsMiddleware (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\cors\lib\index.js:204:7)
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at trim_prefix (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\index.js:328:13)
+    at C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\index.js:286:9
+    at router.process_params (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\index.js:346:12)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\index.js:280:10)
+    at internalNext (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\helmet\index.cjs:531:6)
+2026-07-20 12:06:50 [error]: CORS policy deviation: origin http://localhost:3001 is not allowed.
+Request details: POST /api/auth/signin
+Stack: Error: CORS policy deviation: origin http://localhost:3001 is not allowed.
+    at origin (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\server.js:92:23)
+    at C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\cors\lib\index.js:219:13
+    at optionsCallback (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\cors\lib\index.js:199:9)
+    at corsMiddleware (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\cors\lib\index.js:204:7)
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at trim_prefix (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\index.js:328:13)
+    at C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\index.js:286:9
+    at router.process_params (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\index.js:346:12)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\index.js:280:10)
+    at internalNext (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\helmet\index.cjs:531:6)
+2026-07-20 12:07:10 [error]: CORS policy deviation: origin http://localhost:3001 is not allowed.
+Request details: POST /api/auth/signin
+Stack: Error: CORS policy deviation: origin http://localhost:3001 is not allowed.
+    at origin (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\server.js:92:23)
+    at C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\cors\lib\index.js:219:13
+    at optionsCallback (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\cors\lib\index.js:199:9)
+    at corsMiddleware (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\cors\lib\index.js:204:7)
+    at Layer.handle [as handle_request] (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\layer.js:95:5)
+    at trim_prefix (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\index.js:328:13)
+    at C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\index.js:286:9
+    at router.process_params (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\index.js:346:12)
+    at next (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\express\lib\router\index.js:280:10)
+    at internalNext (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\node_modules\helmet\index.cjs:531:6)
+2026-07-20 17:20:54 [error]: Duplicate entry 'TD-011 ' for key 'ticket_number'
+Request details: POST /api/repair-request
+Stack: Error: Duplicate entry 'TD-011 ' for key 'ticket_number'
+    at createRepairRequest (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\controllers\repair.controller.js:102:39)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-20 17:21:59 [error]: Duplicate entry 'TD-011 ' for key 'ticket_number'
+Request details: POST /api/repair-request
+Stack: Error: Duplicate entry 'TD-011 ' for key 'ticket_number'
+    at createRepairRequest (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\controllers\repair.controller.js:102:39)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-20 17:22:00 [error]: Duplicate entry 'TD-011 ' for key 'ticket_number'
+Request details: POST /api/repair-request
+Stack: Error: Duplicate entry 'TD-011 ' for key 'ticket_number'
+    at createRepairRequest (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\controllers\repair.controller.js:102:39)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-20 17:22:02 [error]: Duplicate entry 'TD-011 ' for key 'ticket_number'
+Request details: POST /api/repair-request
+Stack: Error: Duplicate entry 'TD-011 ' for key 'ticket_number'
+    at createRepairRequest (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\controllers\repair.controller.js:102:39)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-20 17:22:03 [error]: Duplicate entry 'TD-011 ' for key 'ticket_number'
+Request details: POST /api/repair-request
+Stack: Error: Duplicate entry 'TD-011 ' for key 'ticket_number'
+    at createRepairRequest (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\controllers\repair.controller.js:102:39)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-20 17:36:00 [error]: Duplicate entry 'TD-011 ' for key 'ticket_number'
+Request details: POST /api/repair-request
+Stack: Error: Duplicate entry 'TD-011 ' for key 'ticket_number'
+    at createRepairRequest (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\controllers\repair.controller.js:102:39)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-20 17:36:01 [error]: Duplicate entry 'TD-011 ' for key 'ticket_number'
+Request details: POST /api/repair-request
+Stack: Error: Duplicate entry 'TD-011 ' for key 'ticket_number'
+    at createRepairRequest (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\tekdoctor\backend\controllers\repair.controller.js:102:39)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:11:16 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:11:16 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:11:46 [error]: Unknown column 'technician_id' in 'field list'
+Request details: POST /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at createTechnician (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:60:43)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:04 [error]: Unknown column 'technician_id' in 'field list'
+Request details: POST /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at createTechnician (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:60:43)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:09 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:10 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:10 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:10 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:10 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:10 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:11 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:11 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:11 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:11 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:11 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:12 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:12 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:12 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:12 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:12 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:13 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:13 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:13 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:13 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:13 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:14 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:14 [error]: Unknown column 'technician_id' in 'field list'
+Request details: GET /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at getTechnicians (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:16:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:19 [error]: Unknown column 'technician_id' in 'field list'
+Request details: POST /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at createTechnician (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:60:43)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:20 [error]: Unknown column 'technician_id' in 'field list'
+Request details: POST /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at createTechnician (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:60:43)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:22 [error]: Unknown column 'technician_id' in 'field list'
+Request details: POST /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at createTechnician (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:60:43)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:23 [error]: Unknown column 'technician_id' in 'field list'
+Request details: POST /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at createTechnician (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:60:43)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:12:24 [error]: Unknown column 'technician_id' in 'field list'
+Request details: POST /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at createTechnician (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:60:43)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-25 13:16:37 [error]: Unknown column 'technician_id' in 'field list'
+Request details: POST /api/technicians
+Stack: Error: Unknown column 'technician_id' in 'field list'
+    at createTechnician (C:\Users\Vivek Kumar\OneDrive\Desktop\tekdoctor\adteuscom\before deploy\tekdoctor\backend\controllers\technician.controller.js:60:43)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-07-27 13:31:13 [error]: Database connection could not be established. Exiting process.

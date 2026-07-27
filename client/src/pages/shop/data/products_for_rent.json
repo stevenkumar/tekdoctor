@@ -1,0 +1,57 @@
+[
+  {
+    "id": "rent-001",
+    "name": "ThinkPad T14 Gen 4 Business Fleet",
+    "category": "Computing",
+    "specs": "Intel Core i7-1370P, 32GB RAM, 1TB SSD",
+    "weeklyPrice": "₹55",
+    "monthlyPrice": "₹175",
+    "minDuration": "2 Weeks",
+    "description": "Ideal for temporary employees, business trips, or corporate events. Fully configured with customized security setup.",
+    "highlights": ["Mil-Spec Tested Durability", "On-demand Enterprise Support", "Same-day Configuration"]
+  },
+  {
+    "id": "rent-002",
+    "name": "TekDoctor Pro Gaming Rig",
+    "category": "Computing",
+    "specs": "AMD Ryzen 9, RTX 4080 Super 16GB, 32GB RAM",
+    "weeklyPrice": "₹110",
+    "monthlyPrice": "₹340",
+    "minDuration": "1 Week",
+    "description": "Short-term hardware lease for intense development sprints, esports tournaments, or AI modeling tasks.",
+    "highlights": ["High FPS Gaming Ready", "Enterprise Grade Airflow", "Latest Graphics Driver Setup"]
+  },
+  {
+    "id": "rent-003",
+    "name": "OmniMesh Enterprise WiFi Pack",
+    "category": "Networking",
+    "specs": "3x Tri-Band WiFi 6 Access Points, 24-Port Managed Switch",
+    "weeklyPrice": "₹75",
+    "monthlyPrice": "₹220",
+    "minDuration": "1 Week",
+    "description": "Temporary networking lease for live events, corporate temporary spaces, or on-site client setups.",
+    "highlights": ["Pre-configured Virtual Networks", "Zero-Touch Cloud Controller", "Remote Tech Support"]
+  },
+  {
+    "id": "rent-004",
+    "name": "SecureSight 4K Camera Fleet",
+    "category": "Surveillance",
+    "specs": "4x 4K AI IP Cameras, 8-Channel POE NVR",
+    "weeklyPrice": "₹90",
+    "monthlyPrice": "₹260",
+    "minDuration": "2 Weeks",
+    "description": "Short-term physical security for high-value assets, construction setups, or multi-day corporate functions.",
+    "highlights": ["Plug-and-Play Easy Setup", "Mobile Live Monitoring App", "24/7 Smart Alert Forwarding"]
+  },
+  {
+    "id": "rent-005",
+    "name": "Epson WorkForce Enterprise MFP",
+    "category": "Printing",
+    "specs": "100 ppm Color & Monochrome, PostScript, Network-Ready",
+    "weeklyPrice": "₹145",
+    "monthlyPrice": "₹420",
+    "minDuration": "1 Month",
+    "description": "Enterprise-grade high-capacity multifunction printer. Ensures high efficiency for large-scale events and corporate operations.",
+    "highlights": ["Ultra-Fast Document Output", "Maintenance Service Included", "Zero Downtime Warranty"]
+  }
+]

@@ -1,0 +1,42 @@
+[
+  {
+    "Field": "id",
+    "Type": "int(11)",
+    "Null": "NO",
+    "Key": "PRI",
+    "Default": null,
+    "Extra": "auto_increment"
+  },
+  {
+    "Field": "setting_key",
+    "Type": "varchar(100)",
+    "Null": "NO",
+    "Key": "UNI",
+    "Default": null,
+    "Extra": ""
+  },
+  {
+    "Field": "setting_value",
+    "Type": "text",
+    "Null": "YES",
+    "Key": "",
+    "Default": null,
+    "Extra": ""
+  },
+  {
+    "Field": "setting_group",
+    "Type": "varchar(50)",
+    "Null": "YES",
+    "Key": "MUL",
+    "Default": "general",
+    "Extra": ""
+  },
+  {
+    "Field": "updated_at",
+    "Type": "timestamp",
+    "Null": "NO",
+    "Key": "",
+    "Default": "current_timestamp()",
+    "Extra": "on update current_timestamp()"
+  }
+]
