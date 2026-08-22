@@ -1,0 +1,18 @@
+{
+  "name": "tekdoctor",
+  "version": "1.0.0",
+  "description": "TekDoctor monorepo — backend (Express/MySQL) + frontend (React/Vite)",
+  "private": true,
+  "scripts": {
+    "dev:backend":  "npm run dev  --prefix server",
+    "dev:frontend": "npm run dev  --prefix client",
+    "build":        "npm run build --prefix client",
+    "start:backend":  "npm run start --prefix server",
+    "start:frontend": "npm run start --prefix client",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\""
+  },
+  "workspaces": [],
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

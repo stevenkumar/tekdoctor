@@ -1,0 +1,57 @@
+[
+  {
+    "id": "prod-001",
+    "name": "TekDoctor Apex Gaming Rig",
+    "category": "Computing",
+    "specs": "Intel Core i9-14900K, RTX 4090 24GB, 64GB DDR5, 2TB Gen4 NVMe SSD",
+    "price": "₹3,899",
+    "condition": "Brand New",
+    "warranty": "3 Years Local & Global Warranty",
+    "description": "The ultimate powerhouse for 4K high-FPS gaming, AI processing, and ultra-fast 3D rendering. Built and hand-tested in our lab.",
+    "highlights": ["Liquid Cooled Architecture", "Premium ESD Safe Testing", "Optimized OS and Game Settings"]
+  },
+  {
+    "id": "prod-002",
+    "name": "ThinkPad T14s Pro Gen 5",
+    "category": "Computing",
+    "specs": "Intel Core Ultra 7 155H, 32GB LPDDR5X, 1TB NVMe PCIe 4.0 SSD",
+    "price": "₹1,749",
+    "condition": "Brand New",
+    "warranty": "3 Years Premier Support",
+    "description": "Ultra-lightweight premium enterprise notebook. Best for high mobility and robust day-to-day business multitasking.",
+    "highlights": ["Mil-Spec Tested Durability", "All-Day Long Battery Life", "Integrated Hardware Security"]
+  },
+  {
+    "id": "prod-003",
+    "name": "OmniMesh WiFi 6E Core Router",
+    "category": "Networking",
+    "specs": "Tri-band up to 11 Gbps, 10 Gigabit WAN & LAN",
+    "price": "₹4,299",
+    "condition": "Brand New",
+    "warranty": "2 Years Advance Replacement",
+    "description": "High-performance enterprise-grade mesh systems. Delivers seamless connectivity across multi-floor business structures.",
+    "highlights": ["True Tri-band Technology", "Up to 3,500 sq ft Coverage", "Robust Security Settings"]
+  },
+  {
+    "id": "prod-004",
+    "name": "SecureAI 4K Surveillance Array",
+    "category": "Surveillance",
+    "specs": "8x 4K AI-Powered IP Cameras, 16-Channel 8TB NVR",
+    "price": "₹1,499",
+    "condition": "Brand New",
+    "warranty": "2 Years Hardware Warranty",
+    "description": "Advanced physical security deployment. Equipped with computer vision, night vision, and license-plate detection algorithms.",
+    "highlights": ["4K Ultra-HD Crisp Feeds", "Smart Person & Vehicle Detection", "Encrypted Data Redundancy"]
+  },
+  {
+    "id": "prod-005",
+    "name": "TekDoctor LaserJet MFP 750",
+    "category": "Printing",
+    "specs": "65 ppm Color & Mono, Automatic Duplexing, PostScript 3",
+    "price": "₹1,199",
+    "condition": "Brand New",
+    "warranty": "1 Year On-Site Support",
+    "description": "Enterprise monochrome and color multifunction network printer. High print capacities for demanding offices.",
+    "highlights": ["Zero Wait Warm-up Time", "Ultra-Low Running Cost", "Dual-band Wireless Support"]
+  }
+]

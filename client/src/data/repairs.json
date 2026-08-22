@@ -1,0 +1,100 @@
+[
+  {
+    "id": "repair-001",
+    "userId": "user-abc",
+    "userName": "Alice Smith",
+    "deviceName": "Laptop",
+    "issueDescription": "Screen flickering and display issues",
+    "submittedAt": "2024-04-28T10:00:00Z",
+    "status": "In Progress",
+    "priority": "High",
+    "assignedTechnicianId": "tech-john",
+    "lastUpdatedAt": "2024-04-28T14:00:00Z"
+  },
+  {
+    "id": "repair-002",
+    "userId": "user-xyz",
+    "userName": "Bob Johnson",
+    "deviceName": "Desktop",
+    "issueDescription": "Not booting up - power failure",
+    "submittedAt": "2024-04-28T09:30:00Z",
+    "status": "Pending",
+    "priority": "Critical",
+    "assignedTechnicianId": "tech-mike",
+    "lastUpdatedAt": "2026-05-05T08:54:12.191Z"
+  },
+  {
+    "id": "repair-003",
+    "userId": "user-def",
+    "userName": "Carol Davis",
+    "deviceName": "Monitor",
+    "issueDescription": "Screen display issues",
+    "submittedAt": "2024-04-27T15:00:00Z",
+    "status": "Completed",
+    "priority": "Low",
+    "assignedTechnicianId": "tech-jane",
+    "completedAt": "2024-04-28T10:30:00Z",
+    "rating": 5,
+    "lastUpdatedAt": "2024-04-28T10:30:00Z"
+  },
+  {
+    "id": "repair-004",
+    "userId": "user-ghi",
+    "userName": "David Wilson",
+    "deviceName": "Keyboard",
+    "issueDescription": "Keys not responding",
+    "submittedAt": "2024-04-28T11:00:00Z",
+    "status": "In Progress",
+    "priority": "Medium",
+    "assignedTechnicianId": "tech-john",
+    "lastUpdatedAt": "2024-04-28T13:00:00Z"
+  },
+  {
+    "id": "repair-005",
+    "userId": "user-jkl",
+    "userName": "Eva Martinez",
+    "deviceName": "Printer",
+    "issueDescription": "Paper jam and firmware error",
+    "submittedAt": "2024-04-27T08:00:00Z",
+    "status": "Completed",
+    "priority": "Medium",
+    "assignedTechnicianId": "tech-jane",
+    "completedAt": "2024-04-27T16:30:00Z",
+    "rating": 4,
+    "lastUpdatedAt": "2024-04-27T16:30:00Z"
+  },
+  {
+    "id": "repair-006",
+    "userId": "user-mno",
+    "userName": "Frank Thompson",
+    "deviceName": "Laptop",
+    "issueDescription": "Battery not charging",
+    "submittedAt": "2024-04-28T12:00:00Z",
+    "status": "Pending",
+    "priority": "High",
+    "assignedTechnicianId": null,
+    "lastUpdatedAt": "2024-04-28T12:00:00Z"
+  },
+  {
+    "id": "REP-9765",
+    "userId": "GUEST",
+    "userName": "V Kumar",
+    "userEmail": "vkvseri@gmail.com",
+    "deviceName": "computing",
+    "issueDescription": "I forgot, what i want to ask you!",
+    "submittedAt": "2026-05-27T12:52:32.382Z",
+    "status": "Received",
+    "lastUpdatedAt": "2026-05-27T12:52:32.382Z"
+  },
+  {
+    "id": "REP-6054",
+    "userId": "GUEST",
+    "userName": "yhfcgv",
+    "userEmail": "gyguhujb",
+    "deviceName": "computing",
+    "issueDescription": "resdtfjkn",
+    "submittedAt": "2026-05-28T07:27:10.639Z",
+    "status": "Received",
+    "lastUpdatedAt": "2026-05-28T07:27:10.639Z"
+  }
+]

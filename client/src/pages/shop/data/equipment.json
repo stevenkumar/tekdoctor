@@ -1,0 +1,214 @@
+{
+  "hardware": [
+    {
+      "id": 1,
+      "category": "Computing",
+      "items": [
+        {
+          "name": "Custom PCs",
+          "specs": "Intel i7/i9, RTX 40 Series",
+          "stock": "15+",
+          "useCase": "Gaming & Workstation Repairs"
+        },
+        {
+          "name": "Laptops",
+          "specs": "ThinkPad, MacBook, ASUS ROG",
+          "stock": "22+",
+          "useCase": "Portability & Performance Services"
+        },
+        {
+          "name": "Gaming Rigs",
+          "specs": "High-end GPU/CPU Configurations",
+          "stock": "8+",
+          "useCase": "Performance-critical Repairs"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "category": "Networking",
+      "items": [
+        {
+          "name": "WiFi Routers",
+          "specs": "WiFi 6E, 10 Gigabit Ethernet",
+          "stock": "18+",
+          "useCase": "Connectivity Diagnostics"
+        },
+        {
+          "name": "Mesh Systems",
+          "specs": "Tri-band, Self-healing Mesh",
+          "stock": "12+",
+          "useCase": "Enterprise Network Setup"
+        },
+        {
+          "name": "Network Switches",
+          "specs": "Managed 48-Port PoE",
+          "stock": "6+",
+          "useCase": "Data Center Integration"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "category": "Surveillance",
+      "items": [
+        {
+          "name": "IP Cameras",
+          "specs": "4K, AI-Powered Detection",
+          "stock": "25+",
+          "useCase": "Security System Testing"
+        },
+        {
+          "name": "DVR/NVR Systems",
+          "specs": "64-Channel, 8TB Storage",
+          "stock": "9+",
+          "useCase": "Video Management Solutions"
+        },
+        {
+          "name": "Biometric Systems",
+          "specs": "Facial & Fingerprint Recognition",
+          "stock": "5+",
+          "useCase": "Access Control Services"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "category": "Printing",
+      "items": [
+        {
+          "name": "Laser Printers",
+          "specs": "Color & Monochrome, Network-Ready",
+          "stock": "11+",
+          "useCase": "Print System Maintenance"
+        },
+        {
+          "name": "Ink Tank Systems",
+          "specs": "High-capacity Refillable",
+          "stock": "35+",
+          "useCase": "Cost-effective Printing"
+        },
+        {
+          "name": "Scanners & MFP",
+          "specs": "Document Imaging, OCR",
+          "stock": "14+",
+          "useCase": "Document Processing Setup"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "id": 1,
+      "name": "Precision Soldering Station",
+      "level": "Board Level",
+      "model": "Hakko FM-2030",
+      "capabilities": "SMD & Through-hole Soldering, Temperature Range 100-450°C",
+      "precision": "±5°C Accuracy, Micro-component ready",
+      "whyWUse": "Ensures zero-risk repairs on sensitive circuitry and micro-components"
+    },
+    {
+      "id": 2,
+      "name": "Digital Oscilloscope",
+      "level": "Signal Analysis",
+      "model": "Rigol DS1054Z",
+      "capabilities": "200MHz Bandwidth, 4-Channel Analysis, FFT Function",
+      "precision": "±3% Reading Accuracy, Real-time Waveform Capture",
+      "whyWUse": "Diagnoses power supply issues and signal integrity problems"
+    },
+    {
+      "id": 3,
+      "name": "Thermal Imaging Camera",
+      "level": "Heat Diagnostics",
+      "model": "FLIR E4",
+      "capabilities": "160x120 Resolution, -20 to +250°C Range",
+      "precision": "±2°C Thermal Accuracy, Spot & Area Measurement",
+      "whyWUse": "Identifies component failures and heat anomalies instantly"
+    },
+    {
+      "id": 4,
+      "name": "Data Recovery Workstation",
+      "level": "Deep Storage",
+      "model": "DriveSavers Professional",
+      "capabilities": "HDD/SSD Recovery, Encrypted Partition Access",
+      "precision": "99.2% Success Rate, Multi-OS Support",
+      "whyWUse": "Recovers critical data from damaged or failed drives"
+    },
+    {
+      "id": 5,
+      "name": "Logic Analyzer",
+      "level": "Protocol Debugging",
+      "model": "Saleae Logic Pro 16",
+      "capabilities": "I2C, SPI, UART Protocol Analysis",
+      "precision": "1GHz Sampling Rate, Timing Analysis",
+      "whyWUse": "Debugs embedded systems and communication failures"
+    },
+    {
+      "id": 6,
+      "name": "Multimeter & Power Supply",
+      "level": "Voltage Testing",
+      "model": "Fluke 289 + Bench PSU",
+      "capabilities": "Digital Multimeter + 0-30V/0-5A Adjustable Supply",
+      "precision": "0.05% Accuracy, CAT IV Rated",
+      "whyWUse": "Measures and tests all power delivery and circuit integrity"
+    }
+  ],
+  "certifications": [
+    {
+      "name": "ISO 9001:2015",
+      "description": "Quality Management System Certified"
+    },
+    {
+      "name": "ISO 27001",
+      "description": "Information Security & Data Privacy"
+    },
+    {
+      "name": "CompTIA A+",
+      "description": "Professional Hardware Certification"
+    },
+    {
+      "name": "Microsoft Certified",
+      "description": "Windows System Administration"
+    },
+    {
+      "name": "Apple Certified",
+      "description": "Authorized Mac Repair"
+    },
+    {
+      "name": "ESD Safe",
+      "description": "Electrostatic Discharge Protection"
+    }
+  ],
+  "whyChooseUs": [
+    {
+      "icon": "Zap",
+      "title": "Professional-Grade Equipment",
+      "description": "Using industry-leading tools and diagnostic equipment for accurate problem identification"
+    },
+    {
+      "icon": "Shield",
+      "title": "ISO Certified Processes",
+      "description": "All repairs follow ISO 9001 standards ensuring consistency and reliability"
+    },
+    {
+      "icon": "Cpu",
+      "title": "Latest Diagnostic Technology",
+      "description": "Thermal imaging, logic analyzers, and oscilloscopes for comprehensive testing"
+    },
+    {
+      "icon": "Lock",
+      "title": "Data Security First",
+      "description": "ISO 27001 certified to protect your sensitive data during repairs"
+    },
+    {
+      "icon": "CheckCircle",
+      "title": "Expert Technicians",
+      "description": "Certified professionals with CompTIA A+, Microsoft, and Apple certifications"
+    },
+    {
+      "icon": "Zap",
+      "title": "ESD Safe Environment",
+      "description": "Protected workstations prevent static damage to sensitive components"
+    }
+  ]
+}
