@@ -3,8 +3,15 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { ExternalLink } from 'lucide-react';
+import { useSiteContext } from '@/context/SiteContext';
 
 export default function ConnectionSection() {
+  const { flattenedSettings } = useSiteContext();
+  const configuredLogo = flattenedSettings?.tekunik_image_url;
+  const logoSrc = configuredLogo && configuredLogo.trim() !== ''
+    ? (configuredLogo.startsWith('http') || configuredLogo.startsWith('/') ? configuredLogo : `/uploads/${configuredLogo}`)
+    : '/tekunik_logo.png';
+
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.95 }}
@@ -33,8 +40,9 @@ export default function ConnectionSection() {
               lifecycle of your tech needs.
             </p>
             <a
-              href="https://tekunik.in"
+              href="https://thetekdoctor.com"
               target="_blank"
+              rel="noopener noreferrer"
               className="inline-flex items-center gap-2 text-white font-bold hover:text-neon-cyan transition-colors group"
             >
               Explore TekUnik Ecosystem
@@ -42,10 +50,18 @@ export default function ConnectionSection() {
             </a>
           </div>
 
-          {/* A visual "Bridge" or Logo Placeholder */}
-          <div className="w-full md:w-64 h-64 bg-zinc-900/50 border border-white/5 rounded-2xl flex items-center justify-center relative overflow-hidden group-hover:border-neon-cyan/20 transition-colors">
-            <div className="absolute inset-0 rounded-full animate-pulse" style={{ background: 'radial-gradient(circle at center, rgba(var(--neon-cyan-rgb), 0.125) 0%, transparent 70%)' }} />
-            <span className="text-zinc-700 font-black text-xl tracking-widest uppercase">Tekunik.in</span>
+          {/* A visual "Bridge" or Logo Card */}
+          <div className="w-full md:w-64 h-64 bg-zinc-900/50 border border-white/5 rounded-2xl flex flex-col items-center justify-center p-6 relative overflow-hidden group-hover:border-neon-cyan/20 transition-colors">
+            <div className="absolute inset-0 rounded-full animate-pulse pointer-events-none" style={{ background: 'radial-gradient(circle at center, rgba(var(--neon-cyan-rgb), 0.125) 0%, transparent 70%)' }} />
+            <img
+              src={logoSrc}
+              alt="TekUnik Logo"
+              className="max-h-24 max-w-full object-contain relative z-10 drop-shadow-[0_0_15px_rgba(0,243,255,0.15)] transition-transform duration-300 group-hover:scale-105"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src = '/tekunik_logo.png';
+              }}
+            />
+            <span className="text-zinc-600 font-mono text-[11px] tracking-widest uppercase mt-4 relative z-10">Tekunik.in</span>
           </div>
         </div>
       </div>

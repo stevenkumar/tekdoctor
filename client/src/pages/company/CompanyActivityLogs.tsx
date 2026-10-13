@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { useCompanyContext } from '../../context/CompanyContext';
 import { Clock, Search, ShieldAlert, ArrowLeftRight, Terminal, User, Smartphone, MapPin } from 'lucide-react';
+import { companyApi } from '../../services/api';
 
 interface ActivityLog {
     id: number;
@@ -21,6 +23,7 @@ interface Pagination {
 
 export default function CompanyActivityLogs() {
     const { token } = useAuth();
+    const { selectedCompanyId, isAdminManagingCompany, loadingCompanies } = useCompanyContext();
     const [logs, setLogs] = useState<ActivityLog[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -29,20 +32,23 @@ export default function CompanyActivityLogs() {
     const [pagination, setPagination] = useState<Pagination | null>(null);
 
     const fetchLogs = async (page: number) => {
+        if (!token) return;
+        if (isAdminManagingCompany && !selectedCompanyId && !loadingCompanies) {
+            setLoading(false);
+            return;
+        }
         setLoading(true);
         setError('');
         try {
-            const res = await fetch(`http://localhost:5000/api/company/activity-logs?page=${page}&limit=15`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            const json = await res.json();
-            if (json.success) {
+            const res = await companyApi.getActivityLogs(token, page, 15);
+            const json = res.data;
+            if (json?.success && json.data) {
                 setLogs(json.data.data);
                 setPagination(json.data.pagination);
             } else {
-                setError(json.message);
+                setError(json?.message || 'Failed to load activity logs.');
             }
-        } catch (err) {
+        } catch {
             setError('Failed to load activity logs.');
         } finally {
             setLoading(false);
@@ -51,9 +57,10 @@ export default function CompanyActivityLogs() {
 
     useEffect(() => {
         if (token) {
+            if (isAdminManagingCompany && loadingCompanies) return;
             fetchLogs(currentPage);
         }
-    }, [token, currentPage]);
+    }, [token, currentPage, selectedCompanyId, loadingCompanies]);
 
     const handlePageChange = (page: number) => {
         setCurrentPage(page);

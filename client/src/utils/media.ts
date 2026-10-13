@@ -6,17 +6,15 @@ import { appConfig } from '@/config/appConfig';
  *
  * - Absolute URLs (starting with "http") are returned as-is.
  * - Relative paths like "/uploads/logo.png" are prefixed with:
- *   - http://localhost:5000 in development
  *   - The configured VITE_API_URL in production
+ *   - The current window origin (dev proxy / same-origin deployment)
  */
 export function getMediaUrl(url: string): string {
     if (!url) return '';
     if (url.startsWith('http')) return url;
-    if (appConfig.isDevelopment) {
-        return `http://localhost:5000${url.startsWith('/') ? '' : '/'}${url}`;
-    }
-    const base = appConfig.apiUrl.endsWith('/') ? appConfig.apiUrl.slice(0, -1) : appConfig.apiUrl;
-    return `${base}${url.startsWith('/') ? '' : '/'}${url}`;
+    const base = appConfig.apiUrl || (typeof window !== 'undefined' ? window.location.origin : '');
+    const cleanBase = base.endsWith('/') ? base.slice(0, -1) : base;
+    return `${cleanBase}${url.startsWith('/') ? '' : '/'}${url}`;
 }
 
 /**

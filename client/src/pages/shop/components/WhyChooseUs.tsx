@@ -24,11 +24,10 @@ export default function WhyChooseUs() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {equipmentData.whyChooseUs.map((item, idx) => {
-          const Icon = iconMap[item.icon] ? (
-            React.cloneElement(iconMap[item.icon] as React.ReactElement, {
-              className: 'text-neon-cyan group-hover:text-neon-cyan transition-colors'
-            } as any)
-          ) : null;
+          const rawIcon = iconMap[item.icon] || <Zap size={28} />;
+          const Icon = React.cloneElement(rawIcon as React.ReactElement, {
+            className: 'text-neon-cyan group-hover:text-neon-cyan transition-colors'
+          } as any);
 
           return (
             <div 

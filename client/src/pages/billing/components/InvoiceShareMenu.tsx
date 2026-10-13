@@ -6,6 +6,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'react-hot-toast';
 import { useSiteContext } from '../../../context/SiteContext';
 import { appConfig } from '../../../config/appConfig';
+import { ConfirmModal } from '@/components/ConfirmModal';
+import { billingApi } from '@/services/api';
+import {
+  downloadPaymentBillPdf,
+  printPaymentBill,
+  type PaymentReceiptData
+} from '@/utils/billGenerator';
 
 interface LineItem {
   description: string;
@@ -26,7 +33,8 @@ interface Invoice {
   lineItems: LineItem[];
   notes: string;
   createdAt: string;
-  lastUpdatedAt: string;
+  lastUpdatedAt?: string;
+  updatedAt?: string;
 }
 
 interface InvoiceShareMenuProps {
@@ -38,6 +46,7 @@ export default function InvoiceShareMenu({ invoice, onDelete }: InvoiceShareMenu
   const [isOpen, setIsOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const { flattenedSettings } = useSiteContext();
 
@@ -47,7 +56,7 @@ export default function InvoiceShareMenu({ invoice, onDelete }: InvoiceShareMenu
 Invoice Details:
 ID: ${invoice.id}
 Client: ${invoice.clientName}
-Amount: $${invoice.amount.toFixed(2)}
+Amount: ₹${invoice.amount.toFixed(2)}
 Date: ${new Date(invoice.invoiceDate).toLocaleDateString()}
 Due: ${new Date(invoice.dueDate).toLocaleDateString()}
 Status: ${invoice.status}
@@ -56,13 +65,13 @@ Items:
 ${invoice.lineItems
         .map(
           item =>
-            `- ${item.description}: ${item.quantity} x $${item.unitPrice.toFixed(
+            `- ${item.description}: ${item.quantity} x ₹${item.unitPrice.toFixed(
               2
-            )} = $${item.total.toFixed(2)}`
+            )} = ₹${item.total.toFixed(2)}`
         )
         .join('\n')}
 
-Total: $${invoice.amount.toFixed(2)}
+Total: ₹${invoice.amount.toFixed(2)}
 
 Notes: ${invoice.notes || 'N/A'}
     `.trim();
@@ -74,209 +83,158 @@ Notes: ${invoice.notes || 'N/A'}
     setIsOpen(false);
   };
 
-  const handlePDFExport = async () => {
-    try {
-      // Dynamic import to avoid server-side issues
-      const html2pdf = (await import('html2pdf.js')).default;
-      const themeColor = flattenedSettings.theme_primary_color || flattenedSettings.primary_color || '#00f2ff';
-
-      const element = document.createElement('div');
-      element.innerHTML = `
-        <div style="font-family: 'Segoe UI', Arial, sans-serif; padding: 40px; background: #ffffff; color: #1a1a1a; max-width: 800px; margin: 0 auto; border: 1px solid #e5e5e5; border-radius: 8px;">
-          
-          <!-- Header Section with Logo and Company info -->
-          <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid ${themeColor}; padding-bottom: 25px; margin-bottom: 35px;">
-            <div>
-              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-                <span style="background: ${themeColor}; color: #050505; width: 34px; height: 34px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 18px; font-family: sans-serif;">${(flattenedSettings.company_name || 'TD').substring(0, 2).toUpperCase()}</span>
-                <h1 style="font-size: 28px; font-weight: 900; color: #000; margin: 0; text-transform: uppercase; letter-spacing: -1px;">${flattenedSettings.company_name || 'TEKDOCTOR'}</h1>
-              </div>
-              <p style="font-size: 11px; font-weight: bold; color: #71717a; text-transform: uppercase; margin: 0; letter-spacing: 2px;">Your Computer's Personal Care Specialist</p>
-              <div style="font-size: 11px; color: #52525b; margin-top: 12px; line-height: 1.5;">
-                <p style="margin: 0;">${flattenedSettings.company_name || 'TekDoctor'} ESD Safe Facilities</p>
-                <p style="margin: 0;">${flattenedSettings.company_address || 'Silicon Valley Hub, CA'}</p>
-                <p style="margin: 0;">${flattenedSettings.company_email || 'tech-support@tekdoctor.com'}</p>
-              </div>
-            </div>
-
-            <div style="text-align: right;">
-              <h2 style="font-size: 32px; font-weight: 900; color: ${themeColor}; margin: 0; text-transform: uppercase; letter-spacing: 1px;">INVOICE</h2>
-              <p style="font-size: 13px; color: #3f3f46; margin: 5px 0 0 0;"><strong>Invoice ID:</strong> <span style="font-family: monospace; color: #111;">${invoice.id}</span></p>
-              <p style="font-size: 13px; color: #3f3f46; margin: 3px 0 0 0;"><strong>Invoice Date:</strong> ${new Date(invoice.invoiceDate).toLocaleDateString()}</p>
-              <p style="font-size: 13px; color: #3f3f46; margin: 3px 0 0 0;"><strong>Due Date:</strong> ${new Date(invoice.dueDate).toLocaleDateString()}</p>
-            </div>
-          </div>
-
-          <!-- Billed To & Summary Info Grid -->
-          <div style="display: flex; justify-content: space-between; gap: 30px; margin-bottom: 40px; background: #fafafa; border: 1px solid #f4f4f5; border-radius: 8px; padding: 20px;">
-            <div>
-              <h3 style="font-size: 11px; font-weight: bold; color: #71717a; text-transform: uppercase; margin: 0 0 8px 0; letter-spacing: 1.5px;">BILLED TO:</h3>
-              <p style="font-size: 15px; font-weight: 800; color: #0f172a; margin: 0 0 4px 0;">${invoice.clientName}</p>
-              <p style="font-size: 12px; color: #64748b; margin: 0;">Enterprise Partner Client Account</p>
-            </div>
-            <div style="text-align: right;">
-              <h3 style="font-size: 11px; font-weight: bold; color: #71717a; text-transform: uppercase; margin: 0 0 8px 0; letter-spacing: 1.5px;">PAYMENT SUMMARY:</h3>
-              <p style="font-size: 12px; color: #64748b; margin: 0 0 4px 0;">Payment Status: <strong style="color: ${themeColor}; font-weight: bold;">${invoice.status}</strong></p>
-              <p style="font-size: 12px; color: #64748b; margin: 0;">Currency Code: <span style="font-weight: 600; color: #1e293b;">${invoice.currency}</span></p>
-            </div>
-          </div>
-
-          <!-- Table Items -->
-          <div style="margin-bottom: 35px;">
-            <table style="width: 100%; border-collapse: collapse;">
-              <thead>
-                <tr style="background: #f8fafc; border-bottom: 2px solid #e2e8f0;">
-                  <th style="text-align: left; padding: 12px 14px; font-size: 11px; font-weight: bold; color: #475569; text-transform: uppercase; letter-spacing: 1px;">Line Item Description</th>
-                  <th style="text-align: center; padding: 12px 14px; font-size: 11px; font-weight: bold; color: #475569; text-transform: uppercase; letter-spacing: 1px; width: 80px;">Qty</th>
-                  <th style="text-align: right; padding: 12px 14px; font-size: 11px; font-weight: bold; color: #475569; text-transform: uppercase; letter-spacing: 1px; width: 120px;">Unit Price</th>
-                  <th style="text-align: right; padding: 12px 14px; font-size: 11px; font-weight: bold; color: #475569; text-transform: uppercase; letter-spacing: 1px; width: 120px;">Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${invoice.lineItems && invoice.lineItems
-          .map(
-            item => `
-                  <tr style="border-bottom: 1px solid #f1f5f9;">
-                    <td style="padding: 14px; font-size: 13px; font-weight: bold; color: #1e293b; line-height: 1.4;">${item.description}</td>
-                    <td style="padding: 14px; text-align: center; font-size: 13px; color: #334155; font-family: monospace;">${item.quantity}</td>
-                    <td style="padding: 14px; text-align: right; font-size: 13px; color: #334155; font-family: monospace;">$${item.unitPrice.toFixed(2)}</td>
-                    <td style="padding: 14px; text-align: right; font-size: 13px; font-weight: bold; color: #0f172a; font-family: monospace;">$${item.total.toFixed(2)}</td>
-                  </tr>
-                `
-          )
-          .join('')}
-              </tbody>
-            </table>
-          </div>
-
-          <!-- Totals and Notes summary -->
-          <div style="display: flex; justify-content: space-between; gap: 40px; border-top: 2px solid #f1f5f9; padding-top: 25px;">
-            <div style="flex: 1;">
-              ${invoice.notes ? `
-                <h4 style="font-size: 11px; font-weight: bold; color: #64748b; text-transform: uppercase; margin: 0 0 6px 0; letter-spacing: 1px;">NOTES & PAYMENT INSTRUCTIONS</h4>
-                <p style="font-size: 12px; color: #334155; margin: 0; line-height: 1.5; font-style: italic;">${invoice.notes}</p>
-              ` : ''}
-            </div>
-
-            <div style="width: 280px; text-align: right;">
-              <div style="display: flex; justify-content: space-between; padding-bottom: 8px;">
-                <span style="font-size: 13px; color: #64748b; font-weight: 600;">Total Balance Due:</span>
-                <span style="font-size: 24px; font-weight: 900; color: ${themeColor}; font-family: monospace; letter-spacing: -1px;">$${invoice.amount.toFixed(2)}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Bottom / Footer -->
-          <div style="margin-top: 60px; padding-top: 20px; border-top: 1px solid #f1f5f9; text-align: center;">
-            <p style="font-size: 11px; color: #94a3b8; font-weight: 500; margin: 0 0 4px 0; letter-spacing: 0.5px;">Thank you for your business! For any technical questions, contact ${flattenedSettings.company_email || 'support@tekdoctor.com'}</p>
-            <p style="font-size: 10px; color: #cbd5e1; font-weight: bold; margin: 0; text-transform: uppercase; letter-spacing: 1px;">OFFICIAL INVOICE ISSUED BY ${(flattenedSettings.company_name || 'TEKDOCTOR').toUpperCase()} BILLING SERVICES</p>
-          </div>
-
-        </div>
-      `;
-
-      const options = {
-        margin: 10,
-        filename: `invoice-${invoice.id}.pdf`,
-        image: { type: 'png' as const, quality: 0.98 },
-        html2canvas: { scale: 2 },
-        jsPDF: { orientation: 'portrait' as const, unit: 'mm' as const, format: 'a4' as const },
+  const buildReceiptDataFromInvoice = (inv: Invoice): PaymentReceiptData => {
+    const lineItems = (inv.lineItems || []).map((li: any) => {
+      const qty = Number(li.quantity || 1);
+      const unitPrice = Number(li.unitPrice || 0);
+      const itemTotal = Number(li.total || (qty * unitPrice));
+      const taxRate = Number(li.taxRate !== undefined ? li.taxRate : 18);
+      const taxAmount = Number(li.taxAmount || (itemTotal * taxRate / 100));
+      return {
+        description: li.description || 'Service Item',
+        hsnSac: li.hsnSac || '9987',
+        quantity: qty,
+        unitPrice,
+        unitRate: unitPrice,
+        total: itemTotal,
+        taxRate,
+        taxAmount,
+        taxableAmount: itemTotal,
+        amount: itemTotal
       };
+    });
 
-      html2pdf().set(options).from(element).save();
+    const subtotal = Number((inv as any).subtotal || lineItems.reduce((acc, li) => acc + li.total, 0));
+    const isInterstate = Boolean((inv as any).isInterstate);
+    const taxAmount = Number((inv as any).taxAmount || (inv.amount - subtotal));
+    const effectiveTaxRate = subtotal > 0
+      ? Math.round((taxAmount / subtotal) * 10000) / 100
+      : (lineItems.length > 0 && lineItems[0].taxRate !== undefined ? lineItems[0].taxRate : 18);
+    const halfRate = Math.round((effectiveTaxRate / 2) * 100) / 100;
+    const cgstAmount = Number((inv as any).cgstAmount || (isInterstate ? 0 : taxAmount / 2));
+    const sgstAmount = Number((inv as any).sgstAmount || (isInterstate ? 0 : taxAmount - cgstAmount));
+    const igstAmount = Number((inv as any).igstAmount || (isInterstate ? taxAmount : 0));
+
+    return {
+      receiptNumber: inv.id,
+      invoiceId: inv.id,
+      invoiceStatus: inv.status,
+      isFinal: inv.status === 'Final' || inv.status === 'Paid',
+      ticketId: (inv as any).ticketId ? Number((inv as any).ticketId) : null,
+      ticketNumber: (inv as any).ticketNumber || (inv as any).ticket_number || null,
+      billDate: inv.invoiceDate || new Date().toISOString(),
+      paymentDate: (inv as any).paidAt || inv.invoiceDate || new Date().toISOString(),
+      paymentStatus: inv.status.toLowerCase() === 'paid' ? 'paid' : (inv.status.toLowerCase() === 'draft' ? 'draft' : 'unpaid'),
+      paymentMethod: (inv as any).paymentMethod || (inv as any).payment_method || null,
+      paymentId: (inv as any).paymentId || (inv as any).payment_id || null,
+      notes: inv.notes,
+      clientType: 'individual',
+      customer: {
+        name: inv.clientName || 'Customer',
+        email: (inv as any).userEmail || (inv as any).email || '',
+        mobile: (inv as any).userPhone || (inv as any).mobile || null,
+        companyName: (inv as any).companyName || null,
+        companyTaxId: (inv as any).companyGstin || null
+      },
+      device: (inv as any).deviceBrand ? {
+        brand: (inv as any).deviceBrand,
+        modelNumber: (inv as any).deviceModel || '',
+        category: (inv as any).deviceCategory || 'Device',
+      } : null,
+      financials: {
+        currency: inv.currency || 'INR',
+        currencySymbol: '₹',
+        subtotal,
+        taxableAmount: subtotal,
+        taxRate: effectiveTaxRate,
+        taxAmount,
+        totalGst: taxAmount,
+        isInterstate,
+        cgstRate: isInterstate ? 0 : halfRate,
+        cgstAmount,
+        sgstRate: isInterstate ? 0 : halfRate,
+        sgstAmount,
+        igstRate: isInterstate ? effectiveTaxRate : 0,
+        igstAmount,
+        totalAmount: inv.amount,
+        amountPaid: inv.status === 'Paid' ? inv.amount : 0,
+        balanceDue: inv.status === 'Paid' ? 0 : inv.amount,
+        lineItems
+      },
+      business: {
+        name: flattenedSettings.company_name || 'TekDoctor',
+        tagline: flattenedSettings.site_tagline || 'Your Computer’s Personal Care Specialist',
+        logoUrl: flattenedSettings.site_logo_black || flattenedSettings.site_logo || '/tekdoctor_logo_black.png',
+        address: flattenedSettings.company_address || 'TekDoctor ESD Safe Facilities',
+        email: flattenedSettings.company_email || 'support@tekdoctor.in',
+        phone: flattenedSettings.company_phone || '+91 98765 43210',
+        gstin: flattenedSettings.company_gstin || '27AAAAA0000A1Z5',
+        website: flattenedSettings.site_url || 'https://thetekdoctor.com'
+      }
+    };
+  };
+
+  const handlePDFExport = async () => {
+    const toastId = toast.loading('Generating official GST PDF bill...');
+    try {
+      let billData: PaymentReceiptData | null = null;
+      try {
+        const res = await billingApi.getPaymentReceiptByInvoice(invoice.id);
+        if (res && res.ok && res.data?.data) {
+          billData = res.data.data;
+        }
+      } catch { }
+
+      if (!billData) {
+        billData = buildReceiptDataFromInvoice(invoice);
+      }
+
+      await downloadPaymentBillPdf(billData);
+      toast.success('Invoice PDF downloaded!', { id: toastId });
       setIsOpen(false);
     } catch (error) {
       console.error('PDF export error:', error);
-      toast.error('Failed to export PDF. Please try again.');
+      toast.error('Failed to export PDF. Please try again.', { id: toastId });
     }
   };
 
-  const handlePrint = () => {
-    const themeColor = flattenedSettings.theme_primary_color || flattenedSettings.primary_color || '#00f2ff';
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(`
-        <html>
-          <head>
-            <title>Invoice ${invoice.id}</title>
-            <style>
-              body { font-family: Arial, sans-serif; margin: 20px; }
-              h1 { color: ${themeColor}; border-bottom: 2px solid ${themeColor}; padding-bottom: 10px; }
-              h3 { color: ${themeColor}; margin-top: 20px; }
-              table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-              th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ccc; }
-              th { color: ${themeColor}; font-weight: bold; }
-              tr.total { border-top: 2px solid ${themeColor}; background: #f5f5f5; }
-              tr.total td { font-weight: bold; }
-              .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 20px 0; }
-              @media print { body { margin: 0; } }
-            </style>
-          </head>
-          <body>
-            <h1>INVOICE</h1>
-            
-            <div class="grid">
-              <div>
-                <p><strong>Invoice ID:</strong> ${invoice.id}</p>
-                <p><strong>Date:</strong> ${new Date(invoice.invoiceDate).toLocaleDateString()}</p>
-                <p><strong>Due Date:</strong> ${new Date(invoice.dueDate).toLocaleDateString()}</p>
-              </div>
-              <div>
-                <p><strong>Client:</strong> ${invoice.clientName}</p>
-                <p><strong>Status:</strong> ${invoice.status}</p>
-                <p><strong>Currency:</strong> ${invoice.currency}</p>
-              </div>
-            </div>
+  const handlePrint = async () => {
+    const toastId = toast.loading('Preparing print document...');
+    try {
+      let billData: PaymentReceiptData | null = null;
+      try {
+        const res = await billingApi.getPaymentReceiptByInvoice(invoice.id);
+        if (res && res.ok && res.data?.data) {
+          billData = res.data.data;
+        }
+      } catch { }
 
-            <h3>Line Items</h3>
-            <table>
-              <tr>
-                <th>Description</th>
-                <th style="text-align: center;">Qty</th>
-                <th style="text-align: right;">Unit Price</th>
-                <th style="text-align: right;">Total</th>
-              </tr>
-              ${invoice.lineItems
-          .map(
-            item => `
-                <tr>
-                  <td>${item.description}</td>
-                  <td style="text-align: center;">${item.quantity}</td>
-                  <td style="text-align: right;">$${item.unitPrice.toFixed(2)}</td>
-                  <td style="text-align: right;"><strong>$${item.total.toFixed(2)}</strong></td>
-                </tr>
-              `
-          )
-          .join('')}
-              <tr class="total">
-                <td colspan="3" style="text-align: right;">TOTAL:</td>
-                <td style="text-align: right; color: ${themeColor}; font-size: 16px;">$${invoice.amount.toFixed(2)}</td>
-              </tr>
-            </table>
+      if (!billData) {
+        billData = buildReceiptDataFromInvoice(invoice);
+      }
 
-            ${invoice.notes ? `<p><strong>Notes:</strong> ${invoice.notes}</p>` : ''}
-          </body>
-        </html>
-      `);
-      printWindow.document.close();
-      printWindow.print();
+      await printPaymentBill(billData);
+      toast.dismiss(toastId);
+      setIsOpen(false);
+    } catch (error) {
+      console.error('Print error:', error);
+      toast.error('Print failed. Please try again.', { id: toastId });
     }
-    setIsOpen(false);
   };
 
   const handleCopyDetails = () => {
     const details = `
 Invoice ${invoice.id}
 Client: ${invoice.clientName}
-Amount: $${invoice.amount.toFixed(2)}
+Amount: ₹${invoice.amount.toFixed(2)}
 Date: ${new Date(invoice.invoiceDate).toLocaleDateString()}
 Due: ${new Date(invoice.dueDate).toLocaleDateString()}
 Status: ${invoice.status}
 
 Items:
-${invoice.lineItems.map(item => `  - ${item.description}: ${item.quantity} x $${item.unitPrice.toFixed(2)} = $${item.total.toFixed(2)}`).join('\n')}
+${invoice.lineItems.map(item => `  - ${item.description}: ${item.quantity} x ₹${item.unitPrice.toFixed(2)} = ₹${item.total.toFixed(2)}`).join('\n')}
 
-Total: $${invoice.amount.toFixed(2)}
+Total: ₹${invoice.amount.toFixed(2)}
     `.trim();
 
     navigator.clipboard.writeText(details).then(() => {
@@ -288,20 +246,18 @@ Total: $${invoice.amount.toFixed(2)}
 
   const isVoid = invoice.status?.toLowerCase() === 'void' || (invoice as any).is_active === false;
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     if (!onDelete) return;
+    setShowConfirmModal(true);
+    setIsOpen(false);
+  };
 
-    if (!confirm(isVoid
-      ? `Reactivate invoice ${invoice.id}?`
-      : `Void / deactivate invoice ${invoice.id}? Records and line items will be preserved in history.`
-    )) {
-      return;
-    }
-
+  const handleConfirmAction = async () => {
+    if (!onDelete) return;
     try {
       setIsDeleting(true);
       await onDelete(invoice.id);
-      setIsOpen(false);
+      setShowConfirmModal(false);
     } catch (error) {
       console.error('Error modifying invoice status:', error);
       toast.error('Failed to update invoice status. Please try again.');
@@ -426,6 +382,19 @@ Total: $${invoice.amount.toFixed(2)}
           </motion.div>
         )}
       </AnimatePresence>
+
+      <ConfirmModal
+        isOpen={showConfirmModal}
+        title={isVoid ? `Reactivate Invoice` : `Void / Deactivate Invoice`}
+        message={isVoid
+          ? `Reactivate invoice ${invoice.id}?`
+          : `Void / deactivate invoice ${invoice.id}? Records and line items will be preserved in history.`}
+        confirmText={isVoid ? 'Reactivate' : 'Void Invoice'}
+        variant={isVoid ? 'primary' : 'danger'}
+        isLoading={isDeleting}
+        onConfirm={handleConfirmAction}
+        onCancel={() => setShowConfirmModal(false)}
+      />
     </div>
   );
 }

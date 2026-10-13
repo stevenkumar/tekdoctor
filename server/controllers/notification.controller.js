@@ -11,18 +11,37 @@ const getNotifications = async (req, res, next) => {
   try {
     connection = await pool.getConnection();
     const userId = req.user.id;
+    const { limit } = req.query;
 
-    const [rows] = await connection.query(
-      `SELECT n.*, u.name as sender_name, u.email as sender_email, sr.ticket_number
+    let query = `SELECT n.*, u.name as sender_name, u.email as sender_email, sr.ticket_number
        FROM notifications n
        LEFT JOIN users u ON n.sender_id = u.id
        LEFT JOIN service_requests sr ON n.ticket_id = sr.id
        WHERE n.user_id = ?
-       ORDER BY n.created_at DESC`,
+       ORDER BY n.created_at DESC`;
+    const params = [userId];
+
+    if (limit !== undefined) {
+      const parsedLimit = parseInt(limit, 10);
+      if (!isNaN(parsedLimit) && parsedLimit > 0) {
+        const safeLimit = Math.min(parsedLimit, 100);
+        query += ' LIMIT ?';
+        params.push(safeLimit);
+      }
+    }
+
+    const [rows] = await connection.query(query, params);
+
+    // Fast indexed unread count (hits idx_notif_user_read)
+    const [[{ unreadCount }]] = await connection.query(
+      'SELECT COUNT(*) as unreadCount FROM notifications WHERE user_id = ? AND is_read = 0',
       [userId]
     );
 
-    return res.status(200).json(formatResponse(true, 'Notifications fetched successfully.', rows));
+    const response = formatResponse(true, 'Notifications fetched successfully.', rows);
+    response.unreadCount = Number(unreadCount || 0);
+
+    return res.status(200).json(response);
   } catch (error) {
     next(error);
   } finally {
@@ -104,6 +123,37 @@ const clearAllNotifications = async (req, res, next) => {
 
     await connection.query('DELETE FROM notifications WHERE user_id = ?', [userId]);
     return res.status(200).json(formatResponse(true, 'All notifications cleared.'));
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
+ * POST /api/notifications/bulk-delete
+ * Admin bulk deletes notification records
+ */
+const bulkDeleteNotifications = async (req, res, next) => {
+  let connection;
+  try {
+    const { ids } = req.body;
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json(formatResponse(false, 'Please provide an array of notification IDs to delete.'));
+    }
+
+    const validIds = ids.map(id => Number(id)).filter(id => !isNaN(id) && id > 0);
+    if (validIds.length === 0) {
+      return res.status(400).json(formatResponse(false, 'No valid notification IDs provided.'));
+    }
+
+    connection = await pool.getConnection();
+    const [result] = await connection.query('DELETE FROM notifications WHERE id IN (?)', [validIds]);
+
+    logger.info(`Admin ${req.user.id} bulk deleted ${result.affectedRows} notifications.`);
+    return res.status(200).json(formatResponse(true, `${result.affectedRows} notification(s) deleted successfully.`, {
+      deletedCount: result.affectedRows
+    }));
   } catch (error) {
     next(error);
   } finally {
@@ -222,6 +272,7 @@ module.exports = {
   getNotifications,
   markAsRead,
   deleteNotification,
+  bulkDeleteNotifications,
   clearAllNotifications,
   sendNotification,
   broadcastNotification,

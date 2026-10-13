@@ -4,6 +4,7 @@ import { ROUTES } from '../config/routes';
 import { appConfig } from '../config/appConfig';
 import { useSiteContext } from '../context/SiteContext';
 import { getMediaUrl } from '../utils/media';
+import { FacebookIcon, TwitterIcon, InstagramIcon, LinkedinIcon } from '../components/SocialIcons';
 
 const Footer = () => {
   const { flattenedSettings } = useSiteContext();
@@ -25,7 +26,12 @@ const Footer = () => {
               </div>
             )}
             {flattenedSettings.company_email && <p className="text-zinc-400 text-xs mt-1">E: {flattenedSettings.company_email}</p>}
-            {flattenedSettings.company_phone && <p className="text-zinc-400 text-xs mt-0.5">P: {flattenedSettings.company_phone}</p>}
+            {flattenedSettings.company_phone && (
+              <p className="text-zinc-400 text-xs mt-0.5">
+                P: {flattenedSettings.company_phone}
+                {flattenedSettings.company_alternate_phone ? ` / ${flattenedSettings.company_alternate_phone}` : ''}
+              </p>
+            )}
             <p className="text-zinc-500 text-xs mt-2">&copy; {new Date().getFullYear()} {appName}. All rights reserved.</p>
           </div>
 
@@ -38,23 +44,23 @@ const Footer = () => {
 
           <div className="flex gap-4">
             {flattenedSettings.facebook_url && (
-              <a href={flattenedSettings.facebook_url} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-400 hover:border-neon-cyan hover:text-neon-cyan transition-all cursor-pointer">
-                <span className="text-xs">FB</span>
+              <a href={flattenedSettings.facebook_url} target="_blank" rel="noreferrer" aria-label="Facebook" className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-400 hover:border-neon-cyan hover:text-neon-cyan transition-all cursor-pointer">
+                <FacebookIcon size={16} />
               </a>
             )}
             {flattenedSettings.twitter_url && (
-              <a href={flattenedSettings.twitter_url} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-400 hover:border-neon-cyan hover:text-neon-cyan transition-all cursor-pointer">
-                <span className="text-xs">X</span>
+              <a href={flattenedSettings.twitter_url} target="_blank" rel="noreferrer" aria-label="Twitter / X" className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-400 hover:border-neon-cyan hover:text-neon-cyan transition-all cursor-pointer">
+                <TwitterIcon size={16} />
               </a>
             )}
             {flattenedSettings.instagram_url && (
-              <a href={flattenedSettings.instagram_url} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-400 hover:border-neon-cyan hover:text-neon-cyan transition-all cursor-pointer">
-                <span className="text-xs">IG</span>
+              <a href={flattenedSettings.instagram_url} target="_blank" rel="noreferrer" aria-label="Instagram" className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-400 hover:border-neon-cyan hover:text-neon-cyan transition-all cursor-pointer">
+                <InstagramIcon size={16} />
               </a>
             )}
             {flattenedSettings.linkedin_url && (
-              <a href={flattenedSettings.linkedin_url} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-400 hover:border-neon-cyan hover:text-neon-cyan transition-all cursor-pointer">
-                <span className="text-xs">IN</span>
+              <a href={flattenedSettings.linkedin_url} target="_blank" rel="noreferrer" aria-label="LinkedIn" className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-400 hover:border-neon-cyan hover:text-neon-cyan transition-all cursor-pointer">
+                <LinkedinIcon size={16} />
               </a>
             )}
           </div>

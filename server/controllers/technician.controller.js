@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const { pool } = require('../config/db.config');
 const { formatResponse, generateTechnicianId } = require('../utils/helpers');
+const { normalizePhoneNumber } = require('../middleware/validate.middleware');
 const logger = require('../utils/logger');
 const { logActivity } = require('../utils/activity.logger');
 
@@ -43,8 +44,10 @@ const createTechnician = async (req, res, next) => {
     const { name, email, password, phone } = req.body;
     let connection;
     try {
-        if (!name || !email || !password) {
-            return res.status(400).json(formatResponse(false, 'Name, email, and password are required.'));
+        const cleanPhone = phone ? normalizePhoneNumber(phone) : '';
+        const cleanEmail = email ? email.trim().toLowerCase() : '';
+        if (!name || !cleanEmail || !password || !cleanPhone) {
+            return res.status(400).json(formatResponse(false, 'Name, email, password, and phone number are required.'));
         }
 
         if (password.length < 8) {
@@ -53,13 +56,26 @@ const createTechnician = async (req, res, next) => {
 
         connection = await pool.getConnection();
 
-        // Check for duplicate email
-        const [existing] = await connection.query(
+        // Check for duplicate email across all users
+        const [existingEmail] = await connection.query(
             'SELECT id FROM users WHERE email = ? LIMIT 1',
-            [email]
+            [cleanEmail]
         );
-        if (existing.length > 0) {
-            return res.status(400).json(formatResponse(false, 'An account with this email already exists.'));
+        if (existingEmail.length > 0) {
+            const resp = formatResponse(false, 'This email address is already registered. Please use a different email address.');
+            resp.errors = { email: 'This email address is already registered. Please use a different email address.' };
+            return res.status(400).json(resp);
+        }
+
+        // Check for duplicate phone across all users
+        const [existingPhone] = await connection.query(
+            'SELECT id FROM users WHERE phone = ? LIMIT 1',
+            [cleanPhone]
+        );
+        if (existingPhone.length > 0) {
+            const resp = formatResponse(false, 'This phone number is already registered. Please use a different phone number.');
+            resp.errors = { phone: 'This phone number is already registered. Please use a different phone number.' };
+            return res.status(400).json(resp);
         }
 
         const salt = await bcrypt.genSalt(12);
@@ -69,16 +85,16 @@ const createTechnician = async (req, res, next) => {
 
         const [result] = await connection.query(
             'INSERT INTO users (name, email, password, role, technician_id, phone) VALUES (?, ?, ?, ?, ?, ?)',
-            [name, email, hashedPassword, 'technician', technicianId, phone || null]
+            [name.trim(), cleanEmail, hashedPassword, 'technician', technicianId, cleanPhone]
         );
 
-        logger.info(`Technician account created by admin: ${email} (ID: ${result.insertId}, TechID: ${technicianId})`);
+        logger.info(`Technician account created by admin: ${cleanEmail} (ID: ${result.insertId}, TechID: ${technicianId})`);
         return res.status(201).json(formatResponse(true, 'Technician account created successfully.', {
             id: result.insertId,
             technician_id: technicianId,
-            name,
-            email,
-            phone,
+            name: name.trim(),
+            email: cleanEmail,
+            phone: cleanPhone,
             role: 'technician'
         }));
 
@@ -143,6 +159,12 @@ const updateTechnician = async (req, res, next) => {
     const { name, email, phone } = req.body;
     let connection;
     try {
+        const cleanPhone = phone ? normalizePhoneNumber(phone) : '';
+        const cleanEmail = email ? email.trim().toLowerCase() : '';
+        if (!name || !cleanEmail || !cleanPhone) {
+            return res.status(400).json(formatResponse(false, 'Name, email, and phone number are required.'));
+        }
+
         connection = await pool.getConnection();
 
         const [rows] = await connection.query(
@@ -153,9 +175,31 @@ const updateTechnician = async (req, res, next) => {
             return res.status(404).json(formatResponse(false, 'Technician not found.'));
         }
 
+        // Check if email already exists for another user
+        const [existingEmail] = await connection.query(
+            'SELECT id FROM users WHERE email = ? AND id != ? LIMIT 1',
+            [cleanEmail, id]
+        );
+        if (existingEmail.length > 0) {
+            const resp = formatResponse(false, 'This email address is already registered. Please use a different email address.');
+            resp.errors = { email: 'This email address is already registered. Please use a different email address.' };
+            return res.status(400).json(resp);
+        }
+
+        // Check if phone already exists for another user
+        const [existingPhone] = await connection.query(
+            'SELECT id FROM users WHERE phone = ? AND id != ? LIMIT 1',
+            [cleanPhone, id]
+        );
+        if (existingPhone.length > 0) {
+            const resp = formatResponse(false, 'This phone number is already registered. Please use a different phone number.');
+            resp.errors = { phone: 'This phone number is already registered. Please use a different phone number.' };
+            return res.status(400).json(resp);
+        }
+
         await connection.query(
             'UPDATE users SET name = ?, email = ?, phone = ? WHERE id = ?',
-            [name, email, phone || null, id]
+            [name.trim(), cleanEmail, cleanPhone, id]
         );
 
         logger.info(`Technician updated by admin: ID ${id}`);
@@ -283,7 +327,8 @@ const getTechnicianWorkload = async (req, res, next) => {
                 COUNT(*) as total,
                 SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
                 SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress,
-                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed
+                SUM(CASE WHEN status IN ('completed', 'delivered') THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as delivered
             FROM service_requests WHERE assigned_technician_id = ?
         `, [id]);
 

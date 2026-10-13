@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { adminApi } from '@/services/api';
-import { BarChart3, Loader2, Download, Filter, FileText, Calendar as CalIcon } from 'lucide-react';
+import { BarChart3, Loader2, Download, Filter, FileText, Calendar as CalIcon, AlertTriangle, RotateCcw } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from 'recharts';
 
 export default function ReportsAnalytics() {
     const { token } = useAuth();
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
     const [reportType, setReportType] = useState<'monthly' | 'daily'>('monthly');
     const [data, setData] = useState<any>(null);
 
@@ -16,11 +17,39 @@ export default function ReportsAnalytics() {
     const fetchData = async () => {
         if (!token) return;
         setLoading(true);
-        const res = await adminApi.getReports(token, reportType, startDate || undefined, endDate || undefined);
-        if (res.ok && res.data) {
-            setData((res.data as any).data);
+        setError(null);
+        try {
+            const res = await adminApi.getReports(token, reportType, startDate || undefined, endDate || undefined);
+            if (res.ok && res.data) {
+                setData((res.data as any).data);
+            } else {
+                setError((res.data as any)?.message || 'Failed to fetch reports');
+            }
+        } catch (err: any) {
+            setError(err?.message || 'Error connecting to reports service');
+        } finally {
+            setLoading(false);
         }
-        setLoading(false);
+    };
+
+    const handleReset = async () => {
+        setStartDate('');
+        setEndDate('');
+        if (!token) return;
+        setLoading(true);
+        setError(null);
+        try {
+            const res = await adminApi.getReports(token, reportType);
+            if (res.ok && res.data) {
+                setData((res.data as any).data);
+            } else {
+                setError((res.data as any)?.message || 'Failed to fetch reports');
+            }
+        } catch (err: any) {
+            setError(err?.message || 'Error connecting to reports service');
+        } finally {
+            setLoading(false);
+        }
     };
 
     useEffect(() => {
@@ -28,11 +57,10 @@ export default function ReportsAnalytics() {
     }, [token, reportType]);
 
     const handleExport = () => {
-        // Simplified export for demo
-        if (!data) return;
+        if (!data || !data.repairStats || data.repairStats.length === 0) return;
         const csvContent = "data:text/csv;charset=utf-8,"
-            + "Date,Total,Completed,Cancelled,Revenue\n"
-            + data.repairStats.map((row: any) => `${row.date || row.period},${row.total},${row.completed},${row.cancelled},${row.revenue || 0}`).join("\n");
+            + "Period,Total Requests,Completed,Cancelled,Collected Revenue (INR),Billed Revenue (INR)\n"
+            + data.repairStats.map((row: any) => `${row.period || row.date || row.month},${row.total},${row.completed},${row.cancelled},${row.revenue ?? row.collectedRevenue ?? 0},${row.billedRevenue ?? 0}`).join("\n");
         const encodedUri = encodeURI(csvContent);
         const link = document.createElement("a");
         link.setAttribute("href", encodedUri);
@@ -51,23 +79,35 @@ export default function ReportsAnalytics() {
                     </h1>
                     <p className="text-xs text-zinc-500 mt-1">Generate and export platform metrics</p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                    <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 p-1 rounded-xl">
-                        <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="bg-transparent text-xs text-zinc-300 px-2 py-1 focus:outline-none" />
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 bg-zinc-900 border border-zinc-800 p-1.5 rounded-xl w-full sm:w-auto">
+                        <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="bg-transparent text-xs text-zinc-300 px-2 py-1 focus:outline-none flex-1 sm:flex-none" />
                         <span className="text-zinc-600">-</span>
-                        <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="bg-transparent text-xs text-zinc-300 px-2 py-1 focus:outline-none" />
-                        <button onClick={fetchData} className="bg-neon-cyan text-black px-3 py-1 rounded-lg text-xs font-bold hover:bg-neon-cyan transition-colors">Apply</button>
+                        <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="bg-transparent text-xs text-zinc-300 px-2 py-1 focus:outline-none flex-1 sm:flex-none" />
+                        <button onClick={fetchData} className="bg-neon-cyan text-black px-3 py-1 rounded-lg text-xs font-bold hover:bg-neon-cyan transition-colors cursor-pointer">Apply</button>
+                        {(startDate || endDate) && (
+                            <button onClick={handleReset} title="Reset date filters" className="text-zinc-400 hover:text-white px-2 py-1 text-xs flex items-center gap-1 transition-colors cursor-pointer">
+                                <RotateCcw size={12} /> Reset
+                            </button>
+                        )}
                     </div>
 
                     <div className="bg-zinc-900/40 p-1 rounded-xl border border-zinc-900 flex text-xs font-semibold">
                         <button onClick={() => setReportType('daily')} className={`px-4 py-2 rounded-lg transition-all ${reportType === 'daily' ? 'bg-neon-cyan text-black' : 'text-zinc-400 hover:text-white'}`}>Daily</button>
                         <button onClick={() => setReportType('monthly')} className={`px-4 py-2 rounded-lg transition-all ${reportType === 'monthly' ? 'bg-neon-cyan text-black' : 'text-zinc-400 hover:text-white'}`}>Monthly</button>
                     </div>
-                    <button onClick={handleExport} disabled={!data || data.length === 0} className="flex items-center gap-2 px-4 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs font-semibold text-zinc-300 hover:text-white hover:border-neon-cyan/30 transition-all cursor-pointer disabled:opacity-50">
+                    <button onClick={handleExport} disabled={!data || !data.repairStats || data.repairStats.length === 0} className="flex items-center gap-2 px-4 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs font-semibold text-zinc-300 hover:text-white hover:border-neon-cyan/30 transition-all cursor-pointer disabled:opacity-50">
                         <Download size={14} />Export CSV
                     </button>
                 </div>
             </div>
+
+            {error && (
+                <div className="flex items-center gap-3 p-4 bg-red-950/40 border border-red-800/60 rounded-xl text-sm text-red-200">
+                    <AlertTriangle size={18} className="text-red-400 flex-shrink-0" />
+                    <span>{error}</span>
+                </div>
+            )}
 
             {loading ? (
                 <div className="min-h-[40vh] flex items-center justify-center"><Loader2 className="w-8 h-8 text-neon-cyan animate-spin" /></div>
@@ -83,9 +123,9 @@ export default function ReportsAnalytics() {
                                 <ResponsiveContainer width="100%" height="100%">
                                     <LineChart data={data.repairStats}>
                                         <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                                        <XAxis dataKey={reportType === 'daily' ? 'date' : 'month'} stroke="#71717a" fontSize={12} tickMargin={10} />
-                                        <YAxis stroke="#71717a" fontSize={12} tickFormatter={(val) => `$${val}`} />
-                                        <Tooltip contentStyle={{ backgroundColor: '#09090b', borderColor: '#27272a', borderRadius: '8px' }} />
+                                        <XAxis dataKey="period" stroke="#71717a" fontSize={12} tickMargin={10} />
+                                        <YAxis stroke="#71717a" fontSize={12} tickFormatter={(val) => `₹${Number(val).toLocaleString('en-IN')}`} />
+                                        <Tooltip contentStyle={{ backgroundColor: '#09090b', borderColor: '#27272a', borderRadius: '8px' }} formatter={(val: any) => [`₹${Number(val || 0).toLocaleString('en-IN')}`, 'Revenue']} />
                                         <Line type="monotone" dataKey="revenue" stroke="#22d3ee" strokeWidth={3} dot={{ r: 4, fill: '#22d3ee' }} activeDot={{ r: 6 }} />
                                     </LineChart>
                                 </ResponsiveContainer>
@@ -98,7 +138,7 @@ export default function ReportsAnalytics() {
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={data.repairStats}>
                                         <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                                        <XAxis dataKey={reportType === 'daily' ? 'date' : 'month'} stroke="#71717a" fontSize={12} tickMargin={10} />
+                                        <XAxis dataKey="period" stroke="#71717a" fontSize={12} tickMargin={10} />
                                         <YAxis stroke="#71717a" fontSize={12} />
                                         <Tooltip contentStyle={{ backgroundColor: '#09090b', borderColor: '#27272a', borderRadius: '8px' }} cursor={{ fill: '#27272a', opacity: 0.4 }} />
                                         <Legend />
@@ -116,24 +156,24 @@ export default function ReportsAnalytics() {
                             <Filter size={14} className="text-zinc-500" />
                         </div>
                         <div className="overflow-x-auto">
-                            <table className="w-full border-collapse text-left">
+                            <table className="w-full min-w-[620px] border-collapse text-left">
                                 <thead>
                                     <tr className="border-b border-zinc-900 bg-zinc-950/40 text-[10px] font-mono font-semibold uppercase tracking-wider text-zinc-500">
                                         <th className="p-4">Period</th>
                                         <th className="p-4">Total Requests</th>
                                         <th className="p-4">Completed</th>
                                         <th className="p-4">Cancelled</th>
-                                        <th className="p-4 text-emerald-400">Est. Revenue</th>
+                                        <th className="p-4 text-emerald-400">Collected Revenue (₹)</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-zinc-900/50">
                                     {data.repairStats.map((row: any, i: number) => (
                                         <tr key={i} className="hover:bg-zinc-900/30 transition-colors">
-                                            <td className="p-4 text-xs font-mono text-white font-bold">{row.date || row.month}</td>
+                                            <td className="p-4 text-xs font-mono text-white font-bold">{row.date || row.month || row.period}</td>
                                             <td className="p-4 text-sm text-zinc-300">{row.total}</td>
                                             <td className="p-4 text-sm text-emerald-400">{row.completed}</td>
                                             <td className="p-4 text-sm text-red-400">{row.cancelled}</td>
-                                            <td className="p-4 text-sm text-zinc-300 font-mono">${row.revenue || 0}</td>
+                                            <td className="p-4 text-sm text-zinc-300 font-mono">₹{Number(row.revenue ?? row.collectedRevenue ?? 0).toLocaleString('en-IN')}</td>
                                         </tr>
                                     ))}
                                 </tbody>

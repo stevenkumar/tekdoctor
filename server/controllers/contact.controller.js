@@ -7,15 +7,35 @@ const { sendAdminNotification } = require('../utils/email.utils');
  * Submit contact form details
  */
 const submitContactForm = async (req, res, next) => {
-  const { name, email, phone, message } = req.body;
+  const { name, email, phone, subject, message } = req.body;
   let connection;
 
   try {
     connection = await pool.getConnection();
 
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanPhone = (phone || '').trim();
+    const cleanMsg = (message || '').trim();
+    const cleanSubject = (subject || '').trim() || null;
+
+    const [recent] = await connection.query(
+      `SELECT id FROM contacts 
+       WHERE email = ? AND phone = ? AND message = ? 
+         AND created_at >= NOW() - INTERVAL 60 SECOND 
+       LIMIT 1`,
+      [cleanEmail, cleanPhone, cleanMsg]
+    );
+    if (recent.length > 0) {
+      logger.info(`Duplicate contact form submission prevented for ${name} (${cleanEmail})`);
+      return res.status(200).json(formatResponse(true, "You have already submitted this message. We'll contact you shortly.", {
+        contactId: recent[0].id,
+        alreadySubmitted: true
+      }));
+    }
+
     const [result] = await connection.query(
-      'INSERT INTO contacts (name, email, phone, message) VALUES (?, ?, ?, ?)',
-      [name, email, phone, message]
+      'INSERT INTO contacts (name, email, phone, message, subject) VALUES (?, ?, ?, ?, ?)',
+      [name, cleanEmail, cleanPhone, cleanMsg, cleanSubject]
     );
 
     const contactId = result.insertId;

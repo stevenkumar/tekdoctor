@@ -17,7 +17,7 @@ export default function ProtectedCompanyRoute() {
         return <Navigate to={ROUTES.SIGN_IN} replace />;
     }
 
-    if (!hasRole('company')) {
+    if (!hasRole('company') && !hasRole('admin')) {
         return <Navigate to={ROUTES.HOME} replace />;
     }
 

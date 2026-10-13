@@ -1,41 +1,46 @@
 import React, { useState } from "react";
 import { motion } from "framer-motion";
-import { AlertCircle, CheckCircle } from "lucide-react";
+import { AlertCircle, CheckCircle, Mail, Phone, MapPin, ExternalLink } from "lucide-react";
+import { InstagramIcon, FacebookIcon, TwitterIcon, LinkedinIcon } from "@/components/SocialIcons";
 import { contactApi } from "@/services/api";
-import { VALIDATION, isValidEmail, isValidPhone } from "@/config/constants";
+import { VALIDATION, isValidEmail, validateName, validateMessage } from "@/config/constants";
 import { useSiteContext } from "@/context/SiteContext";
+import PhoneInput from "@/components/PhoneInput";
+import { validatePhoneNumber, parsePhoneNumber, DEFAULT_COUNTRY } from "@/utils/phoneUtils";
+import { getRecaptchaToken } from "@/utils/recaptcha";
 
 type Fields = "name" | "email" | "phone" | "message";
 
 function validateContact(data: Record<Fields, string>) {
   const errors: Partial<Record<Fields, string>> = {};
 
-  // name: required, min/max bounds
-  if (!data.name.trim()) errors.name = "Full name is required.";
-  else if (data.name.trim().length < VALIDATION.CONTACT.NAME_MIN_LENGTH)
-    errors.name = `Name must be at least ${VALIDATION.CONTACT.NAME_MIN_LENGTH} characters.`;
-  else if (data.name.trim().length > VALIDATION.CONTACT.NAME_MAX_LENGTH)
-    errors.name = `Name must be under ${VALIDATION.CONTACT.NAME_MAX_LENGTH} characters.`;
-  else if (!/^[a-zA-Z\s'-]+$/.test(data.name.trim()))
-    errors.name =
-      "Name can only contain letters, spaces, hyphens and apostrophes.";
+  // name: required, min 2, max 50, letters/spaces/hyphens/apostrophes only
+  const nameVal = validateName(data.name, "Full name");
+  if (!nameVal.isValid) {
+    errors.name = nameVal.error;
+  }
 
   // email: required, valid format
   if (!data.email.trim()) errors.email = "Email address is required.";
   else if (!isValidEmail(data.email))
-    errors.email = "Enter a valid email address (e.g. you@example.com).";
+    errors.email = "Invalid email address. Please enter a valid email address.";
 
-  // phone: required, valid format
-  if (!data.phone.trim()) errors.phone = "Phone number is required.";
-  else if (!isValidPhone(data.phone))
-    errors.phone = "Phone must contain 10–15 digits (numbers only).";
+  // phone: validate with country rules
+  if (!data.phone || !data.phone.trim()) {
+    errors.phone = "Phone number is required.";
+  } else {
+    const { country, nationalNumber } = parsePhoneNumber(data.phone, DEFAULT_COUNTRY);
+    const phoneRes = validatePhoneNumber(nationalNumber, country);
+    if (!phoneRes.isValid) {
+      errors.phone = phoneRes.error || "Invalid phone number. Please enter a valid phone number with country code.";
+    }
+  }
 
-  // message: required, min/max bounds
-  if (!data.message.trim()) errors.message = "Message is required.";
-  else if (data.message.trim().length < VALIDATION.CONTACT.MESSAGE_MIN_LENGTH)
-    errors.message = `Message must be at least ${VALIDATION.CONTACT.MESSAGE_MIN_LENGTH} characters.`;
-  else if (data.message.trim().length > VALIDATION.CONTACT.MESSAGE_MAX_LENGTH)
-    errors.message = `Message must be under ${VALIDATION.CONTACT.MESSAGE_MAX_LENGTH} characters.`;
+  // message: required, min 10, max 500
+  const msgVal = validateMessage(data.message, "Message", VALIDATION.CONTACT.MESSAGE_MIN_LENGTH, VALIDATION.CONTACT.MESSAGE_MAX_LENGTH);
+  if (!msgVal.isValid) {
+    errors.message = msgVal.error;
+  }
 
   return errors;
 }
@@ -121,11 +126,13 @@ const Contact = () => {
 
     setLoading(true);
     try {
+      const recaptchaToken = await getRecaptchaToken('contact_us');
       const result = await contactApi.submitForm({
         name: formData.name.trim(),
         email: formData.email.trim(),
         phone: formData.phone.trim(),
         message: formData.message.trim(),
+        recaptchaToken,
       });
 
       if (!result.ok) {
@@ -154,6 +161,12 @@ const Contact = () => {
       setFormData(emptyForm);
       setTouched(emptyTouched);
       setFieldErrors({});
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to send message. Please try again.';
+      setStatus({
+        type: 'error',
+        message: msg,
+      });
     } finally {
       setLoading(false);
     }
@@ -213,27 +226,27 @@ const Contact = () => {
                     onBlur={() => handleBlur("name")}
                     className={inputClass("name")}
                     placeholder="Enter your full name"
-                    maxLength={100}
+                    maxLength={VALIDATION.CONTACT.NAME_MAX_LENGTH}
                   />
                   <FieldError msg={touched.name ? fieldErrors.name : undefined} />
                 </div>
 
-                {/* Mobile Number */}
+                {/* Mobile Number with Country Code */}
                 <div>
-                  <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
-                    Phone Number <span className="text-red-400">*</span>
-                  </label>
-                  <input
-                    type="tel"
+                  <PhoneInput
+                    id="phone"
                     name="phone"
+                    label="Phone Number"
+                    required
                     value={formData.phone}
-                    onChange={handleChange}
+                    onChange={(normalized) => {
+                      const updated = { ...formData, phone: normalized };
+                      setFormData(updated);
+                      if (touched.phone) setFieldErrors(validate(updated));
+                    }}
                     onBlur={() => handleBlur("phone")}
-                    className={inputClass("phone")}
-                    placeholder="+91 98765 43210"
-                    maxLength={15}
+                    error={touched.phone ? fieldErrors.phone : undefined}
                   />
-                  <FieldError msg={touched.phone ? fieldErrors.phone : undefined} />
                 </div>
 
                 {/* Email */}
@@ -253,8 +266,6 @@ const Contact = () => {
                   <FieldError msg={touched.email ? fieldErrors.email : undefined} />
                 </div>
 
-
-
                 {/* Problem Description */}
                 <div>
                   <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
@@ -268,20 +279,20 @@ const Contact = () => {
                     onBlur={() => handleBlur("message")}
                     className={inputClass("message")}
                     placeholder="Tell us about your needs..."
-                    maxLength={2000}
+                    maxLength={VALIDATION.CONTACT.MESSAGE_MAX_LENGTH}
                   />
                   <div className="flex items-start justify-between mt-1">
                     <FieldError msg={touched.message ? fieldErrors.message : undefined} />
                     <span
-                      className={`text-[10px] font-mono ml-auto ${formData.message.length > 0 &&
-                        formData.message.length < 10
-                        ? "text-red-400"
-                        : formData.message.length >= 1800
+                      className={`text-[10px] font-mono ml-auto ${
+                        formData.message.length > 0 && formData.message.length < 10
+                          ? "text-red-400"
+                          : formData.message.length >= 450
                           ? "text-yellow-400"
                           : "text-zinc-600"
-                        }`}
+                      }`}
                     >
-                      {formData.message.length}/2000
+                      {formData.message.length} / {VALIDATION.CONTACT.MESSAGE_MAX_LENGTH}
                     </span>
                   </div>
                 </div>
@@ -302,10 +313,8 @@ const Contact = () => {
                 <h3 className="text-xl font-bold mb-6">Get in Touch</h3>
                 <div className="space-y-4">
                   <div className="flex items-start gap-4">
-                    <div className="p-2 bg-zinc-800 rounded-lg">
-                      <svg className="w-5 h-5 text-neon-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                      </svg>
+                    <div className="p-2 bg-zinc-800 rounded-lg text-neon-cyan">
+                      <Mail size={20} />
                     </div>
                     <div>
                       <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-1">Email</p>
@@ -313,22 +322,22 @@ const Contact = () => {
                     </div>
                   </div>
                   <div className="flex items-start gap-4">
-                    <div className="p-2 bg-zinc-800 rounded-lg">
-                      <svg className="w-5 h-5 text-neon-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                      </svg>
+                    <div className="p-2 bg-zinc-800 rounded-lg text-neon-cyan">
+                      <Phone size={20} />
                     </div>
                     <div>
                       <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-1">Phone</p>
                       <p className="text-sm">{flattenedSettings.company_phone || "+91 9029073477"}</p>
+                      {flattenedSettings.company_alternate_phone && flattenedSettings.company_alternate_phone.trim() !== '' && (
+                        <p className="text-sm text-zinc-400 mt-1 flex items-center gap-1.5 font-mono text-xs">
+                          <span className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">Alt:</span> {flattenedSettings.company_alternate_phone}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-start gap-4">
-                    <div className="p-2 bg-zinc-800 rounded-lg">
-                      <svg className="w-5 h-5 text-neon-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                      </svg>
+                    <div className="p-2 bg-zinc-800 rounded-lg text-neon-cyan">
+                      <MapPin size={20} />
                     </div>
                     <div>
                       <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-1">Address</p>
@@ -349,7 +358,7 @@ const Contact = () => {
                           rel="noopener noreferrer"
                           className="inline-flex items-center gap-1.5 text-xs text-neon-cyan hover:text-white transition-colors mt-2"
                         >
-                          View on Google Maps &rarr;
+                          View on Google Maps <ExternalLink size={12} />
                         </a>
                       )}
                     </div>
@@ -360,26 +369,49 @@ const Contact = () => {
               {/* Social Links */}
               <div className="bg-zinc-900/50 p-8 rounded-xl border border-zinc-800">
                 <h3 className="text-xl font-bold mb-6">Follow Us</h3>
-                <div className="flex gap-4">
+                <div className="flex flex-wrap gap-4">
                   {flattenedSettings.instagram_url && (
-                    <a href={flattenedSettings.instagram_url} target="_blank" rel="noopener noreferrer" className="w-10 h-10 bg-zinc-800 rounded-lg flex items-center justify-center hover:bg-neon-cyan transition-colors">
-                      <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.07 1.645.07 4.85s-.012 3.584-.07 4.85c-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.85s.012-3.584.07-4.85c.148-3.227 1.664-4.771 4.919-4.919 1.265-.057 1.645-.07 4.85-.07z" />
-                      </svg>
+                    <a
+                      href={flattenedSettings.instagram_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-10 h-10 bg-zinc-800 rounded-lg flex items-center justify-center text-zinc-300 hover:bg-neon-cyan hover:text-black transition-all cursor-pointer group"
+                      aria-label="Follow us on Instagram"
+                    >
+                      <InstagramIcon size={20} className="transition-transform group-hover:scale-110" />
                     </a>
                   )}
                   {flattenedSettings.facebook_url && (
-                    <a href={flattenedSettings.facebook_url} target="_blank" rel="noopener noreferrer" className="w-10 h-10 bg-zinc-800 rounded-lg flex items-center justify-center hover:bg-neon-cyan transition-colors">
-                      <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M24 12.073C24 5.404 18.627 0 12 0S0 5.404 0 12.073c0 6.019 4.388 11.009 10.125 11.927v-8.437H7.078v-3.49h3.047V9.413c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953h-1.514c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.49h-2.796V24C19.612 23.082 24 18.092 24 12.073z" />
-                      </svg>
+                    <a
+                      href={flattenedSettings.facebook_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-10 h-10 bg-zinc-800 rounded-lg flex items-center justify-center text-zinc-300 hover:bg-neon-cyan hover:text-black transition-all cursor-pointer group"
+                      aria-label="Follow us on Facebook"
+                    >
+                      <FacebookIcon size={20} className="transition-transform group-hover:scale-110" />
+                    </a>
+                  )}
+                  {flattenedSettings.twitter_url && (
+                    <a
+                      href={flattenedSettings.twitter_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-10 h-10 bg-zinc-800 rounded-lg flex items-center justify-center text-zinc-300 hover:bg-neon-cyan hover:text-black transition-all cursor-pointer group"
+                      aria-label="Follow us on Twitter / X"
+                    >
+                      <TwitterIcon size={20} className="transition-transform group-hover:scale-110" />
                     </a>
                   )}
                   {flattenedSettings.linkedin_url && (
-                    <a href={flattenedSettings.linkedin_url} target="_blank" rel="noopener noreferrer" className="w-10 h-10 bg-zinc-800 rounded-lg flex items-center justify-center hover:bg-neon-cyan transition-colors">
-                      <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452z" />
-                      </svg>
+                    <a
+                      href={flattenedSettings.linkedin_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-10 h-10 bg-zinc-800 rounded-lg flex items-center justify-center text-zinc-300 hover:bg-neon-cyan hover:text-black transition-all cursor-pointer group"
+                      aria-label="Follow us on LinkedIn"
+                    >
+                      <LinkedinIcon size={20} className="transition-transform group-hover:scale-110" />
                     </a>
                   )}
                 </div>

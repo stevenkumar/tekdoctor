@@ -9,6 +9,7 @@ import { adminApi, technicianApi, repairApi } from '@/services/api';
 import type { TaskTransfer, TechnicianUser, ServiceRequest } from '@/services/api';
 import { useAuth } from '@/context/AuthContext';
 import { toast } from 'react-hot-toast';
+import SideDrawer from '@/components/SideDrawer';
 
 export default function TaskTransfers() {
     const { token } = useAuth();
@@ -254,8 +255,8 @@ export default function TaskTransfers() {
             </div>
 
             {/* KPI Cards */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="bg-[#0c0c0c] border border-zinc-900 rounded-2xl p-4 relative overflow-hidden group hover:border-zinc-800 transition-all">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
+                <div className="bg-[#0c0c0c] border border-zinc-900 rounded-2xl p-3.5 sm:p-4 relative overflow-hidden group hover:border-zinc-800 transition-all">
                     <div className="flex items-center justify-between mb-2">
                         <span className="text-[11px] font-mono uppercase tracking-wider text-zinc-500">Total Transfers</span>
                         <div className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20">
@@ -324,7 +325,7 @@ export default function TaskTransfers() {
                     </div>
 
                     {/* Status Tabs */}
-                    <div className="flex flex-wrap gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-850">
+                    <div className="flex flex-wrap gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800/60">
                         {['all', 'pending', 'accepted', 'rejected', 'cancelled'].map((st) => (
                             <button
                                 key={st}
@@ -465,7 +466,7 @@ export default function TaskTransfers() {
                     </div>
                 ) : (
                     <div className="overflow-x-auto">
-                        <table className="w-full text-left text-xs">
+                        <table className="w-full min-w-[760px] text-left text-xs">
                             <thead className="bg-zinc-950/80 border-b border-zinc-900 text-zinc-500 uppercase font-mono text-[10px] tracking-wider">
                                 <tr>
                                     <th className="py-3.5 px-4">Ticket & Device</th>
@@ -485,7 +486,7 @@ export default function TaskTransfers() {
                                         {/* Ticket & Device */}
                                         <td className="py-3.5 px-4">
                                             <div className="flex items-start gap-2.5">
-                                                <div className="p-2 rounded-lg bg-zinc-950 border border-zinc-850 mt-0.5">
+                                                <div className="p-2 rounded-lg bg-zinc-950 border border-zinc-800/60 mt-0.5">
                                                     {getDeviceIcon(item.deviceCategory)}
                                                 </div>
                                                 <div>
@@ -622,134 +623,106 @@ export default function TaskTransfers() {
                 )}
             </div>
 
-            {/* Quick Inspect Ticket Modal */}
-            {inspectTicketId && (
-                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-start justify-center p-4 pt-10 overflow-y-auto">
-                    <div className="bg-[#0c0c0c] border border-zinc-800 rounded-2xl w-full max-w-3xl shadow-2xl relative mb-10 overflow-hidden">
-                        <div className="h-1 bg-gradient-to-r from-neon-cyan to-blue-500 w-full" />
-
-                        {/* Modal Header */}
-                        <div className="p-6 border-b border-zinc-900 flex items-start justify-between">
-                            <div>
-                                <div className="flex items-center gap-2 font-mono text-xs text-neon-cyan font-bold mb-1">
-                                    <ArrowRightLeft size={14} />
-                                    <span>TRANSFER AUDIT TRAIL</span>
+            {/* Quick Inspect Ticket Side Drawer */}
+            <SideDrawer
+                isOpen={Boolean(inspectTicketId)}
+                onClose={closeInspectModal}
+                title={inspectedTicket ? (inspectedTicket.ticketNumber || `Ticket #${inspectTicketId}`) : `Ticket #${inspectTicketId}`}
+                size="lg"
+                badge={<span className="text-[10px] font-mono text-neon-cyan uppercase tracking-wider">Transfer Audit Trail</span>}
+            >
+                {inspectLoading ? (
+                    <div className="p-12 flex flex-col items-center justify-center">
+                        <RefreshCw className="w-8 h-8 text-neon-cyan animate-spin mb-3" />
+                        <p className="text-xs font-mono text-zinc-500">Loading transfer history chain...</p>
+                    </div>
+                ) : (
+                    <div className="space-y-6">
+                        {inspectedTicket && (
+                            <div className="bg-zinc-950/60 border border-zinc-800/60 rounded-2xl p-4 space-y-1">
+                                <div className="text-sm font-bold text-white">{inspectedTicket.customerName}</div>
+                                <div className="text-xs text-zinc-400 font-mono">
+                                    {inspectedTicket.brand} {inspectedTicket.modelNumber || ''} · {inspectedTicket.deviceCategory}
                                 </div>
-                                <h3 className="text-xl font-bold text-white font-outfit">
-                                    {inspectedTicket ? inspectedTicket.ticketNumber || `Ticket #${inspectTicketId}` : `Ticket #${inspectTicketId}`}
-                                </h3>
-                                {inspectedTicket && (
-                                    <div className="text-xs text-zinc-500 mt-0.5">
-                                        {inspectedTicket.customerName} · {inspectedTicket.brand} {inspectedTicket.modelNumber || ''} ({inspectedTicket.deviceCategory})
-                                    </div>
-                                )}
                             </div>
-                            <button
-                                onClick={closeInspectModal}
-                                className="p-2 rounded-xl bg-zinc-900/60 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition-colors cursor-pointer"
-                            >
-                                <X size={16} />
-                            </button>
-                        </div>
+                        )}
 
-                        {/* Modal Body */}
-                        <div className="p-6 max-h-[70vh] overflow-y-auto space-y-6">
-                            {inspectLoading ? (
-                                <div className="p-12 flex flex-col items-center justify-center">
-                                    <RefreshCw className="w-8 h-8 text-neon-cyan animate-spin mb-3" />
-                                    <p className="text-xs font-mono text-zinc-500">Loading transfer history chain...</p>
+                        {/* Transfer Chain Timeline */}
+                        <div className="space-y-4">
+                            <h4 className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 flex items-center gap-2">
+                                <Layers size={13} className="text-neon-cyan" />
+                                Chronological Movement Chain ({ticketTransfersChain.length} events)
+                            </h4>
+
+                            {ticketTransfersChain.length === 0 ? (
+                                <div className="p-6 border border-zinc-900 rounded-xl bg-zinc-950/50 text-center text-xs font-mono text-zinc-500">
+                                    No transfers recorded for this specific ticket.
                                 </div>
                             ) : (
-                                <>
-                                    {/* Transfer Chain Timeline */}
-                                    <div className="space-y-4">
-                                        <h4 className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 flex items-center gap-2">
-                                            <Layers size={13} className="text-neon-cyan" />
-                                            Chronological Movement Chain ({ticketTransfersChain.length} events)
-                                        </h4>
+                                <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-zinc-800">
+                                    {ticketTransfersChain.map((t, idx) => (
+                                        <div key={t.id} className="relative group">
+                                            {/* Dot */}
+                                            <div className={`absolute -left-6 top-1.5 w-3 h-3 rounded-full border-2 bg-black ${t.transferStatus === 'accepted'
+                                                ? 'border-emerald-400'
+                                                : t.transferStatus === 'rejected'
+                                                    ? 'border-rose-500'
+                                                    : 'border-amber-400'
+                                                }`} />
 
-                                        {ticketTransfersChain.length === 0 ? (
-                                            <div className="p-6 border border-zinc-900 rounded-xl bg-zinc-950/50 text-center text-xs font-mono text-zinc-500">
-                                                No transfers recorded for this specific ticket.
-                                            </div>
-                                        ) : (
-                                            <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-zinc-800">
-                                                {ticketTransfersChain.map((t, idx) => (
-                                                    <div key={t.id} className="relative group">
-                                                        {/* Dot */}
-                                                        <div className={`absolute -left-6 top-1.5 w-3 h-3 rounded-full border-2 bg-black ${t.transferStatus === 'accepted'
-                                                            ? 'border-emerald-400'
-                                                            : t.transferStatus === 'rejected'
-                                                                ? 'border-rose-500'
-                                                                : 'border-amber-400'
-                                                            }`} />
+                                            <div className="bg-zinc-950/70 border border-zinc-800/60 rounded-xl p-4 space-y-3 hover:border-zinc-700 transition-colors">
+                                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-xs font-bold font-mono text-white">Event #{idx + 1}</span>
+                                                        {getStatusBadge(t.transferStatus)}
+                                                    </div>
+                                                    <div className="text-[11px] font-mono text-zinc-500">
+                                                        {new Date(t.transferredAt).toLocaleString()}
+                                                    </div>
+                                                </div>
 
-                                                        <div className="bg-zinc-950/70 border border-zinc-850 rounded-xl p-4 space-y-3 hover:border-zinc-700 transition-colors">
-                                                            <div className="flex flex-wrap items-center justify-between gap-2">
-                                                                <div className="flex items-center gap-2">
-                                                                    <span className="text-xs font-bold font-mono text-white">Event #{idx + 1}</span>
-                                                                    {getStatusBadge(t.transferStatus)}
-                                                                </div>
-                                                                <div className="text-[11px] font-mono text-zinc-500">
-                                                                    {new Date(t.transferredAt).toLocaleString()}
-                                                                </div>
-                                                            </div>
-
-                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs bg-zinc-900/40 rounded-lg p-3">
-                                                                <div>
-                                                                    <div className="text-[10px] font-mono text-zinc-500 uppercase">Transferring Tech</div>
-                                                                    <div className="text-zinc-200 font-medium font-mono mt-0.5">
-                                                                        {t.fromTechnicianName || 'Initial Assignment'}
-                                                                    </div>
-                                                                </div>
-                                                                <div>
-                                                                    <div className="text-[10px] font-mono text-zinc-500 uppercase">Receiving Tech</div>
-                                                                    <div className="text-emerald-400 font-semibold font-mono mt-0.5">
-                                                                        {t.toTechnicianName}
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-
-                                                            {t.reason && (
-                                                                <div className="text-xs text-zinc-300 bg-black/40 rounded-lg p-2.5 border border-zinc-900 leading-relaxed">
-                                                                    <span className="text-[10px] font-mono text-zinc-500 uppercase block mb-1">Transfer Reason:</span>
-                                                                    "{t.reason}"
-                                                                </div>
-                                                            )}
-
-                                                            {t.responseNotes && (
-                                                                <div className="text-xs text-rose-300 bg-rose-950/20 rounded-lg p-2.5 border border-rose-900/30 font-mono">
-                                                                    <span className="text-[10px] font-mono text-rose-400 uppercase block mb-1">Response Comment:</span>
-                                                                    "{t.responseNotes}"
-                                                                </div>
-                                                            )}
-
-                                                            <div className="flex items-center justify-between text-[10px] font-mono text-zinc-600 border-t border-zinc-900/80 pt-2">
-                                                                <div>Initiated by: {t.initiatedByName} ({t.initiatedByRole})</div>
-                                                                {t.respondedAt && <div>Responded at: {new Date(t.respondedAt).toLocaleString()}</div>}
-                                                            </div>
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs bg-zinc-900/40 rounded-lg p-3">
+                                                    <div>
+                                                        <div className="text-[10px] font-mono text-zinc-500 uppercase">Transferring Tech</div>
+                                                        <div className="text-zinc-200 font-medium font-mono mt-0.5">
+                                                            {t.fromTechnicianName || 'Initial Assignment'}
                                                         </div>
                                                     </div>
-                                                ))}
+                                                    <div>
+                                                        <div className="text-[10px] font-mono text-zinc-500 uppercase">Receiving Tech</div>
+                                                        <div className="text-emerald-400 font-semibold font-mono mt-0.5">
+                                                            {t.toTechnicianName}
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                {t.reason && (
+                                                    <div className="text-xs text-zinc-300 bg-black/40 rounded-lg p-2.5 border border-zinc-900 leading-relaxed">
+                                                        <span className="text-[10px] font-mono text-zinc-500 uppercase block mb-1">Transfer Reason:</span>
+                                                        "{t.reason}"
+                                                    </div>
+                                                )}
+
+                                                {t.responseNotes && (
+                                                    <div className="text-xs text-rose-300 bg-rose-950/20 rounded-lg p-2.5 border border-rose-900/30 font-mono">
+                                                        <span className="text-[10px] font-mono text-rose-400 uppercase block mb-1">Response Comment:</span>
+                                                        "{t.responseNotes}"
+                                                    </div>
+                                                )}
+
+                                                <div className="flex items-center justify-between text-[10px] font-mono text-zinc-600 border-t border-zinc-900/80 pt-2">
+                                                    <div>Initiated by: {t.initiatedByName} ({t.initiatedByRole})</div>
+                                                    {t.respondedAt && <div>Responded at: {new Date(t.respondedAt).toLocaleString()}</div>}
+                                                </div>
                                             </div>
-                                        )}
-                                    </div>
-                                </>
+                                        </div>
+                                    ))}
+                                </div>
                             )}
                         </div>
-
-                        {/* Modal Footer */}
-                        <div className="p-4 border-t border-zinc-900 bg-zinc-950 flex justify-end">
-                            <button
-                                onClick={closeInspectModal}
-                                className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-xl text-xs font-mono text-white transition-colors cursor-pointer"
-                            >
-                                Close Audit Trail
-                            </button>
-                        </div>
                     </div>
-                </div>
-            )}
+                )}
+            </SideDrawer>
         </div>
     );
 }

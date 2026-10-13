@@ -28,7 +28,7 @@ const errorHandler = (err, req, res, next) => {
     if (err.code === 'ER_DUP_ENTRY') {
       message = 'A record with this identifier already exists.';
       // Extract the duplicate field if possible
-      const match = err.sqlMessage.match(/key '(.+)'/);
+      const match = err.sqlMessage && err.sqlMessage.match(/key '(.+)'/);
       if (match) {
         errors = { [match[1]]: 'This value is already in use.' };
       }

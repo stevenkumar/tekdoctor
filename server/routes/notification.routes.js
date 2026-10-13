@@ -5,6 +5,7 @@ const {
   getNotifications,
   markAsRead,
   deleteNotification,
+  bulkDeleteNotifications,
   clearAllNotifications,
   sendNotification,
   broadcastNotification,
@@ -25,5 +26,7 @@ router.delete('/', clearAllNotifications);
 router.post('/send', authorize('admin', 'technician'), sendNotification);
 router.post('/broadcast', authorize('admin'), broadcastNotification);
 router.get('/history', authorize('admin'), getNotificationHistory);
+router.post('/bulk-delete', authorize('admin'), bulkDeleteNotifications);
+router.delete('/bulk', authorize('admin'), bulkDeleteNotifications);
 
 module.exports = router;

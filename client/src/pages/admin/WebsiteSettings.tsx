@@ -8,7 +8,8 @@ import { getMediaUrl, isUploadPath } from '@/utils/media';
 
 // ─── Schema for text/select settings (branding media handled separately) ───
 const DEFAULT_SETTINGS = {
-    company: { company_name: '', company_phone: '', company_email: '', company_address: '' },
+    company: { company_name: '', company_phone: '', company_alternate_phone: '', company_email: '', company_address: '', gstin: '' },
+    billing: { invoice_prefix: 'inv', default_gst_rate: '18.00', invoice_gst_enabled: 'true' },
     theme: { theme_primary_color: '#00f2ff', theme_secondary_color: '#1a1a1a' },
     social: { facebook_url: '', twitter_url: '', instagram_url: '', linkedin_url: '' },
     integrations: { google_maps_link: '', google_sheet_url: '' },
@@ -25,15 +26,19 @@ export default function WebsiteSettings() {
     const [editedValues, setEditedValues] = useState<Record<string, string>>({});
     const { refreshSiteData } = useSiteContext();
 
-    // ─── Branding state (logo + favicon — managed independently from form) ───
+    // ─── Branding state (logo + favicon + tekunik logo — managed independently from form) ───
     const [logoUrl, setLogoUrl] = useState('');
     const [faviconUrl, setFaviconUrl] = useState('');
+    const [tekunikLogoUrl, setTekunikLogoUrl] = useState('');
     const [logoMode, setLogoMode] = useState<'upload' | 'url'>('upload');
     const [faviconMode, setFaviconMode] = useState<'upload' | 'url'>('upload');
+    const [tekunikLogoMode, setTekunikLogoMode] = useState<'upload' | 'url'>('upload');
     const [uploadingLogo, setUploadingLogo] = useState(false);
     const [uploadingFavicon, setUploadingFavicon] = useState(false);
+    const [uploadingTekunikLogo, setUploadingTekunikLogo] = useState(false);
     const [logoInputUrl, setLogoInputUrl] = useState('');
     const [faviconInputUrl, setFaviconInputUrl] = useState('');
+    const [tekunikLogoInputUrl, setTekunikLogoInputUrl] = useState('');
 
     const fetchSettings = async (showLoading = true) => {
         if (!token) return;
@@ -65,12 +70,16 @@ export default function WebsiteSettings() {
                 // Load branding values separately
                 const storedLogo = data?.company?.logo_url || data?.branding?.logo_url || '';
                 const storedFavicon = data?.branding?.favicon_url || '';
+                const storedTekunikLogo = data?.branding?.tekunik_image_url || '';
                 setLogoUrl(storedLogo);
                 setFaviconUrl(storedFavicon);
+                setTekunikLogoUrl(storedTekunikLogo);
                 setLogoInputUrl(storedLogo);
                 setFaviconInputUrl(storedFavicon);
+                setTekunikLogoInputUrl(storedTekunikLogo);
                 setLogoMode(isUploadPath(storedLogo) ? 'upload' : (storedLogo ? 'url' : 'upload'));
                 setFaviconMode(isUploadPath(storedFavicon) ? 'upload' : (storedFavicon ? 'url' : 'upload'));
+                setTekunikLogoMode(isUploadPath(storedTekunikLogo) ? 'upload' : (storedTekunikLogo ? 'url' : 'upload'));
             }
         } catch (error) {
             console.error('Error fetching website settings:', error);
@@ -87,9 +96,26 @@ export default function WebsiteSettings() {
     const handleSave = async () => {
         if (!token) return;
         setSaving(true); setSaveMsg('');
-        // Exclude logo_url and favicon_url from the general save — they have their own handlers
-        const { logo_url: _logo, favicon_url: _favicon, ...settingsToSave } = editedValues;
+        // Exclude logo_url, favicon_url, and tekunik_image_url from the general save — they have their own handlers
+        const { logo_url: _logo, favicon_url: _favicon, tekunik_image_url: _tekunik, ...settingsToSave } = editedValues;
 
+        // Auto-trim strings
+        Object.keys(settingsToSave).forEach(k => {
+            if (typeof settingsToSave[k] === 'string') {
+                settingsToSave[k] = settingsToSave[k].trim();
+            }
+        });
+
+        // Validate alternate contact number if entered
+        const altPhone = settingsToSave.company_alternate_phone;
+        if (altPhone) {
+            const cleanDigits = altPhone.replace(/[\s\-()]/g, '').replace(/^(\+91|91|0)/, '');
+            if (!/^[6-9]\d{9}$/.test(cleanDigits) && !/^\d{10}$/.test(cleanDigits)) {
+                toast.error('Alternate contact number must be a valid 10-digit phone number.');
+                setSaving(false);
+                return;
+            }
+        }
 
         const res = await adminApi.updateSettings(token, settingsToSave);
         if (res.ok) {
@@ -104,10 +130,11 @@ export default function WebsiteSettings() {
     };
 
     // ─── Upload a branding image file and immediately persist ───
-    const handleBrandingUpload = async (type: 'logo_url' | 'favicon_url', file: File) => {
+    const handleBrandingUpload = async (type: 'logo_url' | 'favicon_url' | 'tekunik_image_url', file: File) => {
         if (!token) return;
         if (type === 'logo_url') setUploadingLogo(true);
-        else setUploadingFavicon(true);
+        else if (type === 'favicon_url') setUploadingFavicon(true);
+        else setUploadingTekunikLogo(true);
 
         try {
             const uploadRes = await adminApi.uploadFile(token, file);
@@ -122,8 +149,10 @@ export default function WebsiteSettings() {
                 const saveRes = await adminApi.updateSettings(token, { [type]: url });
                 if (saveRes.ok) {
                     if (type === 'logo_url') { setLogoUrl(url); setLogoInputUrl(url); }
-                    else { setFaviconUrl(url); setFaviconInputUrl(url); }
-                    toast.success(`${type === 'logo_url' ? 'Logo' : 'Favicon'} updated successfully!`);
+                    else if (type === 'favicon_url') { setFaviconUrl(url); setFaviconInputUrl(url); }
+                    else { setTekunikLogoUrl(url); setTekunikLogoInputUrl(url); }
+                    const labelName = type === 'logo_url' ? 'Logo' : (type === 'favicon_url' ? 'Favicon' : 'Tekunik Logo');
+                    toast.success(`${labelName} updated successfully!`);
                     await refreshSiteData();
                 } else {
                     toast.error('File uploaded but save failed. Please try again.');
@@ -137,18 +166,21 @@ export default function WebsiteSettings() {
             toast.error('File upload error.');
         } finally {
             if (type === 'logo_url') setUploadingLogo(false);
-            else setUploadingFavicon(false);
+            else if (type === 'favicon_url') setUploadingFavicon(false);
+            else setUploadingTekunikLogo(false);
         }
     };
 
     // ─── Save a branding URL (for the "URL" input mode) ───
-    const handleBrandingUrlSave = async (type: 'logo_url' | 'favicon_url', url: string) => {
+    const handleBrandingUrlSave = async (type: 'logo_url' | 'favicon_url' | 'tekunik_image_url', url: string) => {
         if (!token || !url.trim()) return;
         const saveRes = await adminApi.updateSettings(token, { [type]: url.trim() });
         if (saveRes.ok) {
             if (type === 'logo_url') setLogoUrl(url.trim());
-            else setFaviconUrl(url.trim());
-            toast.success(`${type === 'logo_url' ? 'Logo' : 'Favicon'} URL saved!`);
+            else if (type === 'favicon_url') setFaviconUrl(url.trim());
+            else setTekunikLogoUrl(url.trim());
+            const labelName = type === 'logo_url' ? 'Logo' : (type === 'favicon_url' ? 'Favicon' : 'Tekunik Logo');
+            toast.success(`${labelName} URL saved!`);
             await refreshSiteData();
         } else {
             toast.error('Failed to save URL.');
@@ -157,6 +189,7 @@ export default function WebsiteSettings() {
 
     const groupLabels: Record<string, string> = {
         company: '🏢 Company Information',
+        billing: '🧾 Billing & Invoicing Configuration',
         theme: '🎨 Theme Colors',
         social: '🌐 Social Media Links',
         integrations: '🔌 Integrations',
@@ -165,7 +198,10 @@ export default function WebsiteSettings() {
     };
 
     const fieldLabels: Record<string, string> = {
-        company_name: 'Company Name', company_phone: 'Contact Number', company_email: 'Contact Email', company_address: 'Address',
+        company_name: 'Company Name', company_phone: 'Primary Contact Number', company_alternate_phone: 'Alternate Contact Number', company_email: 'Contact Email', company_address: 'Address', gstin: 'Business GSTIN',
+        invoice_prefix: 'Invoice Number Prefix (e.g. inv, TD-INV)',
+        default_gst_rate: 'Default GST Rate (%)',
+        invoice_gst_enabled: 'Enable GST on Invoices',
         theme_primary_color: 'Primary Theme Color', theme_secondary_color: 'Secondary Theme Color',
         facebook_url: 'Facebook', twitter_url: 'Twitter', instagram_url: 'Instagram', linkedin_url: 'LinkedIn',
         google_maps_link: 'Google Maps Link', google_sheet_url: 'Google Sheet URL',
@@ -182,7 +218,7 @@ export default function WebsiteSettings() {
         onModeChange, onUpload, onUrlSave
     }: {
         label: string;
-        type: 'logo_url' | 'favicon_url';
+        type: 'logo_url' | 'favicon_url' | 'tekunik_image_url';
         currentUrl: string;
         mode: 'upload' | 'url';
         uploading: boolean;
@@ -250,12 +286,12 @@ export default function WebsiteSettings() {
 
     return (
         <div className="space-y-6">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                     <h1 className="text-2xl font-extrabold text-white font-outfit tracking-tight flex items-center gap-2"><Settings size={24} className="text-neon-cyan" />Website Settings</h1>
                     <p className="text-xs text-zinc-500 mt-1">Configure site-wide priorities and integrations</p>
                 </div>
-                <button onClick={handleSave} disabled={saving} className="flex items-center gap-2 px-5 py-2.5 bg-neon-cyan hover:bg-neon-cyan text-black font-bold rounded-xl text-xs transition-all cursor-pointer disabled:opacity-50 shadow-lg shadow-neon-cyan/20">
+                <button onClick={handleSave} disabled={saving} className="flex items-center justify-center gap-2 px-5 py-2.5 bg-neon-cyan hover:bg-neon-cyan text-black font-bold rounded-xl text-xs transition-all cursor-pointer disabled:opacity-50 shadow-lg shadow-neon-cyan/20 w-full sm:w-auto">
                     {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}Save All Settings
                 </button>
             </div>
@@ -297,6 +333,20 @@ export default function WebsiteSettings() {
                             onUrlSave={url => handleBrandingUrlSave('favicon_url', url)}
                         />
                     </div>
+                    <div className="border-t border-zinc-900/80 pt-6">
+                        <BrandingCard
+                            label="Tekunik Partner Logo (About Section)"
+                            type="tekunik_image_url"
+                            currentUrl={tekunikLogoUrl}
+                            mode={tekunikLogoMode}
+                            uploading={uploadingTekunikLogo}
+                            inputUrl={tekunikLogoInputUrl}
+                            onInputUrlChange={setTekunikLogoInputUrl}
+                            onModeChange={setTekunikLogoMode}
+                            onUpload={file => handleBrandingUpload('tekunik_image_url', file)}
+                            onUrlSave={url => handleBrandingUrlSave('tekunik_image_url', url)}
+                        />
+                    </div>
                 </div>
             </div>
 
@@ -316,6 +366,12 @@ export default function WebsiteSettings() {
                                             className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-neon-cyan">
                                             <option value="false">Off — Site is Live</option>
                                             <option value="true">On — Maintenance Screen Enabled</option>
+                                        </select>
+                                    ) : key === 'invoice_gst_enabled' ? (
+                                        <select value={editedValues[key] || 'true'} onChange={e => setEditedValues(p => ({ ...p, [key]: e.target.value }))}
+                                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-neon-cyan">
+                                            <option value="true">Enabled (Calculate CGST/SGST or IGST)</option>
+                                            <option value="false">Disabled (Exempt / Non-GST Bills)</option>
                                         </select>
                                     ) : key.includes('description') || key.includes('address') ? (
                                         <textarea value={editedValues[key] || ''} onChange={e => setEditedValues(p => ({ ...p, [key]: e.target.value }))} rows={2}

@@ -6,8 +6,9 @@ import {
     ScrollText, Loader2, ChevronLeft, ChevronRight, Hash, MonitorSmartphone,
     Search, RefreshCw, User, Building2, Wrench, Shield, Globe,
     AlertCircle, DollarSign, HelpCircle, Eye, EyeOff, Calendar,
-    Play, Square, Bell, Plus, CheckCircle2, ShieldAlert
+    Play, Square, Bell, Plus, CheckCircle2, ShieldAlert, Code
 } from 'lucide-react';
+import { formatActivity } from '@/utils/activityFormatter';
 
 export default function ActivityLogs() {
     const { token } = useAuth();
@@ -292,7 +293,7 @@ export default function ActivityLogs() {
             ) : (
                 <div className="space-y-4">
                     {/* Timeline Container */}
-                    <div className="relative border-l border-zinc-800/60 ml-4 pl-8 space-y-5 py-2">
+                    <div className="relative border-l border-zinc-800/60 ml-5 sm:ml-6 pl-5 sm:pl-8 space-y-4 sm:space-y-5 py-2">
                         {logs.map((log) => {
                             const meta = getCategoryMeta(log.category || 'system');
                             const LogIcon = meta.icon;
@@ -300,50 +301,63 @@ export default function ActivityLogs() {
 
                             // Format actions name
                             const prettyAction = log.action.replace(/_/g, ' ').toUpperCase();
+                            const formatted = formatActivity(log);
 
                             return (
                                 <div key={log.id} className="relative group">
                                     {/* Timeline dot */}
-                                    <span className={`absolute -left-[45px] top-6 w-9 h-9 rounded-full flex items-center justify-center border font-semibold ${meta.color} shadow-lg transition-transform group-hover:scale-105 duration-200`}>
-                                        <LogIcon size={14} />
+                                    <span className={`absolute -left-[33px] sm:-left-[45px] top-5 sm:top-6 w-6 h-6 sm:w-9 sm:h-9 rounded-full flex items-center justify-center border font-semibold ${meta.color} shadow-lg transition-transform group-hover:scale-105 duration-200`}>
+                                        <LogIcon size={12} className="sm:w-3.5 sm:h-3.5" />
                                     </span>
 
                                     {/* Activity Card */}
-                                    <div className={`border transition-all duration-300 rounded-2xl p-4 bg-zinc-950/40 hover:bg-zinc-900/10 ${isExpanded ? 'border-neon-cyan/35 shadow-[0_0_15px_rgba(6,182,212,0.05)] bg-zinc-900/15' : 'border-zinc-900/60'}`}>
-                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                    <div className={`border transition-all duration-300 rounded-2xl p-3.5 sm:p-4 bg-zinc-950/40 hover:bg-zinc-900/10 ${isExpanded ? 'border-neon-cyan/35 shadow-[0_0_15px_rgba(6,182,212,0.05)] bg-zinc-900/15' : 'border-zinc-900/60'}`}>
+                                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                                             {/* Details & Main action context */}
-                                            <div className="space-y-1">
+                                            <div className="space-y-1.5 flex-1">
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <span className={`px-2 py-0.5 rounded text-[9px] font-bold tracking-wider font-mono ${getActionBadge(log.action)}`}>
                                                         {prettyAction}
                                                     </span>
 
                                                     <span className="text-[10px] text-zinc-500 font-mono">
-                                                        {new Date(log.created_at).toLocaleString()}
+                                                        {formatted.formattedDate}
                                                     </span>
 
                                                     {log.ip_address && (
-                                                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-mono text-zinc-500 bg-zinc-900 border border-zinc-805 rounded">
+                                                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-mono text-zinc-500 bg-zinc-900 border border-zinc-800 rounded">
                                                             <MonitorSmartphone size={10} />
                                                             {log.ip_address}
                                                         </span>
                                                     )}
                                                 </div>
 
-                                                <p className="text-xs font-semibold text-white mt-1.5 font-outfit">
-                                                    {log.user_name ? (
-                                                        <span className="text-zinc-300 font-bold">{log.user_name} </span>
-                                                    ) : (
-                                                        <span className="text-zinc-500 font-bold italic">System background process </span>
-                                                    )}
-                                                    performed the action
-                                                </p>
+                                                <div>
+                                                    <h4 className="text-sm font-bold text-white font-outfit">
+                                                        {formatted.headline}
+                                                    </h4>
+                                                    <p className="text-xs text-zinc-400 font-normal mt-0.5">
+                                                        {formatted.description}
+                                                    </p>
+                                                </div>
 
-                                                {/* Target type and context info preview */}
+                                                {/* Parameter Pills */}
+                                                {formatted.parameters.length > 0 && (
+                                                    <div className="flex flex-wrap gap-1.5 pt-1">
+                                                        {formatted.parameters.map((param, pIdx) => (
+                                                            <span key={pIdx} className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-900/80 border border-zinc-800 text-zinc-300">
+                                                                <span className="text-zinc-500">{param.label}:</span>
+                                                                <span className="text-neon-cyan font-medium">{param.value}</span>
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
+
+                                                {/* Target context if present and not in parameters */}
                                                 {log.target_type && (
-                                                    <div className="flex items-center gap-1.5 text-xs text-zinc-400/90 font-outfit mt-1">
-                                                        <span className="text-zinc-500">Related Asset:</span>
-                                                        <span className="inline-flex items-center px-1.5 py-0.2 px-2 bg-zinc-900 border border-zinc-850/80 rounded gap-1 font-mono text-[10px] text-neon-cyan capitalize">
+                                                    <div className="flex items-center gap-1.5 text-xs text-zinc-500 font-outfit pt-0.5">
+                                                        <span>Entity:</span>
+                                                        <span className="inline-flex items-center px-2 py-0.5 bg-zinc-900 border border-zinc-800 rounded gap-1 font-mono text-[10px] text-zinc-300 capitalize">
                                                             <Hash size={10} />
                                                             {log.target_type} {log.target_id && `#${log.target_id}`}
                                                         </span>
@@ -352,10 +366,10 @@ export default function ActivityLogs() {
                                             </div>
 
                                             {/* Expand action */}
-                                            <div className="flex items-center justify-end">
+                                            <div className="flex items-center justify-end shrink-0">
                                                 <button
                                                     onClick={() => setExpandedLogId(isExpanded ? null : log.id)}
-                                                    className="px-3 py-1.5 bg-zinc-905 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-white rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer font-outfit"
+                                                    className="px-3 py-1.5 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-white rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer font-outfit"
                                                 >
                                                     {isExpanded ? (
                                                         <>
@@ -365,7 +379,7 @@ export default function ActivityLogs() {
                                                     ) : (
                                                         <>
                                                             <Eye size={12} className="text-neon-cyan" />
-                                                            Show Details
+                                                            Audit Details
                                                         </>
                                                     )}
                                                 </button>
@@ -375,20 +389,29 @@ export default function ActivityLogs() {
                                         {/* Expandable Parameter metadata panel */}
                                         {isExpanded && (
                                             <div className="mt-4 border-t border-zinc-900 pt-4 space-y-3 animate-fadeIn">
-                                                <p className="text-[10px] font-semibold text-zinc-500 font-mono tracking-wider uppercase">Log Transaction Parameters:</p>
-
-                                                {/* JSON pretty print container */}
-                                                <div className="bg-zinc-950 border border-zinc-900/60 rounded-xl p-3.5 overflow-x-auto text-[10px] font-mono text-zinc-400 leading-relaxed max-w-full max-h-64 scrollbar-thin">
-                                                    {log.details ? (
-                                                        <pre>{JSON.stringify(typeof log.details === 'string' ? JSON.parse(log.details) : log.details, null, 2)}</pre>
-                                                    ) : (
-                                                        <div className="text-zinc-650 italic">No structured change parameters stored for this transaction record.</div>
-                                                    )}
+                                                <div className="flex items-center justify-between">
+                                                    <p className="text-[10px] font-semibold text-zinc-400 font-mono tracking-wider uppercase">Transaction Audit Breakdown:</p>
+                                                    <span className="text-[10px] text-zinc-500 font-mono">ID: #{log.id}</span>
                                                 </div>
 
-                                                <div className="flex justify-between items-center text-[10px] text-zinc-500 border-t border-zinc-900/40 pt-2 font-mono">
-                                                    <span>Actor Signature: {log.user_email || 'SYSTEM_DAEMON'}</span>
-                                                    <span>Transaction ID: {log.id}</span>
+                                                {formatted.parameters.length > 0 ? (
+                                                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 bg-zinc-950/60 border border-zinc-900 rounded-xl p-3">
+                                                        {formatted.parameters.map((p, idx) => (
+                                                            <div key={idx} className="bg-zinc-900/50 rounded-lg p-2 border border-zinc-800/60">
+                                                                <div className="text-[10px] text-zinc-500 font-mono uppercase">{p.label}</div>
+                                                                <div className="text-xs text-white font-medium mt-0.5 break-all">{p.value}</div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    <div className="text-xs text-zinc-500 italic bg-zinc-950/40 p-3 rounded-xl border border-zinc-900">
+                                                        No custom structured parameters recorded for this operation.
+                                                    </div>
+                                                )}
+
+                                                <div className="flex flex-wrap justify-between items-center text-[10px] text-zinc-500 border-t border-zinc-900/60 pt-2 font-mono gap-2">
+                                                    <span>Actor: <strong className="text-zinc-300">{log.user_name || 'System'}</strong> ({log.user_email || 'daemon'})</span>
+                                                    {log.ip_address && <span>IP: <strong className="text-zinc-300">{log.ip_address}</strong></span>}
                                                 </div>
                                             </div>
                                         )}

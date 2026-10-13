@@ -63,19 +63,19 @@ export default function EmailSettings() {
 
     return (
         <div className="space-y-6 max-w-2xl">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                     <h1 className="text-2xl font-extrabold text-white font-outfit tracking-tight flex items-center gap-2"><Mail size={24} className="text-neon-cyan" />Email Settings</h1>
                     <p className="text-xs text-zinc-500 mt-1">Configure SMTP and email settings</p>
                 </div>
-                <button onClick={handleSave} disabled={saving} className="flex items-center gap-2 px-5 py-2.5 bg-neon-cyan hover:bg-neon-cyan text-black font-bold rounded-xl text-xs transition-all cursor-pointer disabled:opacity-50">
+                <button onClick={handleSave} disabled={saving} className="flex items-center justify-center gap-2 px-5 py-2.5 bg-neon-cyan hover:bg-neon-cyan text-black font-bold rounded-xl text-xs transition-all cursor-pointer disabled:opacity-50 w-full sm:w-auto">
                     {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}Save
                 </button>
             </div>
 
             {saveMsg && <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs rounded-xl flex items-center gap-2"><CheckCircle2 size={14} />{saveMsg}</div>}
 
-            <div className="border border-zinc-900 bg-zinc-900/20 rounded-2xl p-6 space-y-4">
+            <div className="border border-zinc-900 bg-zinc-900/20 rounded-2xl p-4 sm:p-6 space-y-4">
                 {fields.map(f => (
                     <div key={f.key} className="space-y-1.5">
                         <label className="text-xs text-zinc-400 font-semibold tracking-wide uppercase flex items-center gap-1.5"><f.icon size={12} />{f.label}</label>
@@ -87,15 +87,15 @@ export default function EmailSettings() {
                 ))}
             </div>
 
-            <div className="border border-zinc-900/60 bg-zinc-950/30 rounded-2xl p-5">
-                <div className="flex items-center justify-between mb-2">
+            <div className="border border-zinc-900/60 bg-zinc-950/30 rounded-2xl p-4 sm:p-5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2">
                     <div className="flex items-center gap-2 text-zinc-400 text-sm font-medium">
                         <TestTube size={16} className="text-neon-cyan" />Test Email Configuration
                     </div>
                     <button
                         onClick={handleTestEmail}
                         disabled={testing}
-                        className="px-4 py-2 border border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/10 transition-all rounded-lg text-xs font-semibold flex items-center gap-2 disabled:opacity-50 cursor-pointer"
+                        className="px-4 py-2 border border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/10 transition-all rounded-lg text-xs font-semibold flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer w-full sm:w-auto"
                     >
                         {testing ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
                         Send Test Email
@@ -110,10 +110,10 @@ export default function EmailSettings() {
             </div>
 
             <div className="border border-zinc-900 bg-zinc-900/20 rounded-2xl overflow-hidden mt-8">
-                <div className="p-5 border-b border-zinc-900 bg-zinc-950/50 text-white font-bold font-outfit text-sm">
+                <div className="p-4 sm:p-5 border-b border-zinc-900 bg-zinc-950/50 text-white font-bold font-outfit text-sm">
                     📧 Notification Templates
                 </div>
-                <div className="p-6 space-y-6">
+                <div className="p-4 sm:p-6 space-y-6">
                     {templates.map(t => (
                         <div key={t.key} className="space-y-2">
                             <div className="flex items-center justify-between">

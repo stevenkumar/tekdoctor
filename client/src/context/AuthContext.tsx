@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { STORAGE_KEYS } from '../config/storage';
 import { ROUTES } from '../config/routes';
+import { authApi } from '../services/api';
 
 // All roles supported by the backend Users.role ENUM
 export type UserRole = 'customer' | 'technician' | 'admin' | 'company';
@@ -11,14 +12,16 @@ export interface AuthUser {
   name: string;
   email: string;
   role: UserRole;
+  phone?: string;
   token_version?: number;
+  avatar_url?: string;
 }
 
 interface AuthContextType {
   user: AuthUser | null;
   token: string | null;
   role: UserRole | null;
-  login: (token: string, userData: AuthUser, skipNavigation?: boolean) => void;
+  login: (token: string, userData: AuthUser, skipNavigation?: boolean, redirectPath?: string) => void;
   logout: () => void;
   isAuthenticated: boolean;
   hasRole: (requiredRoles: UserRole | UserRole[]) => boolean;
@@ -67,7 +70,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * Call after a successful signup or signin.
    * userData must include { id, name, email, role } from result.data.
    */
-  const login = (newToken: string, userData: AuthUser, skipNavigation: boolean = false) => {
+  const login = (
+    newToken: string,
+    userData: AuthUser,
+    skipNavigation: boolean = false,
+    redirectPath?: string
+  ) => {
     setToken(newToken);
     setUser(userData);
     setRole(userData.role);
@@ -76,20 +84,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userData));
 
     if (!skipNavigation) {
-      // Admins go straight to the admin dashboard; technicians to their dashboard; companies to company dashboard; everyone else to repair booking
-      if (userData.role === 'admin') {
+      if (redirectPath) {
+        navigate(redirectPath);
+      } else if (userData.role === 'admin') {
         navigate(ROUTES.ADMIN_DASHBOARD);
       } else if (userData.role === 'technician') {
         navigate(ROUTES.TECHNICIAN_DASHBOARD);
       } else if (userData.role === 'company') {
         navigate(ROUTES.COMPANY_DASHBOARD);
       } else {
-        navigate(ROUTES.REPAIR);
+        navigate(ROUTES.PROFILE);
       }
     }
   };
 
   const logout = () => {
+    if (token) {
+      authApi.logout(token).catch((err) => {
+        console.error('Server logout session invalidation error:', err);
+      });
+    }
     setToken(null);
     setUser(null);
     setRole(null);

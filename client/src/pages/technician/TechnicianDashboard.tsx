@@ -1,4 +1,7 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import TechnicianTaskWorkspace from '@/components/TechnicianTaskWorkspace';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { ROUTES } from '@/config/routes';
 import {
     RefreshCw, Search, MapPin, Phone, Mail, Clock,
     CheckCircle2, Hourglass, Hammer, XCircle, FileImage,
@@ -7,17 +10,24 @@ import {
     FileText, Plus, Send, AlertTriangle, CheckCheck,
     Truck, Cpu, PackageSearch, Star, Upload, ChevronDown,
     Trash2, ArrowUpRight, ArrowRightLeft, Layers, ArrowDownLeft,
-    Inbox, SendHorizontal, X, Lock, ShieldAlert
+    Inbox, SendHorizontal, X, Lock, ShieldAlert, RotateCcw,
+    Building2, LayoutGrid, List, Users, Banknote, CreditCard,
+    Printer, Receipt, Download
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { useAuth } from '@/context/AuthContext';
-import { repairApi, notificationApi, technicianApi } from '@/services/api';
+import { repairApi, notificationApi, technicianApi, billingApi } from '@/services/api';
 import type { ServiceRequest, WorkLog, NotificationItem, TechnicianUser, TaskTransfer } from '@/services/api';
 import { appConfig } from '@/config/appConfig';
 import ImagePreviewModal from '@/components/ImagePreviewModal';
+import PaymentReceiptModal from '@/components/PaymentReceiptModal';
+import { downloadPaymentBillPdf, printPaymentBill } from '@/utils/billGenerator';
+import { sanitizeAmountInput, handleAmountKeyDown } from '@/utils/currencyUtils';
 import { motion, AnimatePresence } from 'framer-motion';
+import { getApprovalStatusBadge } from '@/components/TechnicianTaskWorkspace';
+import { subscribeToPaymentUpdates } from '@/utils/paymentSync';
 
-type ModalTab = 'overview' | 'work-log' | 'transfers' | 'milestones' | 'customer-note';
+type ModalTab = 'overview' | 'diagnosis' | 'work-log' | 'transfers' | 'milestones' | 'customer-note';
 
 const MILESTONES = [
     { key: 'diagnosis_completed', label: 'Diagnosis Completed', icon: <Cpu size={14} />, color: 'text-blue-400 border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20' },
@@ -52,9 +62,25 @@ export default function TechnicianDashboard() {
         setPreviewOpen(true);
     };
 
+    const location = useLocation();
+    const navigate = useNavigate();
+
+    const isNotificationsRoute = location.pathname === ROUTES.TECHNICIAN_NOTIFICATIONS;
+    const isDashboardRoute = location.pathname === ROUTES.TECHNICIAN_DASHBOARD;
+    const isTransfersRoute = location.pathname === ROUTES.TECHNICIAN_TRANSFERS;
+    const isAssignedTicketsRoute = location.pathname === ROUTES.TECHNICIAN_ASSIGNED_TICKETS;
+    const isDiagnosisRoute = location.pathname === ROUTES.TECHNICIAN_DIAGNOSIS;
+    const isInProgressRoute = location.pathname === ROUTES.TECHNICIAN_IN_PROGRESS;
+    const isCompletedRoute = location.pathname === ROUTES.TECHNICIAN_COMPLETED;
+    const isDeliveredRoute = location.pathname === ROUTES.TECHNICIAN_DELIVERED;
+    const isStageRoute = isDiagnosisRoute || isInProgressRoute || isCompletedRoute || isDeliveredRoute;
+
     const [tasks, setTasks] = useState<ServiceRequest[]>([]);
     const [filteredTasks, setFilteredTasks] = useState<ServiceRequest[]>([]);
     const [activeFilter, setActiveFilter] = useState<string>('all');
+    const [accountTypeFilter, setAccountTypeFilter] = useState<'all' | 'individual' | 'b2b'>('all');
+    const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
+    const [notifFilter, setNotifFilter] = useState<'all' | 'unread'>('all');
     const [searchQuery, setSearchQuery] = useState<string>('');
     const [isLoading, setIsLoading] = useState<boolean>(true);
     const [errorMsg, setErrorMsg] = useState<string>('');
@@ -63,6 +89,29 @@ export default function TechnicianDashboard() {
     const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
     const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const notifRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const debouncedSearchQueryRef = useRef<string>('');
+    const isFirstMount = useRef<boolean>(true);
+
+    // Sync activeFilter with URL route
+    useEffect(() => {
+        if (location.pathname === ROUTES.TECHNICIAN_DIAGNOSIS) {
+            setActiveFilter('pending');
+        } else if (location.pathname === ROUTES.TECHNICIAN_IN_PROGRESS) {
+            setActiveFilter('in_progress');
+        } else if (location.pathname === ROUTES.TECHNICIAN_COMPLETED) {
+            setActiveFilter('completed');
+        } else if (location.pathname === ROUTES.TECHNICIAN_DELIVERED) {
+            setActiveFilter('delivered');
+        } else if (location.pathname === ROUTES.TECHNICIAN_ASSIGNED_TICKETS || location.pathname === ROUTES.TECHNICIAN_DASHBOARD) {
+            const params = new URLSearchParams(location.search);
+            const tabParam = params.get('tab');
+            if (tabParam) {
+                setActiveFilter(tabParam);
+            } else {
+                setActiveFilter('all');
+            }
+        }
+    }, [location.pathname, location.search]);
 
     // Notifications State & Logic
     const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -121,8 +170,22 @@ export default function TechnicianDashboard() {
     const [customerDesc, setCustomerDesc] = useState('');
     const [savingDesc, setSavingDesc] = useState(false);
 
-    // View Switcher (Tasks vs Transfer History)
-    const [dashboardView, setDashboardView] = useState<'tasks' | 'transfers'>('tasks');
+    // Diagnosis & Estimate Form State
+    const [diagForm, setDiagForm] = useState({
+        diagnosis: '',
+        identifiedIssues: '',
+        requiredWork: '',
+        requiredParts: '',
+        estimatedCost: '',
+        additionalCharges: '',
+        estimatedCompletionDate: '',
+        inspectionNotes: '',
+        deviceCondition: '',
+    });
+    const [submittingDiagnosis, setSubmittingDiagnosis] = useState(false);
+    const [isEditingDiagnosis, setIsEditingDiagnosis] = useState(false);
+    const [diagFormErrors, setDiagFormErrors] = useState<{ diagnosis?: string; estimatedCost?: string; additionalCharges?: string }>({});
+
 
     // My Task Transfers History
     const [myTransfers, setMyTransfers] = useState<TaskTransfer[]>([]);
@@ -153,6 +216,123 @@ export default function TechnicianDashboard() {
     const [transferReason, setTransferReason] = useState('');
     const [transferring, setTransferring] = useState(false);
 
+    // Universal Ticket Search Modal State
+    const [searchModalOpen, setSearchModalOpen] = useState(false);
+    const [modalSearchQuery, setModalSearchQuery] = useState('');
+    const [modalSearchResults, setModalSearchResults] = useState<ServiceRequest[]>([]);
+    const [modalSearchLoading, setModalSearchLoading] = useState(false);
+    const searchInputRef = useRef<HTMLInputElement>(null);
+
+    // Handle Escape key to close open drawer/modals and lock background scroll while drawer/modal is open
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                if (searchModalOpen) {
+                    setSearchModalOpen(false);
+                } else if (transferModalOpen) {
+                    setTransferModalOpen(false);
+                } else if (previewOpen) {
+                    setPreviewOpen(false);
+                } else if (activeModalNotif) {
+                    setActiveModalNotif(null);
+                } else if (selectedTask) {
+                    setSelectedTask(null);
+                }
+            }
+        };
+
+        if (selectedTask || searchModalOpen) {
+            window.addEventListener('keydown', handleKeyDown);
+            document.body.style.overflow = 'hidden';
+        } else {
+            window.addEventListener('keydown', handleKeyDown);
+        }
+
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            document.body.style.overflow = '';
+        };
+    }, [selectedTask, transferModalOpen, previewOpen, activeModalNotif, searchModalOpen]);
+
+    // Global keyboard shortcut: Ctrl+K / Cmd+K to toggle Search
+    useEffect(() => {
+        const handleShortcut = (e: KeyboardEvent) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+                e.preventDefault();
+                setSearchModalOpen(prev => !prev);
+            }
+        };
+        window.addEventListener('keydown', handleShortcut);
+        return () => window.removeEventListener('keydown', handleShortcut);
+    }, []);
+
+    // Autofocus search input when search modal opens
+    useEffect(() => {
+        if (searchModalOpen) {
+            const timer = setTimeout(() => {
+                searchInputRef.current?.focus();
+            }, 60);
+            return () => clearTimeout(timer);
+        }
+    }, [searchModalOpen]);
+
+    // Debounce server search request for modal search
+    useEffect(() => {
+        if (!searchModalOpen || !modalSearchQuery.trim()) {
+            setModalSearchResults([]);
+            setModalSearchLoading(false);
+            return;
+        }
+
+        const timer = setTimeout(async () => {
+            if (!token) return;
+            setModalSearchLoading(true);
+            try {
+                const res = await repairApi.getMyTasks(token, modalSearchQuery.trim());
+                if (res.ok && res.data?.data) {
+                    setModalSearchResults(res.data.data);
+                }
+            } catch (err) {
+                console.error('Modal search query error:', err);
+            } finally {
+                setModalSearchLoading(false);
+            }
+        }, 250);
+
+        return () => clearTimeout(timer);
+    }, [modalSearchQuery, searchModalOpen, token]);
+
+    // Instant local filter matching against all loaded tasks for fast typing response
+    const filteredModalTasks = useMemo(() => {
+        if (!modalSearchQuery.trim()) {
+            return tasks.slice(0, 6);
+        }
+        const q = modalSearchQuery.toLowerCase().trim();
+        return tasks.filter(t =>
+            (t.ticketNumber && t.ticketNumber.toLowerCase().includes(q)) ||
+            (t.customerName && t.customerName.toLowerCase().includes(q)) ||
+            (t.companyName && t.companyName.toLowerCase().includes(q)) ||
+            (t.companyContactPerson && t.companyContactPerson.toLowerCase().includes(q)) ||
+            (t.employeeName && t.employeeName.toLowerCase().includes(q)) ||
+            (t.serialNumber && t.serialNumber.toLowerCase().includes(q)) ||
+            (t.assetId && t.assetId.toLowerCase().includes(q)) ||
+            (t.mobile && t.mobile.includes(q)) ||
+            (t.companyPhone && t.companyPhone.includes(q)) ||
+            (t.employeePhone && t.employeePhone.includes(q)) ||
+            (t.email && t.email.toLowerCase().includes(q)) ||
+            (t.city && t.city.toLowerCase().includes(q)) ||
+            (t.deviceCategory && t.deviceCategory.toLowerCase().includes(q)) ||
+            (t.brand && t.brand.toLowerCase().includes(q)) ||
+            (t.customBrand && t.customBrand.toLowerCase().includes(q)) ||
+            (t.modelNumber && t.modelNumber.toLowerCase().includes(q)) ||
+            (t.problemType && t.problemType.toLowerCase().includes(q))
+        );
+    }, [tasks, modalSearchQuery]);
+
+    const modalDisplayList = modalSearchQuery.trim()
+        ? (modalSearchResults.length > 0 ? modalSearchResults : filteredModalTasks)
+        : tasks.slice(0, 6);
+
     const fetchTechnicians = useCallback(async () => {
         if (!token) return;
         try {
@@ -163,22 +343,29 @@ export default function TechnicianDashboard() {
         } catch (e) { }
     }, [token, user]);
 
-    const fetchTasks = useCallback(async () => {
+    const fetchTasks = useCallback(async (searchQueryParam?: any, isSilent = false) => {
         if (!token) return;
-        setIsLoading(true);
+        if (!isSilent) setIsLoading(true);
         setErrorMsg('');
         try {
-            const response = await repairApi.getMyTasks(token);
+            const q = typeof searchQueryParam === 'string' ? searchQueryParam : debouncedSearchQueryRef.current || '';
+            const response = await repairApi.getMyTasks(token, q);
             if (response.ok && response.data) {
-                setTasks(response.data.data || []);
+                const newTasks = response.data.data || [];
+                setTasks(newTasks);
                 setLastRefreshed(new Date());
+                setSelectedTask(prev => {
+                    if (!prev) return null;
+                    const found = newTasks.find(t => t.id === prev.id);
+                    return found ? { ...prev, ...found } : prev;
+                });
             } else {
-                setErrorMsg(response.error || 'Failed to fetch assigned tasks.');
+                if (!isSilent) setErrorMsg(response.error || 'Failed to fetch assigned tasks.');
             }
         } catch (err) {
-            setErrorMsg('Network error while retrieving tasks.');
+            if (!isSilent) setErrorMsg('Network error while retrieving tasks.');
         } finally {
-            setIsLoading(false);
+            if (!isSilent) setIsLoading(false);
         }
     }, [token]);
 
@@ -254,28 +441,68 @@ export default function TechnicianDashboard() {
         }
     }, [token]);
 
+    // Debounce search requests to the backend
+    useEffect(() => {
+        if (isFirstMount.current) {
+            isFirstMount.current = false;
+            fetchTasks('');
+            return;
+        }
+
+        const timer = setTimeout(() => {
+            debouncedSearchQueryRef.current = searchQuery;
+            fetchTasks(searchQuery);
+        }, 300);
+
+        return () => clearTimeout(timer);
+    }, [searchQuery, fetchTasks]);
+
     useEffect(() => {
         if (!isAuthenticated || !token) return;
 
-        fetchTasks();
         fetchNotifs();
         fetchTechnicians();
 
-        const taskInterval = setInterval(fetchTasks, 30000);
-        const notifInterval = setInterval(fetchNotifs, 30000);
-        autoRefreshRef.current = taskInterval;
-        notifRefreshRef.current = notifInterval;
+        const doSilentRefresh = () => {
+            if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+            fetchTasks(debouncedSearchQueryRef.current, true);
+            fetchNotifs();
+        };
+
+        const interval = setInterval(doSilentRefresh, 30000); // 30-second auto-refresh
+        autoRefreshRef.current = interval;
+        notifRefreshRef.current = interval;
+
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') {
+                doSilentRefresh();
+            }
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        const unsubscribe = subscribeToPaymentUpdates(() => {
+            doSilentRefresh();
+        });
+
+        const handleNotifsEvent = () => {
+            fetchNotifs();
+        };
+        window.addEventListener('tekdoctor:notifications_updated', handleNotifsEvent);
 
         return () => {
-            clearInterval(taskInterval);
-            clearInterval(notifInterval);
+            clearInterval(interval);
             autoRefreshRef.current = null;
             notifRefreshRef.current = null;
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+            window.removeEventListener('tekdoctor:notifications_updated', handleNotifsEvent);
+            unsubscribe();
         };
     }, [isAuthenticated, token, fetchTasks, fetchNotifs, fetchTechnicians]);
 
     useEffect(() => {
         let result = [...tasks];
+
+        // 1. Status Filter
         if (activeFilter !== 'all') {
             if (activeFilter === 'pending_acceptance') {
                 result = result.filter(t => t.pendingTechnicianId === user?.id);
@@ -283,24 +510,44 @@ export default function TechnicianDashboard() {
                 result = result.filter(t => t.status.toLowerCase() === activeFilter.toLowerCase() && t.pendingTechnicianId !== user?.id);
             }
         }
+
+        // 2. Account Type Filter (Individual Customer vs B2B Company)
+        if (accountTypeFilter === 'individual') {
+            result = result.filter(t => !t.companyId && !t.companyName);
+        } else if (accountTypeFilter === 'b2b') {
+            result = result.filter(t => Boolean(t.companyId || t.companyName));
+        }
+
+        // 3. Search Query Filter
         if (searchQuery.trim()) {
             const q = searchQuery.toLowerCase().trim();
             result = result.filter(t =>
                 (t.ticketNumber && t.ticketNumber.toLowerCase().includes(q)) ||
-                t.customerName.toLowerCase().includes(q) ||
-                t.mobile.includes(q) ||
+                (t.customerName && t.customerName.toLowerCase().includes(q)) ||
+                (t.companyName && t.companyName.toLowerCase().includes(q)) ||
+                (t.companyContactPerson && t.companyContactPerson.toLowerCase().includes(q)) ||
+                (t.employeeName && t.employeeName.toLowerCase().includes(q)) ||
+                (t.serialNumber && t.serialNumber.toLowerCase().includes(q)) ||
+                (t.assetId && t.assetId.toLowerCase().includes(q)) ||
+                (t.mobile && t.mobile.includes(q)) ||
+                (t.companyPhone && t.companyPhone.includes(q)) ||
+                (t.employeePhone && t.employeePhone.includes(q)) ||
                 (t.email && t.email.toLowerCase().includes(q)) ||
-                t.city.toLowerCase().includes(q) ||
-                t.deviceCategory.toLowerCase().includes(q) ||
-                t.brand.toLowerCase().includes(q)
+                (t.city && t.city.toLowerCase().includes(q)) ||
+                (t.deviceCategory && t.deviceCategory.toLowerCase().includes(q)) ||
+                (t.brand && t.brand.toLowerCase().includes(q)) ||
+                (t.customBrand && t.customBrand.toLowerCase().includes(q)) ||
+                (t.modelNumber && t.modelNumber.toLowerCase().includes(q)) ||
+                (t.problemType && t.problemType.toLowerCase().includes(q))
             );
         }
-        setFilteredTasks(result);
-    }, [tasks, activeFilter, searchQuery]);
 
-    const openModal = (task: ServiceRequest) => {
+        setFilteredTasks(result);
+    }, [tasks, activeFilter, accountTypeFilter, searchQuery, user?.id]);
+
+    const openModal = (task: ServiceRequest, initialTab: ModalTab = 'overview') => {
         setSelectedTask(task);
-        setActiveTab('overview');
+        setActiveTab(initialTab);
         setCustomerDesc(task.customerRepairDescription || '');
         setWorkLogs([]);
         setTicketTransfers([]);
@@ -308,6 +555,99 @@ export default function TechnicianDashboard() {
         setLogMediaFile(null);
         setSelectedMilestone('');
         setMilestoneNotes('');
+        setDiagForm({
+            diagnosis: task.diagnosis || '',
+            identifiedIssues: task.identifiedIssues || '',
+            requiredWork: task.requiredWork || '',
+            requiredParts: task.requiredParts || '',
+            estimatedCost: task.estimatedCost ? String(task.estimatedCost) : '',
+            additionalCharges: task.additionalCharges ? String(task.additionalCharges) : '',
+            estimatedCompletionDate: task.estimatedCompletionDate ? task.estimatedCompletionDate.split('T')[0] : '',
+            inspectionNotes: task.inspectionNotes || '',
+            deviceCondition: task.deviceCondition || '',
+        });
+        setIsEditingDiagnosis(false);
+        setDiagFormErrors({});
+    };
+
+    const handleSubmitDiagnosis = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!token || !selectedTask) return;
+        if (selectedTask.assignedTechnicianId !== user?.id) {
+            toast.error("Diagnosis submission is restricted to the assigned technician.");
+            return;
+        }
+        setDiagFormErrors({});
+
+        const errs: { diagnosis?: string; estimatedCost?: string; additionalCharges?: string } = {};
+        if (!diagForm.diagnosis.trim()) {
+            errs.diagnosis = 'Diagnosis description is required.';
+        } else if (diagForm.diagnosis.trim().length > 500) {
+            errs.diagnosis = 'Diagnosis description cannot exceed 500 characters.';
+        }
+
+        const trimmedCost = String(diagForm.estimatedCost || '').trim();
+        const costNum = Number(trimmedCost);
+        if (!trimmedCost) {
+            errs.estimatedCost = 'Approximate repair budget is required.';
+        } else if (isNaN(costNum) || costNum < 0) {
+            errs.estimatedCost = 'Please enter a valid approximate repair budget (₹0 or greater).';
+        } else if (costNum > 10000000) {
+            errs.estimatedCost = 'Approximate budget cannot exceed ₹10,000,000.';
+        } else if (trimmedCost.includes('.') && trimmedCost.split('.')[1].length > 2) {
+            errs.estimatedCost = 'Amount cannot exceed 2 decimal places.';
+        }
+
+        const trimmedAdd = String(diagForm.additionalCharges || '').trim();
+        const addNum = trimmedAdd ? Number(trimmedAdd) : 0;
+        if (trimmedAdd) {
+            if (isNaN(addNum) || addNum < 0) {
+                errs.additionalCharges = 'Additional charges must be a valid amount (₹0 or greater).';
+            } else if (addNum > 10000000) {
+                errs.additionalCharges = 'Additional charges cannot exceed ₹10,000,000.';
+            } else if (trimmedAdd.includes('.') && trimmedAdd.split('.')[1].length > 2) {
+                errs.additionalCharges = 'Amount cannot exceed 2 decimal places.';
+            }
+        }
+
+        if (Object.keys(errs).length > 0) {
+            setDiagFormErrors(errs);
+            return;
+        }
+
+        setSubmittingDiagnosis(true);
+        try {
+            const payload = {
+                diagnosis: diagForm.diagnosis.trim(),
+                identifiedIssues: diagForm.identifiedIssues.trim() || undefined,
+                requiredWork: diagForm.requiredWork.trim() || undefined,
+                requiredParts: diagForm.requiredParts.trim() || undefined,
+                estimatedCost: costNum,
+                additionalCharges: diagForm.additionalCharges ? parseFloat(diagForm.additionalCharges) || 0 : 0,
+                estimatedCompletionDate: diagForm.estimatedCompletionDate || undefined,
+                inspectionNotes: diagForm.inspectionNotes.trim() || undefined,
+                deviceCondition: diagForm.deviceCondition.trim() || undefined
+            };
+
+            const res = await repairApi.submitDiagnosis(token, selectedTask.id, payload);
+            if (res.ok) {
+                toast.success('Diagnosis & approximate estimate submitted to customer!');
+                setIsEditingDiagnosis(false);
+                const updatedFields = {
+                    ...payload,
+                    customerApprovalStatus: 'pending_approval',
+                    estimateSubmittedAt: new Date().toISOString()
+                };
+                setSelectedTask(prev => prev ? { ...prev, ...updatedFields } : null);
+                setTasks(prev => prev.map(t => t.id === selectedTask.id ? { ...t, ...updatedFields } : t));
+            } else {
+                toast.error(res.error || 'Failed to submit diagnosis.');
+            }
+        } catch {
+            toast.error('Network error submitting diagnosis.');
+        } finally {
+            setSubmittingDiagnosis(false);
+        }
     };
 
     useEffect(() => {
@@ -319,16 +659,37 @@ export default function TechnicianDashboard() {
     }, [activeTab, selectedTask, fetchWorkLogs, fetchTicketTransfers]);
 
     useEffect(() => {
-        if (dashboardView === 'transfers') {
+        if (isTransfersRoute) {
             fetchMyTransfers();
         }
-    }, [dashboardView, fetchMyTransfers]);
+    }, [isTransfersRoute, fetchMyTransfers]);
 
     const handleStatusChange = async (taskId: number, newStatus: 'pending' | 'in_progress' | 'completed') => {
         if (!token) return;
         if (selectedTask && selectedTask.assignedTechnicianId !== user?.id) {
             toast.error("You are not authorized to modify another technician's decision or ticket status.");
             return;
+        }
+        if (selectedTask && selectedTask.status === 'in_progress' && newStatus === 'pending') {
+            toast.error("Tickets in progress cannot be reverted to Pending.");
+            return;
+        }
+        if (newStatus === 'in_progress' && selectedTask) {
+            const approval = selectedTask.customerApprovalStatus?.toLowerCase();
+            if (approval && approval !== 'none' && approval !== 'approved') {
+                if (approval === 'pending_approval') {
+                    toast.error("Cannot start repair: Approximate budget is awaiting customer approval.");
+                    return;
+                }
+                if (approval === 'rejected' || approval === 'on_hold') {
+                    toast.error("Cannot start repair: Customer declined the repair estimate (Ticket is On Hold).");
+                    return;
+                }
+                if (approval === 'auto_cancelled') {
+                    toast.error("Cannot start repair: Customer approval window has expired and ticket is cancelled.");
+                    return;
+                }
+            }
         }
         setStatusUpdateLoadingId(taskId);
         try {
@@ -347,6 +708,95 @@ export default function TechnicianDashboard() {
         }
     };
 
+    const [recordingCash, setRecordingCash] = useState(false);
+
+    // Bill / Invoice Viewer State
+    const [receiptModalOpen, setReceiptModalOpen] = useState(false);
+    const [selectedReceiptTicketId, setSelectedReceiptTicketId] = useState<number | string | null>(null);
+    const [printingTicketId, setPrintingTicketId] = useState<number | string | null>(null);
+    const [downloadingTicketId, setDownloadingTicketId] = useState<number | string | null>(null);
+
+    const handlePrintTaskReceipt = async (ticketId: number | string) => {
+        if (!token) return;
+        setPrintingTicketId(ticketId);
+        const toastId = toast.loading('Preparing official bill for printing...');
+        try {
+            const res = await billingApi.getPaymentReceiptByTicket(ticketId, token);
+            const receiptData = res.ok && res.data ? (res.data.data || res.data) : null;
+            if (receiptData) {
+                await printPaymentBill(receiptData);
+                toast.dismiss(toastId);
+            } else {
+                toast.error(res.error || 'Failed to retrieve payment receipt.', { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error('Print preview failed: ' + (err?.message || 'Unknown error'), { id: toastId });
+        } finally {
+            setPrintingTicketId(null);
+        }
+    };
+
+    const handleDownloadTaskReceipt = async (ticketId: number | string) => {
+        if (!token) return;
+        setDownloadingTicketId(ticketId);
+        const toastId = toast.loading('Generating official GST tax invoice PDF...');
+        try {
+            const res = await billingApi.getPaymentReceiptByTicket(ticketId, token);
+            const receiptData = res.ok && res.data ? (res.data.data || res.data) : null;
+            if (receiptData) {
+                await downloadPaymentBillPdf(receiptData);
+                toast.success('Official tax invoice downloaded successfully!', { id: toastId });
+            } else {
+                toast.error(res.error || 'Failed to generate tax invoice PDF.', { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error('Download failed: ' + (err?.message || 'Unknown error'), { id: toastId });
+        } finally {
+            setDownloadingTicketId(null);
+        }
+    };
+
+    const handleRecordCashCollected = async () => {
+        if (!token || !selectedTask) return;
+        const isFinal = (selectedTask as any).invoiceStatus === 'Final' || (selectedTask as any).invoice_status === 'Final';
+        if (!isFinal) {
+            toast.error('Cash collection is unavailable until the final invoice is released.');
+            return;
+        }
+        const isCash = (selectedTask.paymentMethod || (selectedTask as any).payment_method || '').toLowerCase() === 'cash';
+        if (!isCash) {
+            toast.error('Cash payment has not been initiated for this repair ticket.');
+            return;
+        }
+        setRecordingCash(true);
+        try {
+            const res = await billingApi.recordCashCollected({ ticketId: selectedTask.id }, token);
+            if (res.ok) {
+                toast.success('Cash collection recorded! Payment status is now pending admin verification.');
+                setSelectedTask(prev => prev ? {
+                    ...prev,
+                    collectionStatus: 'collected',
+                    collection_status: 'collected',
+                    paymentStatus: 'pending_verification',
+                    payment_status: 'pending_verification'
+                } : null);
+                setTasks(prev => prev.map(t => t.id === selectedTask.id ? {
+                    ...t,
+                    collectionStatus: 'collected',
+                    collection_status: 'collected',
+                    paymentStatus: 'pending_verification',
+                    payment_status: 'pending_verification'
+                } : t));
+            } else {
+                toast.error(res.error || 'Failed to record cash collection.');
+            }
+        } catch (err: any) {
+            toast.error(err?.message || 'Error recording cash collection.');
+        } finally {
+            setRecordingCash(false);
+        }
+    };
+
     const handleAccept = async (e: React.MouseEvent, taskId: number) => {
         e.stopPropagation();
         if (!token) return;
@@ -355,7 +805,7 @@ export default function TechnicianDashboard() {
             if (res.ok) {
                 toast.success('Ticket Accepted');
                 fetchTasks();
-                if (dashboardView === 'transfers') fetchMyTransfers();
+                if (isTransfersRoute) fetchMyTransfers();
             } else {
                 toast.error(res.error || 'Failed to accept ticket');
             }
@@ -372,7 +822,7 @@ export default function TechnicianDashboard() {
             if (res.ok) {
                 toast.success('Ticket Rejected');
                 fetchTasks();
-                if (dashboardView === 'transfers') fetchMyTransfers();
+                if (isTransfersRoute) fetchMyTransfers();
             } else {
                 toast.error(res.error || 'Failed to reject ticket');
             }
@@ -395,7 +845,7 @@ export default function TechnicianDashboard() {
                 setTransferModalOpen(false);
                 setSelectedTask(null);
                 fetchTasks();
-                if (dashboardView === 'transfers') fetchMyTransfers();
+                if (isTransfersRoute) fetchMyTransfers();
             } else {
                 toast.error(res.error || 'Failed to transfer ticket.');
             }
@@ -526,6 +976,7 @@ export default function TechnicianDashboard() {
 
     const TABS: { id: ModalTab; label: string; icon: React.ReactNode }[] = [
         { id: 'overview', label: 'Overview', icon: <FileText size={13} /> },
+        { id: 'diagnosis', label: 'Diagnosis & Estimate', icon: <Cpu size={13} /> },
         { id: 'work-log', label: 'Work Log', icon: <ClipboardList size={13} /> },
         { id: 'transfers', label: 'Transfer Chain', icon: <ArrowRightLeft size={13} /> },
         { id: 'milestones', label: 'Milestones', icon: <Bell size={13} /> },
@@ -545,357 +996,557 @@ export default function TechnicianDashboard() {
         return <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border ${cls}`}>{stage}</span>;
     };
 
+    const getHeaderInfo = () => {
+        if (location.pathname === ROUTES.TECHNICIAN_DIAGNOSIS) {
+            return {
+                badge: 'Stage: Inspection & Quotes',
+                title: 'Diagnosis & Estimate',
+                subtitle: 'Tasks requiring diagnostic inspection, parts estimation, and customer quotes'
+            };
+        }
+        if (location.pathname === ROUTES.TECHNICIAN_IN_PROGRESS) {
+            return {
+                badge: 'Stage: Active Repair',
+                title: 'In Progress Repairs',
+                subtitle: 'Active repairs with approved customer estimates under bench execution'
+            };
+        }
+        if (location.pathname === ROUTES.TECHNICIAN_COMPLETED) {
+            return {
+                badge: 'Stage: Finished & Verified',
+                title: 'Completed Repairs',
+                subtitle: 'Repairs finished with quality checks awaiting dispatch or customer handover'
+            };
+        }
+        if (location.pathname === ROUTES.TECHNICIAN_DELIVERED) {
+            return {
+                badge: 'Stage: Dispatched / Closed',
+                title: 'Delivered Repairs',
+                subtitle: 'Archived tickets delivered or handed back to customer'
+            };
+        }
+        if (location.pathname === ROUTES.TECHNICIAN_TRANSFERS) {
+            return {
+                badge: 'Task Handoffs & Audit',
+                title: 'Task Transfer',
+                subtitle: 'Manage incoming transfer requests and track cross-technician device handoffs'
+            };
+        }
+        if (location.pathname === ROUTES.TECHNICIAN_NOTIFICATIONS) {
+            return {
+                badge: 'Alerts & Telemetry',
+                title: 'Notifications Center',
+                subtitle: 'Operational dispatches, customer approvals, and ticket lifecycle events'
+            };
+        }
+        if (location.pathname === ROUTES.TECHNICIAN_ASSIGNED_TICKETS) {
+            return {
+                badge: 'Assigned Workload',
+                title: 'My Assigned Tasks',
+                subtitle: 'Authoritative list of repair tickets assigned to your bench'
+            };
+        }
+        return {
+            badge: 'Technician Workbench',
+            title: 'Technician Dashboard',
+            subtitle: 'Real-time telemetry and assigned device repair tickets'
+        };
+    };
+
+    const headerInfo = getHeaderInfo();
+    const individualCount = tasks.filter(t => !t.companyId && !t.companyName).length;
+    const b2bCount = tasks.filter(t => Boolean(t.companyId || t.companyName)).length;
+    const pendingTransferCount = tasks.filter(t => t.pendingTechnicianId === user?.id).length;
+    const pendingCount = tasks.filter(t => t.status === 'pending' && t.pendingTechnicianId !== user?.id).length;
+    const inProgressCount = tasks.filter(t => t.status === 'in_progress').length;
+    const completedCount = tasks.filter(t => t.status === 'completed').length;
+    const deliveredCount = tasks.filter(t => t.status === 'delivered').length;
+
+    // Select top Diagnosis & Estimate ticket and Pending Acceptance ticket for Dashboard overview
+    const diagnosisTicket = useMemo(() => {
+        const eligible = tasks.filter(t => t.status?.toLowerCase() === 'pending' && t.pendingTechnicianId !== user?.id);
+        if (eligible.length === 0) return null;
+        return [...eligible].sort((a, b) => {
+            const isPriorityA = (a.priority?.toLowerCase() === 'priority' || a.priority?.toLowerCase() === 'urgent') ? 1 : 0;
+            const isPriorityB = (b.priority?.toLowerCase() === 'priority' || b.priority?.toLowerCase() === 'urgent') ? 1 : 0;
+            if (isPriorityA !== isPriorityB) return isPriorityB - isPriorityA;
+            const timeA = new Date(a.updatedAt || a.createdAt || 0).getTime();
+            const timeB = new Date(b.updatedAt || b.createdAt || 0).getTime();
+            return timeB - timeA;
+        })[0];
+    }, [tasks, user?.id]);
+
+    const pendingAcceptanceTicket = useMemo(() => {
+        const eligible = tasks.filter(t => t.pendingTechnicianId === user?.id);
+        if (eligible.length === 0) return null;
+        return [...eligible].sort((a, b) => {
+            const isPriorityA = (a.priority?.toLowerCase() === 'priority' || a.priority?.toLowerCase() === 'urgent') ? 1 : 0;
+            const isPriorityB = (b.priority?.toLowerCase() === 'priority' || b.priority?.toLowerCase() === 'urgent') ? 1 : 0;
+            if (isPriorityA !== isPriorityB) return isPriorityB - isPriorityA;
+            const timeA = new Date(a.updatedAt || a.createdAt || 0).getTime();
+            const timeB = new Date(b.updatedAt || b.createdAt || 0).getTime();
+            return timeB - timeA;
+        })[0];
+    }, [tasks, user?.id]);
+
+    const displayedNotifications = notifications.filter(n => {
+        if (notifFilter === 'unread') {
+            return n.is_read === false || n.is_read === 0 || !n.is_read;
+        }
+        return true;
+    });
+
     return (
-        <div className="min-h-screen bg-[#050505] text-zinc-300 font-sans py-12 px-6">
-            <div className="max-w-7xl mx-auto space-y-8">
+        <div className="min-h-screen bg-[#050505] text-zinc-300 font-sans py-3 sm:py-6 md:py-10 px-0 sm:px-2 md:px-4">
+            <div className="max-w-7xl mx-auto space-y-5 sm:space-y-8">
 
                 {/* Header */}
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 border-b border-zinc-900 pb-6">
-                    <div>
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-6 border-b border-zinc-900 pb-5 md:pb-6">
+                    <div className="min-w-0">
                         <div className="flex items-center gap-2 mb-1">
-                            <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-emerald-400">Technician Workbench</span>
-                            <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-ping" />
+                            <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-emerald-400 truncate">{headerInfo.badge}</span>
+                            <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-ping shrink-0" />
                         </div>
-                        <h1 className="text-3xl font-extrabold text-white font-outfit tracking-tight">My Assigned Tasks</h1>
-                        <div className="flex items-center gap-3 mt-1">
-                            <div className="flex items-center gap-1.5 text-xs text-zinc-500"><User size={12} /><span>{user?.name}</span></div>
-                            <span className="text-zinc-700">•</span>
-                            <div className="flex items-center gap-1.5 text-xs text-zinc-600"><Wifi size={11} /><span>Auto-refresh every 30s</span></div>
+                        <h1 className="text-2xl sm:text-3xl font-extrabold text-white font-outfit tracking-tight break-words">{headerInfo.title}</h1>
+                        <p className="text-xs text-zinc-400 mt-1 leading-relaxed">{headerInfo.subtitle}</p>
+                        <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-2">
+                            <div className="flex items-center gap-1.5 text-xs text-zinc-500"><User size={12} className="shrink-0" /><span className="truncate max-w-[140px] sm:max-w-none">{user?.name}</span></div>
+                            <span className="text-zinc-700 hidden sm:inline">•</span>
+                            <div className="flex items-center gap-1.5 text-xs text-zinc-600"><Wifi size={11} className="shrink-0" /><span>Auto-refresh 30s</span></div>
                         </div>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 sm:gap-3">
                         <div className="text-[10px] font-mono text-zinc-600 hidden md:block">LAST_SYNC: {lastRefreshed.toLocaleTimeString()}</div>
 
-                        {/* Notification Bell Dropdown */}
-                        <div className="relative" ref={notifRef}>
-                            <button
-                                onClick={() => setShowNotifications(!showNotifications)}
-                                className="relative p-2.5 bg-zinc-900/60 border border-zinc-800 rounded-lg text-zinc-400 hover:text-emerald-400 hover:border-emerald-400/30 hover:bg-emerald-400/5 transition-all duration-300 cursor-pointer flex items-center justify-center animate-fadeIn"
-                            >
-                                <Bell size={14} />
-                                {unreadCount > 0 && (
-                                    <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 bg-red-500 rounded-full text-[8.5px] font-bold text-white flex items-center justify-center animate-pulse">
-                                        {unreadCount > 9 ? '9+' : unreadCount}
-                                    </span>
-                                )}
-                            </button>
-
-                            <AnimatePresence>
-                                {showNotifications && (
-                                    <motion.div
-                                        initial={{ opacity: 0, y: 12, scale: 0.95 }}
-                                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                                        exit={{ opacity: 0, y: 12, scale: 0.95 }}
-                                        transition={{ duration: 0.15 }}
-                                        className="absolute right-0 mt-3 w-80 bg-zinc-950 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl z-50 text-left"
-                                    >
-                                        <div className="p-4 border-b border-zinc-900 flex justify-between items-center bg-black/50">
-                                            <h4 className="text-[11px] font-bold text-white uppercase tracking-widest font-mono">My Alerts</h4>
-                                            <div className="flex gap-2">
-                                                {unreadCount > 0 && (
-                                                    <button
-                                                        onClick={() => handleMarkAsRead('all')}
-                                                        className="text-[9px] font-mono text-emerald-400 hover:text-white uppercase transition-colors cursor-pointer"
-                                                    >
-                                                        Mark all read
-                                                    </button>
-                                                )}
-                                                {notifications.length > 0 && (
-                                                    <button
-                                                        onClick={handleClearAllNotifications}
-                                                        className="text-[9px] font-mono text-red-500 hover:text-white uppercase transition-colors cursor-pointer"
-                                                    >
-                                                        Clear all
-                                                    </button>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="max-h-72 overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-800">
-                                            {notifications.length === 0 ? (
-                                                <div className="p-8 text-center text-zinc-600 text-xs font-mono">
-                                                    No notifications received.
-                                                </div>
-                                            ) : (
-                                                notifications.map((n) => {
-                                                    const hasTicket = !!n.ticket_id;
-                                                    const handleNotificationClick = async () => {
-                                                        if (!n.is_read) {
-                                                            await handleMarkAsRead(Number(n.id));
-                                                        }
-                                                        setShowNotifications(false);
-                                                        setActiveModalNotif({ ...n, is_read: true });
-                                                    };
-                                                    return (
-                                                        <div
-                                                            key={n.id}
-                                                            onClick={handleNotificationClick}
-                                                            className={`p-4 border-b border-zinc-900 transition-all relative group text-left cursor-pointer ${n.is_read
-                                                                ? 'bg-transparent text-zinc-500 hover:bg-zinc-900/30'
-                                                                : 'bg-emerald-400/[0.03] hover:bg-zinc-900/50 border-l-2 border-l-emerald-400 text-white'
-                                                                }`}
-                                                        >
-                                                            <div className="flex justify-between items-start gap-4 mb-1">
-                                                                <div className="flex items-center gap-1.5 flex-wrap">
-                                                                    <p className={`text-xs font-bold ${n.is_read ? 'text-zinc-400' : 'text-emerald-400'}`}>
-                                                                        {n.title}
-                                                                    </p>
-                                                                    {!n.is_read && (
-                                                                        <span className="text-[8px] bg-red-500/10 text-red-400 font-bold px-1 rounded uppercase tracking-wider scale-90 origin-left">New</span>
-                                                                    )}
-                                                                </div>
-                                                                <button
-                                                                    onClick={(e) => { e.stopPropagation(); handleDeleteNotification(e, Number(n.id)); }}
-                                                                    className="text-zinc-600 hover:text-red-400 p-0.5 rounded transition-colors shrink-0"
-                                                                    title="Delete notification"
-                                                                >
-                                                                    <Trash2 size={12} />
-                                                                </button>
-                                                            </div>
-                                                            <p className="text-[10px] opacity-80 leading-relaxed mb-1.5 font-normal">
-                                                                {n.message}
-                                                            </p>
-                                                            {n.sender_name && (
-                                                                <div className="text-[9px] text-zinc-500 font-mono mb-1">
-                                                                    From: {n.sender_name}
-                                                                </div>
-                                                            )}
-                                                            {hasTicket && n.ticket_number && (
-                                                                <div className="text-[9px] font-mono text-emerald-400/80 flex items-center gap-0.5 mb-2 hover:underline cursor-pointer">
-                                                                    <span>Related Ticket: {n.ticket_number}</span>
-                                                                </div>
-                                                            )}
-                                                            <p className="text-[9px] font-mono text-zinc-600">
-                                                                {new Date(n.created_at).toLocaleString()}
-                                                            </p>
-                                                        </div>
-                                                    );
-                                                })
-                                            )}
-                                        </div>
-                                    </motion.div>
-                                )}
-                            </AnimatePresence>
-                        </div>
-
-                        <button onClick={fetchTasks} className="p-2.5 bg-zinc-900/60 border border-zinc-800 rounded-lg hover:border-emerald-500/50 text-zinc-400 hover:text-white transition-all cursor-pointer flex items-center gap-2 text-xs font-semibold font-mono">
-                            <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} /> SYNC
-                        </button>
-                        <button onClick={logout} className="p-2.5 bg-zinc-900/60 border border-zinc-800 rounded-lg hover:border-red-500/50 text-zinc-400 hover:text-red-400 transition-all cursor-pointer flex items-center gap-2 text-xs font-semibold font-mono">
-                            <LogOut size={14} /> LOGOUT
-                        </button>
-                    </div>
-                </div>
-
-                {/* View Mode Switcher: Workbench Tasks vs Task Transfer History */}
-                <div className="flex flex-wrap items-center justify-between gap-4 border-b border-zinc-900 pb-4">
-                    <div className="flex items-center gap-2">
+                        {/* Compact Search Icon for Ticket Searching */}
                         <button
-                            onClick={() => setDashboardView('tasks')}
-                            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-mono font-bold tracking-wide transition-all cursor-pointer ${
-                                dashboardView === 'tasks'
-                                    ? 'bg-emerald-400 text-black shadow-lg shadow-emerald-500/10'
-                                    : 'bg-zinc-900/40 text-zinc-400 hover:text-white border border-zinc-800/60'
-                            }`}
+                            type="button"
+                            onClick={() => setSearchModalOpen(true)}
+                            className="p-2 sm:p-2.5 bg-zinc-900/60 border border-zinc-800 rounded-lg text-zinc-400 hover:text-emerald-400 hover:border-emerald-400/30 hover:bg-emerald-400/5 transition-all duration-300 cursor-pointer flex items-center justify-center shrink-0"
+                            title="Search tickets (Ctrl+K)"
+                            aria-label="Search tickets"
                         >
-                            <Wrench size={13} />
-                            ASSIGNED WORKBENCH
-                            <span className={`px-1.5 py-0.5 rounded text-[10px] ${dashboardView === 'tasks' ? 'bg-black/20 text-black font-bold' : 'bg-zinc-800 text-zinc-400'}`}>
-                                {tasks.length}
-                            </span>
+                            <Search size={14} />
                         </button>
 
-                        <button
-                            onClick={() => { setDashboardView('transfers'); fetchMyTransfers(); }}
-                            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-mono font-bold tracking-wide transition-all cursor-pointer ${
-                                dashboardView === 'transfers'
-                                    ? 'bg-neon-cyan text-black shadow-lg shadow-cyan-500/10'
-                                    : 'bg-zinc-900/40 text-zinc-400 hover:text-white border border-zinc-800/60'
-                            }`}
-                        >
-                            <ArrowRightLeft size={13} />
-                            TASK TRANSFER HISTORY
-                            {transferStats.total > 0 && (
-                                <span className={`px-1.5 py-0.5 rounded text-[10px] ${dashboardView === 'transfers' ? 'bg-black/20 text-black font-bold' : 'bg-zinc-800 text-zinc-400'}`}>
-                                    {transferStats.total}
-                                </span>
-                            )}
-                            {transferStats.pendingCount > 0 && (
-                                <span className="px-1.5 py-0.5 rounded text-[9px] bg-red-500 text-white font-bold animate-pulse">
-                                    {transferStats.pendingCount} pending
-                                </span>
-                            )}
-                        </button>
-                    </div>
-
-                    {dashboardView === 'transfers' && (
-                        <div className="text-xs font-mono text-zinc-500">
-                            Showing <span className="text-white font-semibold">{myTransfers.length}</span> of <span className="text-white font-semibold">{transferTotalRecords}</span> movements
-                        </div>
-                    )}
-                </div>
-
-                {/* ══════════════════════════════════════════════════════════════ */}
-                {/* ── WORKBENCH TASKS VIEW ── */}
-                {/* ══════════════════════════════════════════════════════════════ */}
-                {dashboardView === 'tasks' && (
-                    <>
-                        {/* Filters & Search */}
-                        <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
-                            <div className="flex flex-wrap gap-1.5 bg-zinc-900/40 p-1 rounded-xl border border-zinc-900 self-start md:self-auto w-full md:w-auto">
-                                {[{ id: 'all', label: 'All Tasks' }, { id: 'pending_acceptance', label: 'Pending Acceptance' }, { id: 'pending', label: 'Pending' }, { id: 'in_progress', label: 'In Progress' }, { id: 'completed', label: 'Completed' }, { id: 'delivered', label: 'Delivered' }].map(tab => (
-                                    <button key={tab.id} onClick={() => setActiveFilter(tab.id)} className={`px-4 py-2 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center gap-2 ${activeFilter === tab.id ? 'bg-emerald-400 text-black' : 'text-zinc-400 hover:text-white'}`}>
-                                        {tab.label}
-                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${activeFilter === tab.id ? 'bg-black/20 text-black font-bold' : 'bg-zinc-800 text-zinc-500'}`}>
-                                            {tab.id === 'all' ? tasks.length : tab.id === 'pending_acceptance' ? tasks.filter(t => t.pendingTechnicianId === user?.id).length : tasks.filter(t => t.status.toLowerCase() === tab.id && t.pendingTechnicianId !== user?.id).length}
+                        {/* Notification Bell Dropdown (Hidden on Notifications Center page to avoid duplicate popover) */}
+                        {!isNotificationsRoute && (
+                            <div className="hidden md:block relative" ref={notifRef}>
+                                <button
+                                    onClick={() => setShowNotifications(!showNotifications)}
+                                    className="relative p-2 sm:p-2.5 bg-zinc-900/60 border border-zinc-800 rounded-lg text-zinc-400 hover:text-emerald-400 hover:border-emerald-400/30 hover:bg-emerald-400/5 transition-all duration-300 cursor-pointer flex items-center justify-center animate-fadeIn"
+                                    title="Notifications Dropdown"
+                                >
+                                    <Bell size={14} />
+                                    {unreadCount > 0 && (
+                                        <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 bg-red-500 rounded-full text-[8.5px] font-bold text-white flex items-center justify-center animate-pulse">
+                                            {unreadCount > 9 ? '9+' : unreadCount}
                                         </span>
-                                    </button>
-                                ))}
-                            </div>
-                            <div className="relative w-full md:w-72">
-                                <Search className="absolute left-3.5 top-3 w-4 h-4 text-zinc-500" />
-                                <input type="text" placeholder="Search customer, device, city..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full bg-zinc-900/40 border border-zinc-800/80 rounded-xl pl-10 pr-4 py-2.5 text-xs text-white focus:outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 transition-all" />
-                            </div>
-                        </div>
+                                    )}
+                                </button>
 
-                        {/* Loading / Error / Empty / Cards */}
-                        {isLoading ? (
-                            <div className="min-h-[40vh] flex flex-col items-center justify-center text-center">
-                                <Loader2 className="w-8 h-8 text-emerald-400 animate-spin mb-3" />
-                                <p className="text-zinc-500 text-xs font-mono uppercase tracking-wider">Syncing workbench telemetry...</p>
-                            </div>
-                        ) : errorMsg ? (
-                            <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-6 text-center text-red-400 font-mono text-sm max-w-xl mx-auto">{errorMsg}</div>
-                        ) : filteredTasks.length === 0 ? (
-                            <div className="border border-zinc-900 bg-zinc-950/20 rounded-2xl p-16 text-center">
-                                <Wrench className="w-10 h-10 text-zinc-700 mx-auto mb-4" />
-                                <p className="text-zinc-500 text-sm">{tasks.length === 0 ? 'No tasks have been assigned to you yet.' : 'No tasks match the current filter.'}</p>
-                            </div>
-                        ) : (
-                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                                {filteredTasks.map(task => (
-                                    <div key={task.id} onClick={() => openModal(task)} className={`bg-zinc-900/20 border rounded-2xl p-5 cursor-pointer transition-all hover:bg-zinc-900/40 group ${getStatusCardStyle(task.status)} relative overflow-hidden`}>
-                                        {task.pendingTechnicianId === user?.id && (
-                                            <div className="absolute inset-0 bg-zinc-950/80 backdrop-blur-[2px] z-10 flex flex-col items-center justify-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                <div className="text-white font-bold tracking-widest text-xs font-mono uppercase bg-emerald-500/20 px-3 py-1 rounded-lg border border-emerald-500/30 text-emerald-300">Requires Confirmation</div>
-                                                <div className="flex items-center gap-3 mt-2">
-                                                    <button onClick={(e) => handleAccept(e, task.id)} className="px-5 py-2 bg-emerald-500 text-black font-bold rounded-lg text-xs hover:bg-emerald-400 transition-colors">Accept</button>
-                                                    <button onClick={(e) => handleReject(e, task.id)} className="px-5 py-2 bg-red-500/20 border border-red-500/30 text-red-400 font-bold rounded-lg text-xs hover:bg-red-500/40 transition-colors">Reject</button>
+                                <AnimatePresence>
+                                    {showNotifications && (
+                                        <motion.div
+                                            initial={{ opacity: 0, y: 12, scale: 0.95 }}
+                                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                                            exit={{ opacity: 0, y: 12, scale: 0.95 }}
+                                            transition={{ duration: 0.15 }}
+                                            className="absolute right-0 mt-3 w-[calc(100vw-2.5rem)] max-w-xs sm:w-80 sm:max-w-none bg-zinc-950 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl z-50 text-left"
+                                        >
+                                            <div className="p-4 border-b border-zinc-900 flex justify-between items-center bg-black/50">
+                                                <h4 className="text-[11px] font-bold text-white uppercase tracking-widest font-mono">My Alerts</h4>
+                                                <div className="flex gap-2">
+                                                    {unreadCount > 0 && (
+                                                        <button
+                                                            onClick={() => handleMarkAsRead('all')}
+                                                            className="text-[9px] font-mono text-emerald-400 hover:text-white uppercase transition-colors cursor-pointer"
+                                                        >
+                                                            Mark all read
+                                                        </button>
+                                                    )}
+                                                    {notifications.length > 0 && (
+                                                        <button
+                                                            onClick={handleClearAllNotifications}
+                                                            className="text-[9px] font-mono text-red-500 hover:text-white uppercase transition-colors cursor-pointer"
+                                                        >
+                                                            Clear all
+                                                        </button>
+                                                    )}
                                                 </div>
                                             </div>
-                                        )}
-                                        <div className="flex items-start justify-between mb-4">
-                                            <div>
-                                                <div className="font-mono text-xs font-bold text-emerald-400 mb-1">{task.ticketNumber || `TICKET #${task.id}`}</div>
-                                                <div className="text-white font-semibold text-sm">{task.customerName}</div>
-                                            </div>
-                                            <div className="flex flex-col items-end gap-1.5">{task.pendingTechnicianId === user?.id ? <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-500 border border-amber-500/30">Pending Transfer</span> : getStatusBadge(task.status)}</div>
-                                        </div>
-                                        <div className="mb-4 bg-zinc-950/40 rounded-xl p-3 space-y-1">
-                                            <div className="text-zinc-300 text-xs font-semibold">{task.deviceCategory}</div>
-                                            <div className="text-zinc-500 text-[11px] font-mono">{task.brand}{task.modelNumber ? ` · ${task.modelNumber}` : ''}</div>
-                                            <div className="text-zinc-400 text-[11px] mt-1 font-medium">{task.problemType}</div>
-                                        </div>
-                                        <div className="flex items-center justify-between">
-                                            <div className="flex flex-col gap-1">
-                                                <div className="flex items-center gap-1.5 text-zinc-500 text-[11px]"><MapPin size={10} /> {task.city}</div>
-                                                <div className="flex items-center gap-1.5 text-zinc-500 text-[11px]"><Phone size={10} /> {task.mobile}</div>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                {task.customerRepairDescription && (
-                                                    <span title="Customer note present" className="text-emerald-400"><FileText size={12} /></span>
+                                            <div className="max-h-72 overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-800">
+                                                {notifications.length === 0 ? (
+                                                    <div className="p-8 text-center text-zinc-600 text-xs font-mono">
+                                                        No notifications received.
+                                                    </div>
+                                                ) : (
+                                                    notifications.map((n) => {
+                                                        const hasTicket = !!n.ticket_id;
+                                                        const handleNotificationClick = async () => {
+                                                            if (!n.is_read) {
+                                                                await handleMarkAsRead(Number(n.id));
+                                                            }
+                                                            setShowNotifications(false);
+                                                            setActiveModalNotif({ ...n, is_read: true });
+                                                        };
+                                                        return (
+                                                            <div
+                                                                key={n.id}
+                                                                onClick={handleNotificationClick}
+                                                                className={`p-4 border-b border-zinc-900 transition-all relative group text-left cursor-pointer ${n.is_read
+                                                                    ? 'bg-transparent text-zinc-500 hover:bg-zinc-900/30'
+                                                                    : 'bg-emerald-400/[0.03] hover:bg-zinc-900/50 border-l-2 border-l-emerald-400 text-white'
+                                                                    }`}
+                                                            >
+                                                                <div className="flex justify-between items-start gap-4 mb-1">
+                                                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                                                        <p className={`text-xs font-bold ${n.is_read ? 'text-zinc-400' : 'text-emerald-400'}`}>
+                                                                            {n.title}
+                                                                        </p>
+                                                                        {!n.is_read && (
+                                                                            <span className="text-[8px] bg-red-500/10 text-red-400 font-bold px-1 rounded uppercase tracking-wider scale-90 origin-left">New</span>
+                                                                        )}
+                                                                    </div>
+                                                                    <button
+                                                                        onClick={(e) => { e.stopPropagation(); handleDeleteNotification(e, Number(n.id)); }}
+                                                                        className="text-zinc-600 hover:text-red-400 p-0.5 rounded transition-colors shrink-0"
+                                                                        title="Delete notification"
+                                                                    >
+                                                                        <Trash2 size={12} />
+                                                                    </button>
+                                                                </div>
+                                                                <p className="text-[10px] opacity-80 leading-relaxed mb-1.5 font-normal">
+                                                                    {n.message}
+                                                                </p>
+                                                                {n.sender_name && (
+                                                                    <div className="text-[9px] text-zinc-500 font-mono mb-1">
+                                                                        From: {n.sender_name}
+                                                                    </div>
+                                                                )}
+                                                                {hasTicket && n.ticket_number && (
+                                                                    <div className="text-[9px] font-mono text-emerald-400/80 flex items-center gap-0.5 mb-2 hover:underline cursor-pointer">
+                                                                        <span>Related Ticket: {n.ticket_number}</span>
+                                                                    </div>
+                                                                )}
+                                                                <p className="text-[9px] font-mono text-zinc-600">
+                                                                    {new Date(n.created_at).toLocaleString()}
+                                                                </p>
+                                                            </div>
+                                                        );
+                                                    })
                                                 )}
-                                                {getPriorityBadge(task.priority)}
-                                                <ChevronRight size={14} className="text-zinc-600 group-hover:text-zinc-400 transition-colors" />
                                             </div>
-                                        </div>
-                                    </div>
-                                ))}
+                                        </motion.div>
+                                    )}
+                                </AnimatePresence>
                             </div>
                         )}
-                    </>
+
+                        <button onClick={fetchTasks} className="p-2 sm:p-2.5 bg-zinc-900/60 border border-zinc-800 rounded-lg hover:border-emerald-500/50 text-zinc-400 hover:text-white transition-all cursor-pointer flex items-center gap-1.5 sm:gap-2 text-xs font-semibold font-mono">
+                            <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} /> SYNC
+                        </button>
+                    </div>
+                </div>
+
+                {/* KPI Metrics: Rendered on Dashboard Overview Route */}
+                {isDashboardRoute && (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
+                        <div
+                            onClick={() => navigate(ROUTES.TECHNICIAN_ASSIGNED_TICKETS)}
+                            className="bg-[#0c0c0c] border border-zinc-900 rounded-xl sm:rounded-2xl p-3 sm:p-4 cursor-pointer transition-all hover:border-emerald-500/50 hover:bg-emerald-500/[0.03] group"
+                        >
+                            <div className="text-[10px] font-mono uppercase text-zinc-500 flex items-center justify-between mb-1">
+                                <span className="truncate">Total Assigned</span>
+                                <ClipboardList size={13} className="text-zinc-400 group-hover:text-emerald-400 transition-colors shrink-0" />
+                            </div>
+                            <div className="text-xl sm:text-2xl font-bold font-outfit text-white">{tasks.length}</div>
+                            <div className="text-[10px] font-mono text-emerald-400/80 mt-1 flex items-center gap-1 truncate">Workbench <ChevronRight size={10} /></div>
+                        </div>
+
+                        <div
+                            onClick={() => navigate(`${ROUTES.TECHNICIAN_ASSIGNED_TICKETS}?tab=pending_acceptance`)}
+                            className="bg-[#0c0c0c] border border-zinc-900 rounded-xl sm:rounded-2xl p-3 sm:p-4 cursor-pointer transition-all hover:border-amber-500/50 hover:bg-amber-500/[0.03] group"
+                        >
+                            <div className="text-[10px] font-mono uppercase text-amber-400 flex items-center justify-between mb-1">
+                                <span className="truncate">Pending Acceptance</span>
+                                <Hourglass size={13} className="text-amber-400 shrink-0" />
+                            </div>
+                            <div className="text-xl sm:text-2xl font-bold font-outfit text-amber-400">{pendingTransferCount}</div>
+                            <div className="text-[10px] font-mono text-amber-400/80 mt-1 flex items-center gap-1 truncate">Review <ChevronRight size={10} /></div>
+                        </div>
+
+                        <div
+                            onClick={() => navigate(ROUTES.TECHNICIAN_DIAGNOSIS)}
+                            className="bg-[#0c0c0c] border border-zinc-900 rounded-xl sm:rounded-2xl p-3 sm:p-4 cursor-pointer transition-all hover:border-blue-500/50 hover:bg-blue-500/[0.03] group"
+                        >
+                            <div className="text-[10px] font-mono uppercase text-blue-400 flex items-center justify-between mb-1">
+                                <span className="truncate">Diagnosis & Quote</span>
+                                <Cpu size={13} className="text-blue-400 shrink-0" />
+                            </div>
+                            <div className="text-xl sm:text-2xl font-bold font-outfit text-blue-400">{pendingCount}</div>
+                            <div className="text-[10px] font-mono text-blue-400/80 mt-1 flex items-center gap-1 truncate">Queue <ChevronRight size={10} /></div>
+                        </div>
+
+                        <div
+                            onClick={() => navigate(ROUTES.TECHNICIAN_IN_PROGRESS)}
+                            className="bg-[#0c0c0c] border border-zinc-900 rounded-xl sm:rounded-2xl p-3 sm:p-4 cursor-pointer transition-all hover:border-neon-cyan/50 hover:bg-neon-cyan/[0.03] group"
+                        >
+                            <div className="text-[10px] font-mono uppercase text-neon-cyan flex items-center justify-between mb-1">
+                                <span className="truncate">In Progress</span>
+                                <Hammer size={13} className="text-neon-cyan shrink-0" />
+                            </div>
+                            <div className="text-xl sm:text-2xl font-bold font-outfit text-neon-cyan">{inProgressCount}</div>
+                            <div className="text-[10px] font-mono text-cyan-400/80 mt-1 flex items-center gap-1 truncate">Bench <ChevronRight size={10} /></div>
+                        </div>
+
+                        <div
+                            onClick={() => navigate(ROUTES.TECHNICIAN_COMPLETED)}
+                            className="bg-[#0c0c0c] border border-zinc-900 rounded-xl sm:rounded-2xl p-3 sm:p-4 cursor-pointer transition-all hover:border-emerald-500/50 hover:bg-emerald-500/[0.03] group"
+                        >
+                            <div className="text-[10px] font-mono uppercase text-emerald-400 flex items-center justify-between mb-1">
+                                <span className="truncate">Completed</span>
+                                <CheckCheck size={13} className="text-emerald-400 shrink-0" />
+                            </div>
+                            <div className="text-xl sm:text-2xl font-bold font-outfit text-emerald-400">{completedCount}</div>
+                            <div className="text-[10px] font-mono text-emerald-400/80 mt-1 flex items-center gap-1 truncate">Verified <ChevronRight size={10} /></div>
+                        </div>
+
+                        <div
+                            onClick={() => navigate(ROUTES.TECHNICIAN_DELIVERED)}
+                            className="bg-[#0c0c0c] border border-zinc-900 rounded-xl sm:rounded-2xl p-3 sm:p-4 cursor-pointer transition-all hover:border-purple-500/50 hover:bg-purple-500/[0.03] group"
+                        >
+                            <div className="text-[10px] font-mono uppercase text-purple-400 flex items-center justify-between mb-1">
+                                <span className="truncate">Delivered</span>
+                                <Truck size={13} className="text-purple-400 shrink-0" />
+                            </div>
+                            <div className="text-xl sm:text-2xl font-bold font-outfit text-purple-400">{deliveredCount}</div>
+                            <div className="text-[10px] font-mono text-purple-400/80 mt-1 flex items-center gap-1 truncate">Archive <ChevronRight size={10} /></div>
+                        </div>
+                    </div>
                 )}
 
                 {/* ══════════════════════════════════════════════════════════════ */}
-                {/* ── TASK TRANSFER HISTORY VIEW ── */}
+                {/* ── NOTIFICATIONS ROUTE VIEW ── */}
                 {/* ══════════════════════════════════════════════════════════════ */}
-                {dashboardView === 'transfers' && (
+                {isNotificationsRoute ? (
+                    <div className="space-y-4 sm:space-y-6">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900/40 p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-zinc-900">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                    onClick={() => setNotifFilter('all')}
+                                    className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center gap-1.5 sm:gap-2 ${
+                                        notifFilter === 'all' ? 'bg-emerald-400 text-black font-bold' : 'text-zinc-400 hover:text-white bg-zinc-900/60'
+                                    }`}
+                                >
+                                    <Bell size={13} />
+                                    <span>All Alerts</span>
+                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${notifFilter === 'all' ? 'bg-black/20 text-black font-bold' : 'bg-zinc-800 text-zinc-400'}`}>
+                                        {notifications.length}
+                                    </span>
+                                </button>
+
+                                <button
+                                    onClick={() => setNotifFilter('unread')}
+                                    className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center gap-1.5 sm:gap-2 ${
+                                        notifFilter === 'unread' ? 'bg-red-500 text-white font-bold' : 'text-zinc-400 hover:text-white bg-zinc-900/60'
+                                    }`}
+                                >
+                                    <span>Unread</span>
+                                    {unreadCount > 0 && (
+                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-white text-red-600 font-bold">
+                                            {unreadCount}
+                                        </span>
+                                    )}
+                                </button>
+                            </div>
+
+                            <div className="flex items-center gap-2 self-end sm:self-auto">
+                                {unreadCount > 0 && (
+                                    <button
+                                        onClick={() => handleMarkAsRead('all')}
+                                        className="px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg text-xs font-semibold font-mono bg-zinc-800 hover:bg-zinc-700 text-emerald-400 transition-colors cursor-pointer"
+                                    >
+                                        Mark All Read
+                                    </button>
+                                )}
+                                {notifications.length > 0 && (
+                                    <button
+                                        onClick={handleClearAllNotifications}
+                                        className="px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg text-xs font-semibold font-mono bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-colors cursor-pointer"
+                                    >
+                                        Clear All
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+
+                        {displayedNotifications.length === 0 ? (
+                            <div className="border border-zinc-900 bg-zinc-950/20 rounded-2xl p-16 text-center">
+                                <Bell className="w-10 h-10 text-zinc-700 mx-auto mb-4" />
+                                <p className="text-zinc-500 text-sm">
+                                    {notifFilter === 'unread' ? 'No unread notifications.' : 'No notifications received yet.'}
+                                </p>
+                            </div>
+                        ) : (
+                            <div className="space-y-3">
+                                {displayedNotifications.map((n) => {
+                                    const matchingTask = n.ticket_id ? tasks.find(t => t.id === Number(n.ticket_id)) : null;
+                                    return (
+                                        <div
+                                            key={n.id}
+                                            className={`p-3.5 sm:p-5 rounded-xl sm:rounded-2xl border transition-all ${
+                                                n.is_read
+                                                    ? 'bg-zinc-900/20 border-zinc-900 text-zinc-400'
+                                                    : 'bg-emerald-500/[0.04] border-emerald-500/20 text-zinc-200 shadow-lg shadow-emerald-500/5'
+                                            }`}
+                                        >
+                                            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2.5 sm:gap-3 mb-2">
+                                                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                                                    <span className={`w-2 h-2 rounded-full shrink-0 ${n.is_read ? 'bg-zinc-700' : 'bg-emerald-400 animate-pulse'}`} />
+                                                    <h3 className="font-semibold text-white text-sm break-words">{n.title}</h3>
+                                                    {!n.is_read && (
+                                                        <span className="text-[9px] font-mono bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded font-bold uppercase shrink-0">
+                                                            New
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <div className="flex items-center gap-3 text-xs text-zinc-500 font-mono">
+                                                    <span>{new Date(n.created_at).toLocaleString()}</span>
+                                                    <button
+                                                        onClick={(e) => handleDeleteNotification(e, Number(n.id))}
+                                                        className="text-zinc-600 hover:text-red-400 transition-colors p-1"
+                                                        title="Delete Notification"
+                                                    >
+                                                        <Trash2 size={13} />
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <p className="text-xs leading-relaxed text-zinc-300 mb-3">{n.message}</p>
+
+                                            <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-zinc-900/60 text-xs">
+                                                <div className="flex items-center gap-3">
+                                                    {n.sender_name && (
+                                                        <span className="text-zinc-500 font-mono text-[11px]">Sender: {n.sender_name}</span>
+                                                    )}
+                                                    {n.ticket_number && (
+                                                        <span className="text-emerald-400 font-mono text-[11px] font-bold">
+                                                            Ticket: {n.ticket_number}
+                                                        </span>
+                                                    )}
+                                                </div>
+
+                                                <div className="flex items-center gap-2">
+                                                    {!n.is_read && (
+                                                        <button
+                                                            onClick={() => handleMarkAsRead(Number(n.id))}
+                                                            className="text-[11px] font-mono text-zinc-400 hover:text-white px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 transition-colors cursor-pointer"
+                                                        >
+                                                            Mark Read
+                                                        </button>
+                                                    )}
+                                                    {matchingTask && (
+                                                        <button
+                                                            onClick={() => openModal(matchingTask)}
+                                                            className="text-[11px] font-mono text-black bg-emerald-400 hover:bg-emerald-300 px-2.5 py-1 rounded font-bold transition-colors cursor-pointer flex items-center gap-1"
+                                                        >
+                                                            Inspect Ticket <ChevronRight size={11} />
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+                ) : isTransfersRoute ? (
                     <div className="space-y-6">
+                        {/* ── DEDICATED TASK TRANSFER VIEW ── */}
                         {/* KPI Metrics */}
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                            <div className="bg-[#0c0c0c] border border-zinc-900 rounded-2xl p-4">
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+                            <div className="bg-[#0c0c0c] border border-zinc-900 rounded-xl sm:rounded-2xl p-3 sm:p-4">
                                 <div className="text-[10px] font-mono uppercase text-zinc-500 flex items-center justify-between mb-1">
-                                    <span>Total Transfers</span>
-                                    <ArrowRightLeft size={13} className="text-cyan-400" />
+                                    <span className="truncate">Total Transfers</span>
+                                    <ArrowRightLeft size={13} className="text-cyan-400 shrink-0" />
                                 </div>
-                                <div className="text-2xl font-bold font-outfit text-white">{transferStats.total}</div>
-                                <div className="text-[10px] font-mono text-zinc-600 mt-1">All involved handoffs</div>
+                                <div className="text-xl sm:text-2xl font-bold font-outfit text-white">{transferStats.total}</div>
+                                <div className="text-[10px] font-mono text-zinc-600 mt-1 truncate">All involved handoffs</div>
                             </div>
 
-                            <div className="bg-[#0c0c0c] border border-zinc-900 rounded-2xl p-4">
+                            <div className="bg-[#0c0c0c] border border-zinc-900 rounded-xl sm:rounded-2xl p-3 sm:p-4">
                                 <div className="text-[10px] font-mono uppercase text-emerald-400 flex items-center justify-between mb-1">
-                                    <span>Incoming (To Me)</span>
-                                    <Inbox size={13} className="text-emerald-400" />
+                                    <span className="truncate">Incoming</span>
+                                    <Inbox size={13} className="text-emerald-400 shrink-0" />
                                 </div>
-                                <div className="text-2xl font-bold font-outfit text-emerald-400">{transferStats.incomingCount}</div>
-                                <div className="text-[10px] font-mono text-zinc-600 mt-1">Transferred to you</div>
+                                <div className="text-xl sm:text-2xl font-bold font-outfit text-emerald-400">{transferStats.incomingCount}</div>
+                                <div className="text-[10px] font-mono text-zinc-600 mt-1 truncate">Transferred to you</div>
                             </div>
 
-                            <div className="bg-[#0c0c0c] border border-zinc-900 rounded-2xl p-4">
+                            <div className="bg-[#0c0c0c] border border-zinc-900 rounded-xl sm:rounded-2xl p-3 sm:p-4">
                                 <div className="text-[10px] font-mono uppercase text-amber-400 flex items-center justify-between mb-1">
-                                    <span>Outgoing (By Me)</span>
-                                    <SendHorizontal size={13} className="text-amber-400" />
+                                    <span className="truncate">Outgoing</span>
+                                    <SendHorizontal size={13} className="text-amber-400 shrink-0" />
                                 </div>
-                                <div className="text-2xl font-bold font-outfit text-amber-400">{transferStats.outgoingCount}</div>
-                                <div className="text-[10px] font-mono text-zinc-600 mt-1">Transferred from you</div>
+                                <div className="text-xl sm:text-2xl font-bold font-outfit text-amber-400">{transferStats.outgoingCount}</div>
+                                <div className="text-[10px] font-mono text-zinc-600 mt-1 truncate">Transferred from you</div>
                             </div>
 
-                            <div className="bg-[#0c0c0c] border border-zinc-900 rounded-2xl p-4">
+                            <div className="bg-[#0c0c0c] border border-zinc-900 rounded-xl sm:rounded-2xl p-3 sm:p-4">
                                 <div className="text-[10px] font-mono uppercase text-rose-400 flex items-center justify-between mb-1">
-                                    <span>Pending Action</span>
-                                    <Clock size={13} className="text-rose-400" />
+                                    <span className="truncate">Pending</span>
+                                    <Clock size={13} className="text-rose-400 shrink-0" />
                                 </div>
-                                <div className="text-2xl font-bold font-outfit text-rose-400">{transferStats.pendingCount}</div>
-                                <div className="text-[10px] font-mono text-zinc-600 mt-1">Awaiting your response</div>
+                                <div className="text-xl sm:text-2xl font-bold font-outfit text-rose-400">{transferStats.pendingCount}</div>
+                                <div className="text-[10px] font-mono text-zinc-600 mt-1 truncate">Awaiting response</div>
                             </div>
                         </div>
 
                         {/* Filter Bar */}
-                        <div className="bg-zinc-950/60 border border-zinc-900 rounded-2xl p-4 space-y-3">
+                        <div className="bg-zinc-950/60 border border-zinc-900 rounded-xl sm:rounded-2xl p-3 sm:p-4 space-y-3">
                             <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
                                 {/* Direction Filter Tabs */}
-                                <div className="flex flex-wrap gap-1 bg-zinc-900/60 p-1 rounded-xl border border-zinc-850">
+                                <div className="flex flex-wrap gap-1 bg-zinc-900/60 p-1 rounded-xl border border-zinc-800/60">
                                     {[
-                                        { id: 'all', label: 'All Movements' },
-                                        { id: 'incoming', label: 'Transferred To Me' },
-                                        { id: 'outgoing', label: 'Transferred By Me' }
+                                        { id: 'all', label: 'All Movements', shortLabel: 'All' },
+                                        { id: 'incoming', label: 'Transferred To Me', shortLabel: 'To Me' },
+                                        { id: 'outgoing', label: 'Transferred By Me', shortLabel: 'By Me' }
                                     ].map(tab => (
                                         <button
                                             key={tab.id}
                                             onClick={() => { setTransferTypeFilter(tab.id as any); setTransferPage(1); }}
-                                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold font-mono tracking-wide transition-all cursor-pointer ${
+                                            className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold font-mono tracking-wide transition-all cursor-pointer ${
                                                 transferTypeFilter === tab.id ? 'bg-neon-cyan text-black font-bold' : 'text-zinc-400 hover:text-white'
                                             }`}
                                         >
-                                            {tab.label}
+                                            <span className="hidden sm:inline">{tab.label}</span>
+                                            <span className="sm:hidden">{tab.shortLabel}</span>
                                         </button>
                                     ))}
                                 </div>
 
-                                {/* Status Filter */}
-                                <div className="flex items-center gap-1.5">
-                                    {['all', 'pending', 'accepted', 'rejected'].map(st => (
-                                        <button
-                                            key={st}
-                                            onClick={() => { setTransferStatusFilter(st as any); setTransferPage(1); }}
-                                            className={`px-2.5 py-1 rounded-lg text-[11px] font-mono capitalize transition-all cursor-pointer ${
-                                                transferStatusFilter === st
-                                                    ? 'bg-zinc-800 text-white font-bold border border-zinc-700'
-                                                    : 'text-zinc-500 hover:text-zinc-300'
-                                            }`}
-                                        >
-                                            {st}
-                                        </button>
-                                    ))}
+                                {/* Status Filter & Movement Count */}
+                                <div className="flex flex-wrap items-center gap-3">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                        {['all', 'pending', 'accepted', 'rejected'].map(st => (
+                                            <button
+                                                key={st}
+                                                onClick={() => { setTransferStatusFilter(st as any); setTransferPage(1); }}
+                                                className={`px-2.5 py-1 rounded-lg text-[11px] font-mono capitalize transition-all cursor-pointer ${
+                                                    transferStatusFilter === st
+                                                        ? 'bg-zinc-800 text-white font-bold border border-zinc-700'
+                                                        : 'text-zinc-500 hover:text-zinc-300'
+                                                }`}
+                                            >
+                                                {st}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <div className="text-xs font-mono text-zinc-500">
+                                        Showing <span className="text-white font-semibold">{myTransfers.length}</span> of <span className="text-white font-semibold">{transferTotalRecords}</span> movements
+                                    </div>
                                 </div>
                             </div>
 
@@ -933,30 +1584,30 @@ export default function TechnicianDashboard() {
                                     return (
                                         <div
                                             key={item.id}
-                                            className={`bg-zinc-950/70 border rounded-2xl p-5 space-y-4 transition-all relative overflow-hidden group ${
+                                            className={`bg-zinc-950/70 border rounded-xl sm:rounded-2xl p-3.5 sm:p-5 space-y-3 sm:space-y-4 transition-all relative overflow-hidden group ${
                                                 isIncoming
                                                     ? 'border-emerald-500/20 hover:border-emerald-500/40'
                                                     : 'border-blue-500/20 hover:border-blue-500/40'
                                             }`}
                                         >
                                             {/* Top Banner: Direction Badge & Status */}
-                                            <div className="flex items-start justify-between gap-3">
-                                                <div>
+                                            <div className="flex flex-wrap items-start justify-between gap-2">
+                                                <div className="min-w-0">
                                                     {isIncoming ? (
-                                                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-bold uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                                                        <span className="inline-flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-full text-[10px] font-mono font-bold uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
                                                             <Inbox size={11} /> INCOMING HANDOFF (TO ME)
                                                         </span>
                                                     ) : (
-                                                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-bold uppercase bg-blue-500/10 text-blue-400 border border-blue-500/30">
+                                                        <span className="inline-flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-full text-[10px] font-mono font-bold uppercase bg-blue-500/10 text-blue-400 border border-blue-500/30">
                                                             <SendHorizontal size={11} /> OUTGOING HANDOFF (BY ME)
                                                         </span>
                                                     )}
-                                                    <div className="font-mono text-sm font-bold text-white mt-2">
+                                                    <div className="font-mono text-sm font-bold text-white mt-1.5 truncate">
                                                         {item.ticketNumber || `TICKET #${item.repairRequestId}`}
                                                     </div>
                                                 </div>
 
-                                                <div className="flex flex-col items-end gap-1">
+                                                <div className="flex flex-col items-end gap-1 shrink-0">
                                                     {item.transferStatus === 'accepted' && (
                                                         <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-bold uppercase">
                                                             ACCEPTED
@@ -982,12 +1633,12 @@ export default function TechnicianDashboard() {
 
                                             {/* Device & Customer */}
                                             <div className="bg-zinc-900/40 rounded-xl p-3 space-y-1">
-                                                <div className="text-white text-xs font-semibold">{item.customerName}</div>
-                                                <div className="text-zinc-400 text-xs">{item.deviceCategory} · {item.brand} {item.modelNumber || ''}</div>
+                                                <div className="text-white text-xs font-semibold truncate">{item.customerName}</div>
+                                                <div className="text-zinc-400 text-xs truncate">{item.deviceCategory} · {item.brand} {item.modelNumber || ''}</div>
                                             </div>
 
                                             {/* Transfer Participants */}
-                                            <div className="grid grid-cols-2 gap-2 text-xs font-mono bg-black/40 rounded-xl p-3 border border-zinc-900">
+                                            <div className="grid grid-cols-2 gap-2 text-xs font-mono bg-black/40 rounded-xl p-2.5 sm:p-3 border border-zinc-900">
                                                 <div>
                                                     <div className="text-[9px] text-zinc-500 uppercase">From Tech</div>
                                                     <div className="text-zinc-300 font-medium truncate mt-0.5">
@@ -1019,25 +1670,25 @@ export default function TechnicianDashboard() {
                                             )}
 
                                             {/* Timestamp & Actions */}
-                                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-zinc-900 text-xs font-mono text-zinc-500">
+                                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 pt-2 border-t border-zinc-900 text-xs font-mono text-zinc-500">
                                                 <div className="flex items-center gap-1.5">
                                                     <Clock size={11} />
                                                     <span>{new Date(item.transferredAt).toLocaleString()}</span>
                                                 </div>
 
                                                 {/* Action Buttons */}
-                                                <div className="flex items-center gap-2">
+                                                <div className="flex items-center gap-2 flex-wrap">
                                                     {isPendingMyAction && (
                                                         <>
                                                             <button
                                                                 onClick={(e) => handleAccept(e, item.repairRequestId)}
-                                                                className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                                                                className="flex-1 sm:flex-none px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs rounded-lg transition-colors cursor-pointer text-center"
                                                             >
                                                                 Accept
                                                             </button>
                                                             <button
                                                                 onClick={(e) => handleReject(e, item.repairRequestId)}
-                                                                className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-400 font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                                                                className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-400 font-bold text-xs rounded-lg transition-colors cursor-pointer text-center"
                                                             >
                                                                 Reject
                                                             </button>
@@ -1054,7 +1705,7 @@ export default function TechnicianDashboard() {
                                                                 });
                                                             }
                                                         }}
-                                                        className="px-2.5 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-zinc-300 hover:text-white text-xs transition-colors cursor-pointer"
+                                                        className="flex-1 sm:flex-none px-2.5 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-zinc-300 hover:text-white text-xs transition-colors cursor-pointer text-center"
                                                     >
                                                         Details
                                                     </button>
@@ -1091,636 +1742,981 @@ export default function TechnicianDashboard() {
                             </div>
                         )}
                     </div>
-                )}
-
-                {/* Detail Modal */}
-                {selectedTask && (() => {
-                    const isAssignedToMe = selectedTask.assignedTechnicianId === user?.id;
-                    const isPendingAcceptance = selectedTask.pendingTechnicianId === user?.id && !isAssignedToMe;
-
-                    return (
-                    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-start justify-center p-4 pt-8 overflow-y-auto">
-                        <div className="bg-[#0c0c0c] border border-zinc-800 rounded-2xl w-full max-w-3xl shadow-2xl relative mb-8">
-                            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-400 to-neon-cyan rounded-t-2xl" />
-
-                            {/* Modal Header */}
-                            <div className="p-6 border-b border-zinc-900 flex items-start justify-between">
-                                <div>
-                                    <div className="flex items-center gap-3 mb-1">
-                                        <span className="text-xs font-mono text-emerald-400 font-bold">{selectedTask.ticketNumber || `TICKET_ID: #${selectedTask.id}`}</span>
-                                        {getStatusBadge(selectedTask.status)}
-                                    </div>
-                                    <h3 className="text-xl font-bold text-white font-outfit">{selectedTask.customerName}</h3>
-                                    <div className="text-xs text-zinc-500 mt-0.5">{selectedTask.brand} {selectedTask.modelNumber || ''} · {selectedTask.deviceCategory}</div>
+                ) : isDashboardRoute ? (
+                    /* ── DASHBOARD VIEW (Diagnosis & Estimate and Pending Acceptance Ticket Cards) ── */
+                    isLoading ? (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+                            <div className="bg-[#0c0c0c] border border-zinc-900 rounded-2xl p-5 min-h-[300px] flex flex-col justify-between animate-pulse">
+                                <div className="h-4 bg-zinc-800 rounded w-1/3 mb-4"></div>
+                                <div className="space-y-3">
+                                    <div className="h-16 bg-zinc-900/60 rounded-xl"></div>
+                                    <div className="h-20 bg-zinc-900/40 rounded-xl"></div>
                                 </div>
-                                <div className="flex gap-2">
-                                    {isAssignedToMe && !['completed', 'cancelled'].includes(selectedTask.status) && (
-                                        <button onClick={() => setTransferModalOpen(true)} className="p-1.5 rounded-lg hover:bg-amber-500/10 text-amber-500 border border-transparent hover:border-amber-500/30 transition-colors cursor-pointer text-xs uppercase font-mono font-semibold h-fit flex items-center gap-1.5 px-3">Transfer</button>
-                                    )}
-                                    <button onClick={() => setSelectedTask(null)} className="p-1.5 rounded-lg hover:bg-zinc-900 border border-transparent hover:border-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer text-xs uppercase font-mono font-semibold h-fit">Close</button>
+                                <div className="h-4 bg-zinc-800/60 rounded w-1/2 mt-4"></div>
+                            </div>
+                            <div className="bg-[#0c0c0c] border border-zinc-900 rounded-2xl p-5 min-h-[300px] flex flex-col justify-between animate-pulse">
+                                <div className="h-4 bg-zinc-800 rounded w-1/3 mb-4"></div>
+                                <div className="space-y-3">
+                                    <div className="h-16 bg-zinc-900/60 rounded-xl"></div>
+                                    <div className="h-20 bg-zinc-900/40 rounded-xl"></div>
                                 </div>
-                            </div>
-
-                            {/* Tab Bar */}
-                            <div className="flex border-b border-zinc-900 px-6 pt-1 gap-1 overflow-x-auto">
-                                {TABS.map(tab => (
-                                    <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-all cursor-pointer whitespace-nowrap border-b-2 -mb-px ${activeTab === tab.id ? 'text-emerald-400 border-emerald-400 bg-emerald-400/5' : 'text-zinc-500 border-transparent hover:text-zinc-300'}`}>
-                                        {tab.icon}{tab.label}
-                                    </button>
-                                ))}
-                            </div>
-
-                            {/* Tab Content */}
-                            <div className="p-6 max-h-[70vh] overflow-y-auto space-y-6">
-
-                                {/* ── OVERVIEW TAB ── */}
-                                {activeTab === 'overview' && (
-                                    <>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                            <div className="bg-zinc-950/50 border border-zinc-900 rounded-xl p-4 space-y-3">
-                                                <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">Contact Details</div>
-                                                <div className="space-y-2 text-xs text-zinc-300">
-                                                    <div className="flex items-center gap-2.5"><Phone size={13} className="text-emerald-400" /> {selectedTask.mobile}</div>
-                                                    {selectedTask.email && <div className="flex items-center gap-2.5"><Mail size={13} className="text-emerald-400" /> {selectedTask.email}</div>}
-                                                    <div className="flex items-center gap-2.5"><MapPin size={13} className="text-emerald-400" /> {selectedTask.city}</div>
-                                                </div>
-                                            </div>
-                                            <div className="bg-zinc-950/50 border border-zinc-900 rounded-xl p-4 space-y-3">
-                                                <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">Device Details</div>
-                                                <div className="space-y-1.5 text-xs text-zinc-300">
-                                                    <div><span className="text-zinc-500 uppercase tracking-wide">Category:</span> {selectedTask.deviceCategory}</div>
-                                                    <div><span className="text-zinc-500 uppercase tracking-wide">Brand:</span> {selectedTask.brand}</div>
-                                                    {selectedTask.modelNumber && <div><span className="text-zinc-500 uppercase tracking-wide">Model:</span> {selectedTask.modelNumber}</div>}
-                                                    {selectedTask.serialNumber && <div><span className="text-zinc-500 uppercase tracking-wide">Serial:</span> {selectedTask.serialNumber}</div>}
-                                                    {selectedTask.deviceConfiguration && <div><span className="text-zinc-500 uppercase tracking-wide">Config:</span> {selectedTask.deviceConfiguration}</div>}
-                                                </div>
-                                            </div>
-                                            <div className="bg-zinc-950/50 border border-zinc-900 rounded-xl p-4 space-y-3">
-                                                <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">Service Preferences</div>
-                                                <div className="space-y-1.5 text-xs text-zinc-300">
-                                                    <div><span className="text-zinc-500 uppercase tracking-wide">Service:</span> {selectedTask.serviceType}</div>
-                                                    <div className="flex items-center gap-2"><span className="text-zinc-500 uppercase tracking-wide">Priority:</span> {getPriorityBadge(selectedTask.priority)}</div>
-                                                    <div><span className="text-zinc-500 uppercase tracking-wide">Contact Method:</span> {selectedTask.preferredContactMethod}</div>
-                                                </div>
-                                            </div>
-                                            <div className="bg-zinc-950/50 border border-zinc-900 rounded-xl p-4 space-y-3">
-                                                <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">Metadata</div>
-                                                <div className="space-y-1.5 text-xs text-zinc-300 font-mono">
-                                                    <div className="flex items-center gap-2"><Clock size={12} /> {new Date(selectedTask.createdAt).toLocaleString()}</div>
-                                                    <div className="flex items-center gap-2"><Calendar size={12} /> {selectedTask.ticketNumber || `ID_${selectedTask.id}`}</div>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div className="space-y-2">
-                                            <h4 className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">Problem Description ({selectedTask.problemType})</h4>
-                                            <div className="bg-zinc-950/50 border border-zinc-900 rounded-xl p-4 text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">{selectedTask.problemDescription}</div>
-                                        </div>
-
-                                        {(selectedTask as any).feedbackRating && (
-                                            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4 my-2">
-                                                <div className="text-[10px] font-mono uppercase tracking-wider text-yellow-500 font-bold mb-2 flex items-center gap-2">
-                                                    <Star size={12} className="fill-yellow-500/50" /> Customer Service Feedback
-                                                </div>
-                                                <div className="flex items-center gap-1 mb-2">
-                                                    {Array.from({ length: (selectedTask as any).feedbackRating }).map((_, i) => (
-                                                        <Star key={i} size={16} className="text-yellow-400 fill-yellow-400" />
-                                                    ))}
-                                                </div>
-                                                {(selectedTask as any).feedbackComment && (
-                                                    <p className="text-sm text-yellow-200/80 italic mt-2 border-t border-yellow-500/20 pt-2 selection:bg-yellow-500/30">
-                                                        "{(selectedTask as any).feedbackComment}"
-                                                    </p>
-                                                )}
-                                            </div>
-                                        )}
-
-                                        {(selectedTask.imagePath || selectedTask.screenshotPath) && (
-                                            <div className="space-y-3">
-                                                <h4 className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">Attachments</h4>
-                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                                    {selectedTask.imagePath && (
-                                                        <div className="border border-zinc-900 bg-zinc-950/40 rounded-xl p-3 flex flex-col gap-2 group hover:border-zinc-800 transition-colors">
-                                                            <div className="flex items-center justify-between">
-                                                                <span className="text-xs text-zinc-400 font-semibold font-mono flex items-center gap-1.5"><FileImage size={13} className="text-emerald-400" /> DEVICE_PHOTO</span>
-                                                                <a href={getFileUrl(selectedTask.imagePath)!} target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline text-[10px] font-mono flex items-center gap-1">OPEN <ExternalLink size={10} /></a>
-                                                            </div>
-                                                            <div className="h-24 w-full overflow-hidden bg-black rounded border border-zinc-900 flex items-center justify-center cursor-pointer" onClick={() => handleImagePreview(getFileUrl(selectedTask.imagePath)!, 'Device Photo')}>
-                                                                <img src={getFileUrl(selectedTask.imagePath)!} alt="Device" className="max-h-full max-w-full object-contain transition-transform duration-300 group-hover:scale-105" />
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                    {selectedTask.screenshotPath && (
-                                                        <div className="border border-zinc-900 bg-zinc-950/40 rounded-xl p-3 flex flex-col gap-2 group hover:border-zinc-800 transition-colors">
-                                                            <div className="flex items-center justify-between">
-                                                                <span className="text-xs text-zinc-400 font-semibold font-mono flex items-center gap-1.5"><FileImage size={13} className="text-emerald-400" /> SCREENSHOT</span>
-                                                                <a href={getFileUrl(selectedTask.screenshotPath)!} target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline text-[10px] font-mono flex items-center gap-1">OPEN <ExternalLink size={10} /></a>
-                                                            </div>
-                                                            <div className="h-24 w-full overflow-hidden bg-black rounded border border-zinc-900 flex items-center justify-center cursor-pointer" onClick={() => handleImagePreview(getFileUrl(selectedTask.screenshotPath)!, 'Screenshot')}>
-                                                                <img src={getFileUrl(selectedTask.screenshotPath)!} alt="Screenshot" className="max-h-full max-w-full object-contain transition-transform duration-300 group-hover:scale-105" />
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        {/* Status Update */}
-                                        <div className="border-t border-zinc-900 pt-5">
-                                            {isAssignedToMe ? (
-                                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                                                    <div className="text-xs text-zinc-500 font-mono">UPDATE_TICKET_STATUS:</div>
-                                                    <div className="flex flex-wrap gap-2">
-                                                        {statusUpdateLoadingId === selectedTask.id ? (
-                                                            <Loader2 className="w-5 h-5 text-emerald-400 animate-spin" />
-                                                        ) : (
-                                                            allowedStatuses.map(st => (
-                                                                <button key={st} onClick={() => handleStatusChange(selectedTask.id, st)} disabled={selectedTask.status === st}
-                                                                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer border ${selectedTask.status === st
-                                                                        ? st === 'pending' ? 'bg-amber-500/10 text-amber-400 border-amber-500/40'
-                                                                            : st === 'in_progress' ? 'bg-neon-cyan/10 text-neon-cyan border-neon-cyan/40'
-                                                                                : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/40'
-                                                                        : 'bg-zinc-950 border-zinc-900 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
-                                                                        } disabled:cursor-not-allowed`}>
-                                                                    {st.replace('_', ' ').toUpperCase()}
-                                                                </button>
-                                                            ))
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            ) : isPendingAcceptance ? (
-                                                <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                                                    <div className="flex items-center gap-2.5 text-xs text-amber-300">
-                                                        <AlertTriangle size={16} className="text-amber-400 shrink-0" />
-                                                        <span>This ticket is awaiting your acceptance. Accept this assignment to update status or make decisions.</span>
-                                                    </div>
-                                                    <div className="flex items-center gap-2 shrink-0">
-                                                        <button
-                                                            onClick={(e) => { handleAccept(e, selectedTask.id); setSelectedTask(prev => prev ? { ...prev, assignedTechnicianId: user?.id, pendingTechnicianId: null } : null); }}
-                                                            className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold font-mono rounded-lg transition-colors cursor-pointer"
-                                                        >
-                                                            Accept Ticket
-                                                        </button>
-                                                        <button
-                                                            onClick={(e) => { handleReject(e, selectedTask.id); setSelectedTask(null); }}
-                                                            className="px-3.5 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 text-xs font-bold font-mono rounded-lg transition-colors cursor-pointer"
-                                                        >
-                                                            Reject
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div className="bg-zinc-950/60 border border-zinc-850 rounded-xl p-3.5 flex items-center gap-3 text-xs font-mono text-zinc-400">
-                                                    <ShieldAlert size={16} className="text-amber-400 shrink-0" />
-                                                    <span>Read-only: This ticket is assigned to another technician. You cannot modify decisions or status for this ticket.</span>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </>
-                                )}
-
-                                {/* ── WORK LOG TAB ── */}
-                                {activeTab === 'work-log' && (
-                                    <div className="space-y-6">
-                                        {/* Add Entry Form or Read-Only Banner */}
-                                        {isAssignedToMe ? (
-                                            <div className="bg-zinc-950/60 border border-zinc-800 rounded-xl p-5 space-y-4">
-                                                <div className="flex items-center gap-2 mb-1">
-                                                    <Plus size={14} className="text-emerald-400" />
-                                                    <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 font-semibold">New Work Log Entry</h4>
-                                                </div>
-                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                                    <div>
-                                                        <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider block mb-1">Repair Stage *</label>
-                                                        <div className="relative">
-                                                            <select value={newLog.repairStage} onChange={e => setNewLog(p => ({ ...p, repairStage: e.target.value }))}
-                                                                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-emerald-400 appearance-none cursor-pointer">
-                                                                <option value="">Select stage...</option>
-                                                                {REPAIR_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
-                                                            </select>
-                                                            <ChevronDown size={12} className="absolute right-3 top-2.5 text-zinc-600 pointer-events-none" />
-                                                        </div>
-                                                    </div>
-                                                    <div>
-                                                        <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider block mb-1">Time Spent</label>
-                                                        <input value={newLog.timeSpent} onChange={e => setNewLog(p => ({ ...p, timeSpent: e.target.value }))} placeholder="e.g. 2h 30m" className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-emerald-400 placeholder:text-zinc-700" />
-                                                    </div>
-                                                </div>
-                                                <div>
-                                                    <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider block mb-1">Action Performed *</label>
-                                                    <textarea value={newLog.actionPerformed} onChange={e => setNewLog(p => ({ ...p, actionPerformed: e.target.value }))} rows={2} placeholder="Describe what was done..." className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-emerald-400 resize-none placeholder:text-zinc-700" />
-                                                </div>
-                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                                    <div>
-                                                        <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider block mb-1">Parts Replaced</label>
-                                                        <input value={newLog.partsReplaced} onChange={e => setNewLog(p => ({ ...p, partsReplaced: e.target.value }))} placeholder="e.g. Battery, Display" className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-emerald-400 placeholder:text-zinc-700" />
-                                                    </div>
-                                                    <div>
-                                                        <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider block mb-1">Media / Photo</label>
-                                                        <label className="flex items-center gap-2 cursor-pointer w-full bg-zinc-900 border border-zinc-800 border-dashed rounded-lg px-3 py-2 text-xs text-zinc-500 hover:border-emerald-400 hover:text-emerald-400 transition-all">
-                                                            <Upload size={12} />
-                                                            {logMediaFile ? logMediaFile.name : 'Upload image/video'}
-                                                            <input type="file" className="hidden" accept="image/*,video/*" onChange={e => setLogMediaFile(e.target.files?.[0] || null)} />
-                                                        </label>
-                                                    </div>
-                                                </div>
-                                                <div>
-                                                    <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider block mb-1">Internal Notes</label>
-                                                    <textarea value={newLog.notes} onChange={e => setNewLog(p => ({ ...p, notes: e.target.value }))} rows={2} placeholder="Any additional technician notes..." className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-emerald-400 resize-none placeholder:text-zinc-700" />
-                                                </div>
-                                                <button onClick={handleSubmitWorkLog} disabled={submittingLog} className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold rounded-lg transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
-                                                    {submittingLog ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
-                                                    Add Work Log Entry
-                                                </button>
-                                            </div>
-                                        ) : (
-                                            <div className="bg-zinc-950/60 border border-zinc-850 rounded-xl p-4 flex items-center gap-3 text-xs font-mono text-zinc-400">
-                                                <Lock size={15} className="text-zinc-500 shrink-0" />
-                                                <span>Work log entry creation is restricted to the assigned technician. (Read-only log view)</span>
-                                            </div>
-                                        )}
-
-                                        {/* Work Log History */}
-                                        <div className="space-y-3">
-                                            <h4 className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">Work Log History</h4>
-                                            {workLogsLoading ? (
-                                                <div className="flex items-center gap-2 text-xs text-zinc-500"><Loader2 size={13} className="animate-spin" /> Loading logs...</div>
-                                            ) : workLogs.length === 0 ? (
-                                                <div className="text-center py-8 border border-zinc-900 rounded-xl text-zinc-600 text-xs">No work log entries yet.</div>
-                                            ) : (
-                                                <div className="space-y-3">
-                                                    {workLogs.map(log => (
-                                                        <div key={log.id} className="bg-zinc-950/50 border border-zinc-900 rounded-xl p-4 space-y-3">
-                                                            <div className="flex items-center justify-between flex-wrap gap-2">
-                                                                {getStageBadge(log.repair_stage)}
-                                                                <span className="text-[10px] font-mono text-zinc-600">{new Date(log.created_at).toLocaleString()}</span>
-                                                            </div>
-                                                            <p className="text-sm text-zinc-300 leading-relaxed">{log.action_performed}</p>
-                                                            <div className="flex flex-wrap gap-4 text-xs">
-                                                                {log.parts_replaced && <span className="text-zinc-400"><span className="text-zinc-600">Parts:</span> {log.parts_replaced}</span>}
-                                                                {log.time_spent && <span className="text-zinc-400"><span className="text-zinc-600">Time:</span> {log.time_spent}</span>}
-                                                                {log.technician_name && <span className="text-zinc-500 font-mono"><span className="text-zinc-600">By:</span> {log.technician_name}</span>}
-                                                            </div>
-                                                            {log.notes && <p className="text-xs text-zinc-500 italic border-l-2 border-zinc-800 pl-3">{log.notes}</p>}
-                                                            {log.media_path && (
-                                                                <a href={getFileUrl(log.media_path)!} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-emerald-400 text-xs hover:underline">
-                                                                    <FileImage size={12} /> View Media <ExternalLink size={10} />
-                                                                </a>
-                                                            )}
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                )}
-
-                                {/* ── TASK TRANSFERS CHAIN TAB ── */}
-                                {activeTab === 'transfers' && (
-                                    <div className="space-y-4">
-                                        <div className="flex items-center justify-between">
-                                            <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 flex items-center gap-1.5">
-                                                <Layers size={12} className="text-emerald-400" /> Movement & Transfer Chain
-                                            </div>
-                                            <span className="text-[10px] font-mono text-zinc-600">{ticketTransfers.length} transfer events</span>
-                                        </div>
-
-                                        {ticketTransfersLoading ? (
-                                            <div className="p-10 flex flex-col items-center justify-center">
-                                                <Loader2 size={24} className="animate-spin text-emerald-400 mb-2" />
-                                                <p className="text-xs font-mono text-zinc-500">Loading transfer history chain...</p>
-                                            </div>
-                                        ) : ticketTransfers.length === 0 ? (
-                                            <div className="text-center py-10 border border-zinc-900 rounded-xl text-zinc-600 text-xs font-mono">
-                                                No transfers recorded for this task yet.
-                                            </div>
-                                        ) : (
-                                            <div className="relative pl-6 space-y-4 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-zinc-800">
-                                                {ticketTransfers.map((t, idx) => (
-                                                    <div key={t.id} className="relative group">
-                                                        <div className={`absolute -left-6 top-1.5 w-3 h-3 rounded-full border-2 bg-black ${
-                                                            t.transferStatus === 'accepted'
-                                                                ? 'border-emerald-400'
-                                                                : t.transferStatus === 'rejected'
-                                                                    ? 'border-rose-500'
-                                                                    : 'border-amber-400'
-                                                        }`} />
-
-                                                        <div className="bg-zinc-950/60 border border-zinc-850 rounded-xl p-4 space-y-2.5 hover:border-zinc-700 transition-colors">
-                                                            <div className="flex flex-wrap items-center justify-between gap-2">
-                                                                <div className="flex items-center gap-2">
-                                                                    <span className="text-xs font-bold font-mono text-white">Event #{idx + 1}</span>
-                                                                    {t.transferStatus === 'accepted' && (
-                                                                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold">
-                                                                            ACCEPTED
-                                                                        </span>
-                                                                    )}
-                                                                    {t.transferStatus === 'rejected' && (
-                                                                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20 font-semibold">
-                                                                            REJECTED
-                                                                        </span>
-                                                                    )}
-                                                                    {t.transferStatus === 'pending' && (
-                                                                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-semibold">
-                                                                            PENDING
-                                                                        </span>
-                                                                    )}
-                                                                    {t.transferStatus === 'cancelled' && (
-                                                                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700 font-semibold">
-                                                                            CANCELLED
-                                                                        </span>
-                                                                    )}
-                                                                </div>
-                                                                <span className="text-[10px] font-mono text-zinc-500">
-                                                                    {new Date(t.transferredAt).toLocaleString()}
-                                                                </span>
-                                                            </div>
-
-                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs bg-zinc-900/40 rounded-lg p-3">
-                                                                <div>
-                                                                    <div className="text-[10px] font-mono text-zinc-500 uppercase">From Technician</div>
-                                                                    <div className="text-zinc-200 font-mono mt-0.5 font-medium">
-                                                                        {t.fromTechnicianName || 'Initial Assignment'}
-                                                                    </div>
-                                                                </div>
-                                                                <div>
-                                                                    <div className="text-[10px] font-mono text-emerald-400 uppercase">To Technician</div>
-                                                                    <div className="text-emerald-400 font-mono mt-0.5 font-semibold">
-                                                                        {t.toTechnicianName}
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-
-                                                            {t.reason && (
-                                                                <div className="text-xs text-zinc-300 bg-black/40 rounded-lg p-2.5 border border-zinc-900 leading-relaxed">
-                                                                    <span className="text-[10px] font-mono text-zinc-500 uppercase block mb-1">Transfer Reason:</span>
-                                                                    "{t.reason}"
-                                                                </div>
-                                                            )}
-
-                                                            {t.responseNotes && (
-                                                                <div className="text-xs text-rose-300 bg-rose-950/20 rounded-lg p-2.5 border border-rose-900/30 font-mono">
-                                                                    <span className="text-[10px] font-mono text-rose-400 uppercase block mb-1">Response Comment:</span>
-                                                                    "{t.responseNotes}"
-                                                                </div>
-                                                            )}
-
-                                                            <div className="flex items-center justify-between text-[10px] font-mono text-zinc-600 border-t border-zinc-900/80 pt-2">
-                                                                <div>Initiated by: {t.initiatedByName} ({t.initiatedByRole})</div>
-                                                                {t.respondedAt && <div>Responded at: {new Date(t.respondedAt).toLocaleString()}</div>}
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-
-                                {/* ── MILESTONES TAB ── */}
-                                {activeTab === 'milestones' && (
-                                    <div className="space-y-6">
-                                        {isAssignedToMe ? (
-                                            <>
-                                                <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4 flex items-start gap-3">
-                                                    <AlertTriangle size={15} className="text-amber-400 mt-0.5 shrink-0" />
-                                                    <p className="text-xs text-amber-300/80 leading-relaxed">Sending a milestone notification will create an in-app alert for the customer and dispatch an email (if configured). Use these to keep clients informed about key repair stages.</p>
-                                                </div>
-
-                                                <div className="space-y-3">
-                                                    <h4 className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">Select Milestone</h4>
-                                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                                        {MILESTONES.map(m => (
-                                                            <button key={m.key} onClick={() => setSelectedMilestone(selectedMilestone === m.key ? '' : m.key)}
-                                                                className={`flex items-center gap-3 p-3.5 rounded-xl border text-left transition-all cursor-pointer text-xs font-semibold ${selectedMilestone === m.key ? m.color + ' ring-1 ring-current' : 'bg-zinc-900/30 border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-300'}`}>
-                                                                <span className={selectedMilestone === m.key ? '' : 'text-zinc-600'}>{m.icon}</span>
-                                                                {m.label}
-                                                                {selectedMilestone === m.key && <CheckCircle2 size={12} className="ml-auto shrink-0" />}
-                                                            </button>
-                                                        ))}
-                                                    </div>
-                                                </div>
-
-                                                {selectedMilestone && (
-                                                    <div>
-                                                        <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider block mb-1.5">Additional Notes (Optional)</label>
-                                                        <textarea value={milestoneNotes} onChange={e => setMilestoneNotes(e.target.value)} rows={3} placeholder="Add any extra details to share with the customer..." className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-emerald-400 resize-none placeholder:text-zinc-700" />
-                                                    </div>
-                                                )}
-
-                                                <button onClick={handleSendMilestone} disabled={!selectedMilestone || sendingMilestone}
-                                                    className="flex items-center gap-2 px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
-                                                    {sendingMilestone ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
-                                                    Send Milestone Notification
-                                                </button>
-                                            </>
-                                        ) : (
-                                            <div className="bg-zinc-950/60 border border-zinc-850 rounded-xl p-4 flex items-center gap-3 text-xs font-mono text-zinc-400">
-                                                <Lock size={15} className="text-zinc-500 shrink-0" />
-                                                <span>Milestone notifications can only be dispatched by the currently assigned technician.</span>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-
-                                {/* ── CUSTOMER NOTE TAB ── */}
-                                {activeTab === 'customer-note' && (
-                                    <div className="space-y-5">
-                                        <div className="bg-neon-cyan/5 border border-neon-cyan/20 rounded-xl p-4 flex items-start gap-3">
-                                            <Star size={15} className="text-neon-cyan mt-0.5 shrink-0" />
-                                            <p className="text-xs text-neon-cyan/80 leading-relaxed">Write a clear, friendly explanation of the device condition for the customer. This will be displayed in their User/Company dashboard and repair ticket details. Avoid technical jargon.</p>
-                                        </div>
-
-                                        {!isAssignedToMe && (
-                                            <div className="bg-zinc-950/60 border border-zinc-850 rounded-xl p-3.5 flex items-center gap-3 text-xs font-mono text-zinc-400">
-                                                <Lock size={15} className="text-zinc-500 shrink-0" />
-                                                <span>Customer repair description is managed solely by the assigned technician. (Read-only)</span>
-                                            </div>
-                                        )}
-
-                                        <div className="space-y-2">
-                                            <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider block">Customer Repair Description</label>
-                                            <textarea
-                                                value={customerDesc}
-                                                onChange={e => setCustomerDesc(e.target.value)}
-                                                rows={10}
-                                                disabled={!isAssignedToMe}
-                                                placeholder={`Example:\n\nIssue Found: The device battery was deeply discharged and caused boot failure.\n\nRepair Performed: Full battery replacement and system diagnostics.\n\nParts Replaced: Genuine OEM Battery (3000 mAh).\n\nRecommendations: Avoid letting battery drain completely. Use original charger.\n\nWarranty: 30 days on parts and labour.`}
-                                                className="w-full bg-zinc-900/60 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none focus:border-neon-cyan focus:ring-1 focus:ring-neon-cyan/30 resize-none placeholder:text-zinc-700 leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
-                                            />
-                                        </div>
-
-                                        {isAssignedToMe && (
-                                            <div className="flex items-center justify-between">
-                                                <div className="text-xs text-zinc-600">{customerDesc.length} characters</div>
-                                                <button onClick={handleSaveCustomerDesc} disabled={savingDesc}
-                                                    className="flex items-center gap-2 px-5 py-2.5 bg-neon-cyan hover:bg-neon-cyan/80 text-black text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
-                                                    {savingDesc ? <Loader2 size={13} className="animate-spin" /> : <CheckCheck size={13} />}
-                                                    Save Customer Note
-                                                </button>
-                                            </div>
-                                        )}
-
-                                        {selectedTask.customerRepairDescription && !isAssignedToMe && (
-                                            <div className="border-t border-zinc-900 pt-4 space-y-2">
-                                                <h5 className="text-[10px] font-mono uppercase tracking-wider text-zinc-600">Currently Saved</h5>
-                                                <div className="bg-zinc-950/40 border border-zinc-900 rounded-xl p-4 text-xs text-zinc-400 leading-relaxed whitespace-pre-wrap">{selectedTask.customerRepairDescription}</div>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-
+                                <div className="h-4 bg-zinc-800/60 rounded w-1/2 mt-4"></div>
                             </div>
                         </div>
-                    </div>
-                    );
-                })()}
+                    ) : (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+                            {/* Card 1: Diagnosis & Estimate Ticket */}
+                            {diagnosisTicket ? (() => {
+                                const isB2B = Boolean(diagnosisTicket.companyId || diagnosisTicket.companyName);
+                                const identifier = diagnosisTicket.assetId ? `Asset: ${diagnosisTicket.assetId}` : diagnosisTicket.serialNumber ? `S/N: ${diagnosisTicket.serialNumber}` : 'ID: N/A';
+                                return (
+                                    <div
+                                        key={diagnosisTicket.id}
+                                        onClick={() => openModal(diagnosisTicket, 'diagnosis')}
+                                        className="bg-[#0c0c0c] border border-blue-500/20 hover:border-blue-500/40 hover:bg-blue-500/[0.02] rounded-xl sm:rounded-2xl p-4 sm:p-5 cursor-pointer transition-all group relative overflow-hidden flex flex-col justify-between"
+                                    >
+                                        <div>
+                                            {/* Stage Header */}
+                                            <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-zinc-900">
+                                                <div className="flex items-center gap-2">
+                                                    <Cpu size={14} className="text-blue-400" />
+                                                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-blue-400">Diagnosis & Estimate</span>
+                                                </div>
+                                                <span className="text-[10px] font-mono text-zinc-500 bg-zinc-900/60 px-2 py-0.5 rounded border border-zinc-800">
+                                                    {pendingCount} in queue
+                                                </span>
+                                            </div>
 
-            </div>
+                                            {/* Authoritative Ticket ID & Badges */}
+                                            <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
+                                                <div>
+                                                    <span className="text-xs font-mono font-bold text-blue-400 tracking-wider block">
+                                                        {diagnosisTicket.ticketNumber || `TICKET_ID: #${diagnosisTicket.id}`}
+                                                    </span>
+                                                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                                        {isB2B ? (
+                                                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">B2B</span>
+                                                        ) : (
+                                                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono text-zinc-500 bg-zinc-900 border border-zinc-800">INDIVIDUAL</span>
+                                                        )}
+                                                        {getPriorityBadge(diagnosisTicket.priority)}
+                                                    </div>
+                                                </div>
+                                                <div className="shrink-0">
+                                                    {getStatusBadge(diagnosisTicket.status)}
+                                                </div>
+                                            </div>
 
-            {/* Image Lightbox Preview Modal */}
-            <ImagePreviewModal
-                isOpen={previewOpen}
-                onClose={() => setPreviewOpen(false)}
-                src={previewSrc}
-                alt={previewAlt}
-            />
+                                            {/* Customer / Company Info */}
+                                            <div className="bg-zinc-950/60 rounded-xl p-3 border border-zinc-900 mb-3 space-y-1">
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <div className="text-xs font-bold text-white font-mono truncate max-w-[150px] sm:max-w-[200px]">
+                                                        {isB2B ? (diagnosisTicket.companyName || diagnosisTicket.customerName) : diagnosisTicket.customerName}
+                                                    </div>
+                                                    {diagnosisTicket.city && (
+                                                        <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1 shrink-0">
+                                                            <MapPin size={10} />
+                                                            {diagnosisTicket.city}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                {isB2B && diagnosisTicket.companyContactPerson && (
+                                                    <div className="text-[11px] text-zinc-400 font-mono truncate">
+                                                        Contact: {diagnosisTicket.companyContactPerson}
+                                                    </div>
+                                                )}
+                                                <div className="text-[11px] text-zinc-500 font-mono flex items-center gap-2">
+                                                    <Phone size={10} />
+                                                    <span className="truncate">{diagnosisTicket.mobile || diagnosisTicket.companyPhone || 'No phone'}</span>
+                                                </div>
+                                            </div>
 
-            {/* Notification Detail Modal */}
-            <AnimatePresence>
-                {activeModalNotif && (
-                    <div
-                        onClick={() => setActiveModalNotif(null)}
-                        className="fixed inset-0 bg-black/85 flex items-center justify-center p-4 z-[9999] animate-fadeIn bg-blur-sm"
-                    >
-                        <motion.div
-                            onClick={(e) => e.stopPropagation()}
-                            initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                            animate={{ opacity: 1, scale: 1, y: 0 }}
-                            exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                            transition={{ duration: 0.2 }}
-                            className="bg-[#0c0c0c] border border-zinc-800 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl relative text-left"
-                        >
-                            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-400 to-neon-cyan" />
-                            <div className="px-6 py-4 border-b border-zinc-900 flex justify-between items-center bg-black/50 mt-1">
-                                <h3 className="text-xs font-bold text-white uppercase tracking-widest font-mono">Alert Details</h3>
-                                <button
-                                    onClick={() => setActiveModalNotif(null)}
-                                    className="p-1 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors cursor-pointer text-xs font-bold font-mono py-1 px-2 border border-zinc-900"
-                                >
-                                    Close
-                                </button>
-                            </div>
+                                            {/* Device & Problem Details */}
+                                            <div className="space-y-1.5 text-xs font-mono">
+                                                <div className="flex items-center justify-between gap-2 text-zinc-300">
+                                                    <span className="font-semibold text-white truncate">{diagnosisTicket.brand} {diagnosisTicket.modelNumber || ''}</span>
+                                                    <span className="text-[11px] text-zinc-500 shrink-0">{identifier}</span>
+                                                </div>
+                                                <div className="text-xs text-zinc-300 bg-zinc-900/50 rounded-lg p-2.5 border border-zinc-900/80">
+                                                    <span className="text-zinc-500 font-mono text-[10px] uppercase block mb-0.5">Problem Reported:</span>
+                                                    <span className="text-zinc-300 line-clamp-2">{diagnosisTicket.problemType || 'Device inspection requested'}</span>
+                                                </div>
+                                                {(diagnosisTicket as any).approximateBudget && (
+                                                    <div className="text-[11px] font-mono text-amber-400/90 pt-1">
+                                                        Approx Budget: ₹{Number((diagnosisTicket as any).approximateBudget).toLocaleString()}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
 
-                            <div className="p-6 space-y-4">
-                                <div>
-                                    <h4 className="text-sm font-bold text-emerald-400 leading-snug">{activeModalNotif.title}</h4>
-                                    <span className="text-[9px] font-mono text-zinc-550 mt-1 block">
-                                        {new Date(activeModalNotif.created_at).toLocaleString()}
-                                    </span>
-                                </div>
-
-                                <div className="bg-zinc-950/40 p-4 border border-zinc-900 rounded-xl">
-                                    <p className="text-xs text-zinc-300 whitespace-pre-wrap leading-relaxed">{activeModalNotif.message}</p>
-                                </div>
-
-                                {activeModalNotif.ticket_number && (
-                                    <div className="space-y-1 font-mono">
-                                        <span className="text-zinc-600 block text-[9px] uppercase tracking-wider mb-1">Related Assigment</span>
-                                        <div className="flex justify-between items-center bg-emerald-400/5 p-3 border border-emerald-400/15 rounded-xl">
-                                            <span className="text-xs font-bold text-white">#{activeModalNotif.ticket_number}</span>
+                                        {/* Footer & Action */}
+                                        <div className="pt-3 sm:pt-4 mt-3 sm:mt-4 border-t border-zinc-900 flex flex-wrap items-center justify-between gap-2">
+                                            <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1">
+                                                <Clock size={11} />
+                                                Updated {diagnosisTicket.updatedAt ? new Date(diagnosisTicket.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'N/A'}
+                                            </span>
                                             <button
-                                                onClick={() => {
-                                                    setActiveModalNotif(null);
-                                                    setShowNotifications(false);
-                                                    const matchingTask = tasks.find(t => t.ticketNumber === activeModalNotif.ticket_number || t.id === activeModalNotif.ticket_id);
-                                                    if (matchingTask) {
-                                                        openModal(matchingTask);
-                                                    } else {
-                                                        setSearchQuery(activeModalNotif.ticket_number || '');
-                                                    }
+                                                type="button"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    openModal(diagnosisTicket, 'diagnosis');
                                                 }}
-                                                className="text-[10px] bg-emerald-400 hover:bg-emerald-300 text-black font-bold uppercase py-1.5 px-3 rounded-lg flex items-center gap-1 transition-all cursor-pointer shadow-[0_0_10px_rgba(52,211,153,0.2)]"
+                                                className="w-full sm:w-auto justify-center px-3.5 py-1.5 rounded-xl bg-blue-500 hover:bg-blue-400 text-black text-xs font-mono font-bold transition-all cursor-pointer shadow-lg shadow-blue-500/10 flex items-center gap-1.5 group-hover:gap-2"
+                                                title="Diagnose & submit quote"
                                             >
-                                                <span>View Task</span>
-                                                <ArrowUpRight size={10} />
+                                                <span>Diagnose & Quote</span>
+                                                <ChevronRight size={13} />
                                             </button>
                                         </div>
                                     </div>
+                                );
+                            })() : (
+                                <div className="bg-[#0c0c0c] border border-dashed border-zinc-900 rounded-2xl p-8 flex flex-col items-center justify-center text-center min-h-[300px]">
+                                    <Cpu size={32} className="text-zinc-700 mb-3" />
+                                    <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">Diagnosis & Estimate</h4>
+                                    <p className="text-xs text-zinc-600 max-w-xs font-mono">No tickets currently awaiting inspection or cost estimate.</p>
+                                </div>
+                            )}
+
+                            {/* Card 2: Pending Acceptance Ticket */}
+                            {pendingAcceptanceTicket ? (() => {
+                                const isB2B = Boolean(pendingAcceptanceTicket.companyId || pendingAcceptanceTicket.companyName);
+                                const identifier = pendingAcceptanceTicket.assetId ? `Asset: ${pendingAcceptanceTicket.assetId}` : pendingAcceptanceTicket.serialNumber ? `S/N: ${pendingAcceptanceTicket.serialNumber}` : 'ID: N/A';
+                                return (
+                                    <div
+                                        key={pendingAcceptanceTicket.id}
+                                        onClick={() => openModal(pendingAcceptanceTicket, 'overview')}
+                                        className="bg-[#0c0c0c] border border-amber-500/30 hover:border-amber-500/50 hover:bg-amber-500/[0.02] rounded-xl sm:rounded-2xl p-4 sm:p-5 cursor-pointer transition-all group relative overflow-hidden flex flex-col justify-between"
+                                    >
+                                        <div>
+                                            {/* Stage Header */}
+                                            <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-zinc-900">
+                                                <div className="flex items-center gap-2">
+                                                    <Clock size={14} className="text-amber-400 animate-pulse" />
+                                                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-amber-400">Pending Acceptance</span>
+                                                </div>
+                                                <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded font-bold uppercase tracking-wider">
+                                                    Transfer Request
+                                                </span>
+                                            </div>
+
+                                            {/* Authoritative Ticket ID & Badges */}
+                                            <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
+                                                <div>
+                                                    <span className="text-xs font-mono font-bold text-amber-400 tracking-wider block">
+                                                        {pendingAcceptanceTicket.ticketNumber || `TICKET_ID: #${pendingAcceptanceTicket.id}`}
+                                                    </span>
+                                                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                                        {isB2B ? (
+                                                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">B2B</span>
+                                                        ) : (
+                                                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono text-zinc-500 bg-zinc-900 border border-zinc-800">INDIVIDUAL</span>
+                                                        )}
+                                                        {getPriorityBadge(pendingAcceptanceTicket.priority)}
+                                                    </div>
+                                                </div>
+                                                <div className="shrink-0">
+                                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-mono font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                                                        <Clock size={11} /> Awaiting Acceptance
+                                                    </span>
+                                                </div>
+                                            </div>
+
+                                            {/* Customer / Company Info */}
+                                            <div className="bg-zinc-950/60 rounded-xl p-3 border border-zinc-900 mb-3 space-y-1">
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <div className="text-xs font-bold text-white font-mono truncate max-w-[150px] sm:max-w-[200px]">
+                                                        {isB2B ? (pendingAcceptanceTicket.companyName || pendingAcceptanceTicket.customerName) : pendingAcceptanceTicket.customerName}
+                                                    </div>
+                                                    {pendingAcceptanceTicket.city && (
+                                                        <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1 shrink-0">
+                                                            <MapPin size={10} />
+                                                            {pendingAcceptanceTicket.city}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                {isB2B && pendingAcceptanceTicket.companyContactPerson && (
+                                                    <div className="text-[11px] text-zinc-400 font-mono truncate">
+                                                        Contact: {pendingAcceptanceTicket.companyContactPerson}
+                                                    </div>
+                                                )}
+                                                <div className="text-[11px] text-zinc-500 font-mono flex items-center gap-2">
+                                                    <Phone size={10} />
+                                                    <span className="truncate">{pendingAcceptanceTicket.mobile || pendingAcceptanceTicket.companyPhone || 'No phone'}</span>
+                                                </div>
+                                            </div>
+
+                                            {/* Device & Problem Details */}
+                                            <div className="space-y-1.5 text-xs font-mono">
+                                                <div className="flex items-center justify-between gap-2 text-zinc-300">
+                                                    <span className="font-semibold text-white truncate">{pendingAcceptanceTicket.brand} {pendingAcceptanceTicket.modelNumber || ''}</span>
+                                                    <span className="text-[11px] text-zinc-500 shrink-0">{identifier}</span>
+                                                </div>
+                                                <div className="text-xs text-zinc-300 bg-zinc-900/50 rounded-lg p-2.5 border border-zinc-900/80">
+                                                    <span className="text-zinc-500 font-mono text-[10px] uppercase block mb-0.5">Problem Reported:</span>
+                                                    <span className="text-zinc-300 line-clamp-2">{pendingAcceptanceTicket.problemType || 'Device transfer pending'}</span>
+                                                </div>
+                                                {(pendingAcceptanceTicket as any).transferReason && (
+                                                    <div className="text-[11px] font-mono text-amber-400/90 pt-1">
+                                                        Reason: {(pendingAcceptanceTicket as any).transferReason}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {/* Footer & Action */}
+                                        <div className="pt-3 sm:pt-4 mt-3 sm:mt-4 border-t border-zinc-900 flex flex-wrap items-center justify-between gap-2">
+                                            <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1">
+                                                <Clock size={11} />
+                                                Received {new Date(pendingAcceptanceTicket.updatedAt || pendingAcceptanceTicket.createdAt || 0).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                            </span>
+                                            <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => handleAccept(e, pendingAcceptanceTicket.id)}
+                                                    className="flex-1 sm:flex-none px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-mono font-bold transition-all cursor-pointer shadow-lg shadow-emerald-500/10 text-center"
+                                                    title="Accept assigned ticket"
+                                                >
+                                                    Accept
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => handleReject(e, pendingAcceptanceTicket.id)}
+                                                    className="flex-1 sm:flex-none px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-400 text-xs font-mono font-bold transition-all cursor-pointer text-center"
+                                                    title="Reject ticket assignment"
+                                                >
+                                                    Reject
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        openModal(pendingAcceptanceTicket, 'overview');
+                                                    }}
+                                                    className="flex-1 sm:flex-none px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-mono transition-colors cursor-pointer text-center"
+                                                    title="Inspect ticket details"
+                                                >
+                                                    Review
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })() : (
+                                <div className="bg-[#0c0c0c] border border-dashed border-zinc-900 rounded-2xl p-8 flex flex-col items-center justify-center text-center min-h-[300px]">
+                                    <Clock size={32} className="text-zinc-700 mb-3" />
+                                    <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">Pending Acceptance</h4>
+                                    <p className="text-xs text-zinc-600 max-w-xs font-mono">No incoming task transfer requests waiting for your acceptance.</p>
+                                </div>
+                            )}
+                        </div>
+                    )
+                ) : (
+                    <div className="space-y-8">
+                        {/* ══════════════════════════════════════════════════════════════ */}
+                        {/* ── WORKBENCH TASKS VIEW (Dedicated My Assigned Tasks & Stages) ── */}
+                        {/* ══════════════════════════════════════════════════════════════ */}
+                        {/* Filters, Account Selector, View Switcher & Search */}
+                        <div className="space-y-4">
+                                    {/* Row 1: Account Type Filter & View Mode */}
+                                    <div className="flex flex-wrap items-center justify-between gap-3 sm:gap-4">
+                                        {/* Individual Customer vs B2B Company Segmented Filter */}
+                                        <div className="flex items-center gap-1.5 bg-zinc-900/40 p-1 rounded-xl border border-zinc-900 overflow-x-auto max-w-full scrollbar-none">
+                                            <button
+                                                onClick={() => setAccountTypeFilter('all')}
+                                                className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                                                    accountTypeFilter === 'all'
+                                                        ? 'bg-zinc-800 text-white font-bold shadow'
+                                                        : 'text-zinc-400 hover:text-white'
+                                                }`}
+                                            >
+                                                <Layers size={13} />
+                                                <span className="hidden sm:inline">All Accounts</span>
+                                                <span className="sm:hidden">All</span>
+                                                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-zinc-900 text-zinc-400">
+                                                    {tasks.length}
+                                                </span>
+                                            </button>
+
+                                            <button
+                                                onClick={() => setAccountTypeFilter('individual')}
+                                                className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                                                    accountTypeFilter === 'individual'
+                                                        ? 'bg-blue-500/20 text-blue-300 font-bold border border-blue-500/30'
+                                                        : 'text-zinc-400 hover:text-white'
+                                                }`}
+                                            >
+                                                <User size={13} />
+                                                <span className="hidden sm:inline">Individual Customers</span>
+                                                <span className="sm:hidden">Individual</span>
+                                                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-500/10 text-blue-400 font-bold">
+                                                    {individualCount}
+                                                </span>
+                                            </button>
+
+                                            <button
+                                                onClick={() => setAccountTypeFilter('b2b')}
+                                                className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                                                    accountTypeFilter === 'b2b'
+                                                        ? 'bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30'
+                                                        : 'text-zinc-400 hover:text-white'
+                                                }`}
+                                            >
+                                                <Building2 size={13} />
+                                                <span className="hidden sm:inline">B2B Companies</span>
+                                                <span className="sm:hidden">B2B</span>
+                                                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-500/10 text-purple-400 font-bold">
+                                                    {b2bCount}
+                                                </span>
+                                            </button>
+                                        </div>
+
+                                        {/* View Mode Toggle: Cards vs Table */}
+                                        <div className="flex items-center gap-1 bg-zinc-900/40 p-1 rounded-xl border border-zinc-900">
+                                            <button
+                                                onClick={() => setViewMode('cards')}
+                                                title="Card Grid View"
+                                                className={`p-2 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 text-xs font-semibold ${
+                                                    viewMode === 'cards'
+                                                        ? 'bg-emerald-400 text-black font-bold'
+                                                        : 'text-zinc-400 hover:text-white'
+                                                }`}
+                                            >
+                                                <LayoutGrid size={14} />
+                                                <span className="hidden sm:inline">Cards</span>
+                                            </button>
+                                            <button
+                                                onClick={() => setViewMode('table')}
+                                                title="Detailed Table View"
+                                                className={`p-2 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 text-xs font-semibold ${
+                                                    viewMode === 'table'
+                                                        ? 'bg-emerald-400 text-black font-bold'
+                                                        : 'text-zinc-400 hover:text-white'
+                                                }`}
+                                            >
+                                                <List size={14} />
+                                                <span className="hidden sm:inline">Table</span>
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Row 2: Status Tabs & Search */}
+                                    <div className="flex flex-col md:flex-row gap-3 sm:gap-4 items-stretch md:items-center justify-between">
+                                        {isAssignedTicketsRoute ? (
+                                            <div className="flex flex-wrap gap-1.5 bg-zinc-900/40 p-1 rounded-xl border border-zinc-900 self-start md:self-auto w-full md:w-auto">
+                                                {[
+                                                    { id: 'all', label: 'All Tasks', count: tasks.length },
+                                                    { id: 'pending_acceptance', label: 'Pending Acceptance', shortLabel: 'Pending Accept', count: pendingTransferCount },
+                                                    { id: 'pending', label: 'Pending / Diagnosis', shortLabel: 'Diagnosis', count: pendingCount },
+                                                    { id: 'in_progress', label: 'In Progress', shortLabel: 'In Progress', count: inProgressCount },
+                                                    { id: 'completed', label: 'Completed', shortLabel: 'Completed', count: completedCount },
+                                                    { id: 'delivered', label: 'Delivered', shortLabel: 'Delivered', count: deliveredCount }
+                                                ].map(tab => (
+                                                    <button
+                                                        key={tab.id}
+                                                        onClick={() => setActiveFilter(tab.id)}
+                                                        className={`px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-lg text-[11px] sm:text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center gap-1.5 sm:gap-2 ${
+                                                            activeFilter === tab.id ? 'bg-emerald-400 text-black font-bold' : 'text-zinc-400 hover:text-white'
+                                                        }`}
+                                                    >
+                                                        <span className="hidden sm:inline">{tab.label}</span>
+                                                        <span className="sm:hidden">{tab.shortLabel || tab.label}</span>
+                                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                                                            activeFilter === tab.id ? 'bg-black/20 text-black font-bold' : 'bg-zinc-800 text-zinc-500'
+                                                        }`}>
+                                                            {tab.count}
+                                                        </span>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <div className="flex items-center gap-2 text-xs font-mono bg-zinc-900/40 px-3.5 py-2 rounded-xl border border-zinc-900 text-zinc-400">
+                                                <span className="text-zinc-500 uppercase tracking-wider text-[11px]">Filtered Queue:</span>
+                                                <span className="text-emerald-400 font-bold">{headerInfo.title}</span>
+                                                <span className="text-zinc-700">•</span>
+                                                <span className="bg-zinc-800 text-zinc-300 px-2 py-0.5 rounded text-[10px] font-bold">
+                                                    {filteredTasks.length} {filteredTasks.length === 1 ? 'ticket' : 'tickets'}
+                                                </span>
+                                            </div>
+                                        )}
+                                        <div className="relative w-full md:w-96">
+                                            <Search className="absolute left-3.5 top-3 w-4 h-4 text-emerald-400" />
+                                            <input
+                                                type="text"
+                                                placeholder="Search Ticket ID, Serial, Asset, Model, Brand, Customer, Phone..."
+                                                value={searchQuery}
+                                                onChange={e => setSearchQuery(e.target.value)}
+                                                className="w-full bg-zinc-900/60 border border-zinc-800 rounded-xl pl-10 pr-9 py-2.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 transition-all font-mono shadow-inner"
+                                            />
+                                            {searchQuery && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setSearchQuery('')}
+                                                    className="absolute right-3 top-2.5 text-zinc-500 hover:text-white p-0.5 rounded transition-colors cursor-pointer"
+                                                    title="Clear search"
+                                                >
+                                                    <X size={15} />
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Loading / Error / Empty / Views */}
+                                {isLoading ? (
+                                    <div className="min-h-[40vh] flex flex-col items-center justify-center text-center">
+                                        <Loader2 className="w-8 h-8 text-emerald-400 animate-spin mb-3" />
+                                        <p className="text-zinc-500 text-xs font-mono uppercase tracking-wider">Syncing workbench telemetry...</p>
+                                    </div>
+                                ) : errorMsg ? (
+                                    <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-6 text-center text-red-400 font-mono text-sm max-w-xl mx-auto">{errorMsg}</div>
+                                ) : filteredTasks.length === 0 ? (
+                                    <div className="border border-zinc-900 bg-zinc-950/20 rounded-2xl p-12 text-center flex flex-col items-center justify-center">
+                                        {searchQuery.trim() ? (
+                                            <>
+                                                <div className="w-12 h-12 rounded-full bg-zinc-900/80 border border-zinc-800 flex items-center justify-center text-zinc-400 mb-3.5">
+                                                    <Search className="w-5 h-5 text-zinc-400" />
+                                                </div>
+                                                <h3 className="text-white font-bold text-sm mb-1 font-outfit">No matching tickets found</h3>
+                                                <p className="text-zinc-400 text-xs max-w-md mx-auto mb-4 font-mono leading-relaxed">
+                                                    No tickets match "<span className="text-emerald-400 font-bold">{searchQuery}</span>". Search supports Ticket ID, Serial Number, Asset ID, Model Name, Brand, Customer/Company Name, and Phone Number.
+                                                </p>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setSearchQuery('')}
+                                                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white transition-colors cursor-pointer border border-zinc-700/60"
+                                                >
+                                                    <RotateCcw size={13} />
+                                                    Reset Search
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Wrench className="w-10 h-10 text-zinc-700 mx-auto mb-4" />
+                                                <p className="text-zinc-500 text-sm">
+                                                    {tasks.length === 0 ? 'No tasks have been assigned to you yet.' : 'No tasks match the current filter selection.'}
+                                                </p>
+                                            </>
+                                        )}
+                                    </div>
+                                ) : viewMode === 'cards' ? (
+                                    /* ── CARD GRID VIEW (Showing all 9 attributes) ── */
+                                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                                        {filteredTasks.map(task => {
+                                            const isB2B = Boolean(task.companyId || task.companyName);
+                                            const identifier = task.assetId ? `Asset: ${task.assetId}` : task.serialNumber ? `S/N: ${task.serialNumber}` : 'ID: N/A';
+                                            return (
+                                                <div
+                                                    key={task.id}
+                                                    onClick={() => openModal(task, isDiagnosisRoute ? 'diagnosis' : isInProgressRoute ? 'work-log' : 'overview')}
+                                                    className={`bg-zinc-900/20 border rounded-xl sm:rounded-2xl p-3.5 sm:p-5 cursor-pointer transition-all hover:bg-zinc-900/40 group ${getStatusCardStyle(task.status)} relative overflow-hidden flex flex-col justify-between`}
+                                                >
+                                                    {task.pendingTechnicianId === user?.id && (
+                                                        <div className="absolute inset-0 bg-zinc-950/85 backdrop-blur-[2px] z-10 flex flex-col items-center justify-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity p-4 text-center">
+                                                            <div className="text-white font-bold tracking-widest text-xs font-mono uppercase bg-emerald-500/20 px-3 py-1 rounded-lg border border-emerald-500/30 text-emerald-300">
+                                                                Transfer Requires Confirmation
+                                                            </div>
+                                                            <div className="flex items-center gap-3 mt-2">
+                                                                <button onClick={(e) => handleAccept(e, task.id)} className="px-5 py-2 bg-emerald-500 text-black font-bold rounded-lg text-xs hover:bg-emerald-400 transition-colors cursor-pointer">Accept</button>
+                                                                <button onClick={(e) => handleReject(e, task.id)} className="px-5 py-2 bg-red-500/20 border border-red-500/30 text-red-400 font-bold rounded-lg text-xs hover:bg-red-500/40 transition-colors cursor-pointer">Reject</button>
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    <div>
+                                                        {/* Header: Authoritative Ticket ID & Status */}
+                                                        <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
+                                                            <div>
+                                                                <div className="font-mono text-xs font-bold text-emerald-400 mb-1 tracking-wider truncate max-w-[200px] sm:max-w-[220px]">
+                                                                    {task.ticketNumber || `TICKET #${task.id}`}
+                                                                </div>
+                                                                <div className="flex items-center gap-2">
+                                                                    {isB2B ? (
+                                                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                                                                            <Building2 size={11} /> B2B Company
+                                                                        </span>
+                                                                    ) : (
+                                                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                                                            <User size={11} /> Individual
+                                                                        </span>
+                                                                    )}
+                                                                    {getPriorityBadge(task.priority)}
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex flex-col items-end gap-1.5 shrink-0">
+                                                                {task.pendingTechnicianId === user?.id ? (
+                                                                    <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-500 border border-amber-500/30">Pending Transfer</span>
+                                                                ) : (
+                                                                    getStatusBadge(task.status)
+                                                                )}
+                                                                {task.customerApprovalStatus && task.customerApprovalStatus !== 'none' && (
+                                                                    getApprovalStatusBadge(task.customerApprovalStatus)
+                                                                )}
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Customer / Company */}
+                                                        <div className="mb-3 bg-zinc-950/60 rounded-xl p-3 border border-zinc-900/60">
+                                                            <div className="text-[10px] font-mono uppercase text-zinc-500 mb-1 flex items-center justify-between">
+                                                                <span>Customer / Company</span>
+                                                                {isB2B && task.companyName && (
+                                                                    <span className="text-purple-400 font-semibold truncate max-w-[150px]">{task.companyName}</span>
+                                                                )}
+                                                            </div>
+                                                            <div className="text-white font-semibold text-sm truncate">{task.customerName}</div>
+                                                            {isB2B && task.employeeName && (
+                                                                <div className="text-zinc-400 text-[11px] truncate">Employee: {task.employeeName}</div>
+                                                            )}
+                                                            <div className="flex items-center gap-3 mt-1.5 text-zinc-500 text-[11px]">
+                                                                <span className="flex items-center gap-1"><MapPin size={10} /> {task.city}</span>
+                                                                <span className="flex items-center gap-1"><Phone size={10} /> {task.mobile}</span>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Device, Serial/Asset & Problem */}
+                                                        <div className="mb-3 bg-zinc-950/40 rounded-xl p-3 space-y-1.5 border border-zinc-900/40">
+                                                            <div className="flex items-center justify-between text-xs">
+                                                                <span className="text-zinc-300 font-semibold truncate">{task.brand}{task.modelNumber ? ` · ${task.modelNumber}` : ''}</span>
+                                                                <span className="text-zinc-500 text-[10px] font-mono uppercase">{task.deviceCategory}</span>
+                                                            </div>
+                                                            <div className="text-[11px] font-mono text-zinc-400 flex items-center justify-between pt-1 border-t border-zinc-900">
+                                                                <span className="text-zinc-500">Serial / Asset:</span>
+                                                                <span className="text-zinc-300 font-semibold truncate max-w-[180px]">{identifier}</span>
+                                                            </div>
+                                                            <div className="text-[11px] text-zinc-400 flex items-start gap-1 pt-1">
+                                                                <span className="text-zinc-500 shrink-0 font-mono">Problem:</span>
+                                                                <span className="text-zinc-300 font-medium truncate">{task.problemType}{task.customProblemType ? ` (${task.customProblemType})` : ''}</span>
+                                                            </div>
+                                                            {((task.estimatedCost && task.estimatedCost > 0) || (task.customerApprovalStatus && task.customerApprovalStatus !== 'none')) && (
+                                                                <div className="flex items-center justify-between text-[11px] font-mono pt-1.5 border-t border-zinc-900">
+                                                                    <span className="text-zinc-500">Approx Quote:</span>
+                                                                    <span className="text-emerald-400 font-bold">₹{((task.estimatedCost || 0) + (task.additionalCharges || 0)).toFixed(2)}</span>
+                                                                </div>
+                                                            )}
+                                                            {(task.paymentStatus === 'paid' || (task as any).payment_status === 'paid') && (
+                                                                <div className="flex items-center justify-between text-[11px] font-mono pt-1.5 border-t border-zinc-900">
+                                                                    <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                                                                        <CheckCircle2 size={11} /> Paid
+                                                                    </span>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            setSelectedReceiptTicketId(task.id);
+                                                                            setReceiptModalOpen(true);
+                                                                        }}
+                                                                        className="px-2 py-0.5 rounded bg-neon-cyan/10 hover:bg-neon-cyan/20 border border-neon-cyan/30 text-neon-cyan text-[10px] flex items-center gap-1 transition-all cursor-pointer font-mono"
+                                                                        title="View Bill / Tax Invoice"
+                                                                    >
+                                                                        <Receipt size={10} /> Bill
+                                                                    </button>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Timestamps & Action Footer */}
+                                                    <div className="pt-2 border-t border-zinc-900/80 flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono text-zinc-500">
+                                                        <div className="space-y-0.5">
+                                                            <div className="flex items-center gap-1">
+                                                                <Clock size={10} className="text-zinc-600" />
+                                                                <span>Assigned: {task.assignedAt || task.createdAt ? new Date(task.assignedAt || task.createdAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : 'N/A'}</span>
+                                                            </div>
+                                                            <div className="flex items-center gap-1">
+                                                                <RotateCcw size={10} className="text-zinc-600" />
+                                                                <span>Updated: {task.updatedAt ? new Date(task.updatedAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : 'N/A'}</span>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex items-center gap-1 text-zinc-400 group-hover:text-emerald-400 transition-colors font-sans text-xs font-semibold">
+                                                            {isDiagnosisRoute ? 'Diagnose & Quote' : isInProgressRoute ? 'Update Work Log' : 'Inspect'} <ChevronRight size={14} className="group-hover:translate-x-0.5 transition-transform" />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ) : (
+                                    /* ── TABLE VIEW (Showing all 9 attributes) ── */
+                                    <div className="bg-[#0c0c0c] border border-zinc-900 rounded-xl sm:rounded-2xl overflow-hidden shadow-xl">
+                                        <div className="overflow-x-auto w-full">
+                                            <table className="w-full min-w-[760px] text-left text-xs font-sans">
+                                                <thead className="bg-zinc-950/80 border-b border-zinc-900 text-zinc-400 font-mono uppercase text-[10px] tracking-wider">
+                                                    <tr>
+                                                        <th className="py-3.5 px-4 font-semibold">Authoritative ID</th>
+                                                        <th className="py-3.5 px-4 font-semibold">Customer / Company</th>
+                                                        <th className="py-3.5 px-4 font-semibold">Device</th>
+                                                        <th className="py-3.5 px-4 font-semibold">Serial / Asset</th>
+                                                        <th className="py-3.5 px-4 font-semibold">Problem</th>
+                                                        <th className="py-3.5 px-4 font-semibold">Priority</th>
+                                                        <th className="py-3.5 px-4 font-semibold">Assigned Date/Time</th>
+                                                        <th className="py-3.5 px-4 font-semibold">Last Updated</th>
+                                                        <th className="py-3.5 px-4 font-semibold">Status</th>
+                                                        <th className="py-3.5 px-4 font-semibold text-right">Actions</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-zinc-900/70 text-zinc-300">
+                                                    {filteredTasks.map(task => {
+                                                        const isB2B = Boolean(task.companyId || task.companyName);
+                                                        const identifier = task.assetId ? `Asset: ${task.assetId}` : task.serialNumber ? `S/N: ${task.serialNumber}` : 'N/A';
+                                                        return (
+                                                            <tr
+                                                                key={task.id}
+                                                                onClick={() => openModal(task, isDiagnosisRoute ? 'diagnosis' : isInProgressRoute ? 'work-log' : 'overview')}
+                                                                className="hover:bg-zinc-900/40 transition-colors cursor-pointer group"
+                                                            >
+                                                                {/* 1. Authoritative Ticket ID */}
+                                                                <td className="py-3 px-4 font-mono font-bold text-emerald-400 whitespace-nowrap">
+                                                                    {task.ticketNumber || `TICKET #${task.id}`}
+                                                                </td>
+
+                                                                {/* 2. Customer / Company */}
+                                                                <td className="py-3 px-4">
+                                                                    <div className="font-semibold text-white truncate max-w-[170px]">{task.customerName}</div>
+                                                                    {isB2B ? (
+                                                                        <div className="inline-flex items-center gap-1 text-[10px] font-mono text-purple-400">
+                                                                            <Building2 size={10} />
+                                                                            <span className="truncate max-w-[130px]">{task.companyName || 'Corporate'}</span>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <span className="text-[10px] font-mono text-blue-400">Individual</span>
+                                                                    )}
+                                                                </td>
+
+                                                                {/* 3. Device */}
+                                                                <td className="py-3 px-4">
+                                                                    <div className="text-zinc-200 font-medium truncate max-w-[150px]">{task.brand} {task.modelNumber || ''}</div>
+                                                                    <div className="text-[10px] font-mono text-zinc-500 uppercase">{task.deviceCategory}</div>
+                                                                </td>
+
+                                                                {/* 4. Serial / Asset Number */}
+                                                                <td className="py-3 px-4 font-mono text-[11px] text-zinc-400 whitespace-nowrap">
+                                                                    {identifier}
+                                                                </td>
+
+                                                                {/* 5. Problem */}
+                                                                <td className="py-3 px-4">
+                                                                    <div className="truncate max-w-[140px] text-zinc-300">{task.problemType}</div>
+                                                                </td>
+
+                                                                {/* 6. Priority */}
+                                                                <td className="py-3 px-4 whitespace-nowrap">
+                                                                    {getPriorityBadge(task.priority)}
+                                                                </td>
+
+                                                                {/* 7. Assigned Date/Time */}
+                                                                <td className="py-3 px-4 font-mono text-[11px] text-zinc-400 whitespace-nowrap">
+                                                                    {task.assignedAt || task.createdAt ? new Date(task.assignedAt || task.createdAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : 'N/A'}
+                                                                </td>
+
+                                                                {/* 8. Last Updated */}
+                                                                <td className="py-3 px-4 font-mono text-[11px] text-zinc-400 whitespace-nowrap">
+                                                                    {task.updatedAt ? new Date(task.updatedAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : 'N/A'}
+                                                                </td>
+
+                                                                {/* 9. Status */}
+                                                                <td className="py-3 px-4 whitespace-nowrap">
+                                                                    <div className="flex flex-col gap-1 items-start">
+                                                                        {task.pendingTechnicianId === user?.id ? (
+                                                                            <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-500 border border-amber-500/30">Pending Transfer</span>
+                                                                        ) : (
+                                                                            getStatusBadge(task.status)
+                                                                        )}
+                                                                        {task.customerApprovalStatus && task.customerApprovalStatus !== 'none' && (
+                                                                            getApprovalStatusBadge(task.customerApprovalStatus)
+                                                                        )}
+                                                                    </div>
+                                                                </td>
+
+                                                                {/* Action button */}
+                                                                <td className="py-3 px-4 text-right whitespace-nowrap">
+                                                                    <button
+                                                                        onClick={(e) => { e.stopPropagation(); openModal(task, isDiagnosisRoute ? 'diagnosis' : isInProgressRoute ? 'work-log' : 'overview'); }}
+                                                                        className={`px-3 py-1 font-semibold text-xs rounded-lg transition-colors cursor-pointer ${
+                                                                            isDiagnosisRoute
+                                                                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-400 hover:text-black'
+                                                                                : isInProgressRoute
+                                                                                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-400 hover:text-black'
+                                                                                : 'bg-zinc-800 text-zinc-300 hover:bg-emerald-400 hover:text-black'
+                                                                        }`}
+                                                                    >
+                                                                        {isDiagnosisRoute ? 'Diagnose & Quote' : isInProgressRoute ? 'Work Log' : 'Inspect'}
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
                                 )}
-                            </div>
-                        </motion.div>
                     </div>
                 )}
-            </AnimatePresence>
-
-            {/* Transfer Modal */}
-            <AnimatePresence>
-                {transferModalOpen && (
-                    <div className="fixed inset-0 bg-black/85 flex items-center justify-center p-4 z-[9999] animate-fadeIn bg-blur-sm">
-                        <motion.div
-                            initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                            animate={{ opacity: 1, scale: 1, y: 0 }}
-                            exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                            className="bg-[#0c0c0c] border border-zinc-800 rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl relative text-left p-6 space-y-5"
-                        >
-                            <div>
-                                <h3 className="text-sm font-bold text-white uppercase tracking-widest font-mono">Transfer Task</h3>
-                                <p className="text-xs text-zinc-500 mt-1">Reassign this task to another technician.</p>
+                {/* Detail Right-Side Drawer / Workspace */}
+                <AnimatePresence>
+                    {selectedTask && (
+                        <div className="fixed inset-0 z-50 overflow-hidden">
+                            <motion.div
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                onClick={() => setSelectedTask(null)}
+                                className="fixed inset-0 bg-black/70 backdrop-blur-sm transition-opacity"
+                            />
+                            <div className="fixed inset-y-0 right-0 max-w-full flex pl-0 sm:pl-10 pointer-events-none">
+                                <motion.div
+                                    initial={{ x: '100%' }}
+                                    animate={{ x: 0 }}
+                                    exit={{ x: '100%' }}
+                                    transition={{ type: 'spring', damping: 28, stiffness: 280 }}
+                                    className="w-full sm:w-screen sm:max-w-4xl bg-[#0c0c0c] border-l border-zinc-800 shadow-2xl relative flex flex-col h-full overflow-hidden pointer-events-auto"
+                                >
+                                    <div className="flex-1 overflow-y-auto p-2.5 sm:p-6 custom-scrollbar">
+                                        <TechnicianTaskWorkspace
+                                            task={selectedTask}
+                                            initialTab={activeTab}
+                                            user={user}
+                                            token={token}
+                                            onBack={() => setSelectedTask(null)}
+                                            onTaskUpdated={(updatedFields) => {
+                                                setSelectedTask(prev => prev ? { ...prev, ...updatedFields } : null);
+                                                setTasks(prev => prev.map(t => t.id === selectedTask.id ? { ...t, ...updatedFields } : t));
+                                            }}
+                                            onInitiateTransfer={() => setTransferModalOpen(true)}
+                                            onImagePreview={(src, alt) => handleImagePreview(src, alt)}
+                                            onAcceptAssignment={handleAccept}
+                                            onRejectAssignment={handleReject}
+                                        />
+                                    </div>
+                                </motion.div>
                             </div>
+                        </div>
+                    )}
+                </AnimatePresence>
 
-                            <div className="space-y-4">
+                {/* Transfer Modal */}
+                <AnimatePresence>
+                    {transferModalOpen && (
+                        <div className="fixed inset-0 bg-black/85 flex items-center justify-center p-4 z-[9999] animate-fadeIn bg-blur-sm">
+                            <motion.div
+                                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                                animate={{ opacity: 1, scale: 1, y: 0 }}
+                                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                                className="bg-[#0c0c0c] border border-zinc-800 rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl relative text-left p-6 space-y-5"
+                            >
                                 <div>
-                                    <label className="block text-xs font-mono text-zinc-400 mb-1.5 uppercase">Select Technician</label>
-                                    {technicians.filter(t => t.id !== user?.id).length > 0 ? (
-                                        <select
-                                            value={transferTargetId}
-                                            onChange={e => setTransferTargetId(e.target.value)}
-                                            className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2.5 text-xs text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all"
+                                    <h3 className="text-sm font-bold text-white uppercase tracking-widest font-mono">Transfer Task</h3>
+                                    <p className="text-xs text-zinc-500 mt-1">Reassign this task to another technician.</p>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-xs font-mono text-zinc-400 mb-1.5 uppercase">Select Technician</label>
+                                        {technicians.filter(t => t.id !== user?.id).length > 0 ? (
+                                            <select
+                                                value={transferTargetId}
+                                                onChange={e => setTransferTargetId(e.target.value)}
+                                                className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2.5 text-xs text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all"
+                                            >
+                                                <option value="">-- Select --</option>
+                                                {technicians.filter(t => t.id !== user?.id).map(t => (
+                                                    <option key={t.id} value={t.id.toString()}>{t.name}</option>
+                                                ))}
+                                            </select>
+                                        ) : (
+                                            <div className="w-full bg-zinc-950/50 border border-zinc-800/50 rounded-lg p-3 text-xs text-zinc-500 text-center font-mono">
+                                                No other technicians available for transfer.
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-mono text-zinc-400 mb-1.5 uppercase">Reason (Optional)</label>
+                                        <textarea
+                                            value={transferReason}
+                                            onChange={e => setTransferReason(e.target.value)}
+                                            className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2.5 text-xs text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all resize-none h-20"
+                                            placeholder="Note for the receiving tech..."
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-900">
+                                    <button
+                                        onClick={() => { setTransferModalOpen(false); setTransferTargetId(''); setTransferReason(''); }}
+                                        className="px-4 py-2 text-xs font-mono uppercase bg-transparent text-zinc-500 hover:text-white transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        onClick={handleTransfer}
+                                        disabled={!transferTargetId || transferring}
+                                        className="px-4 py-2 text-xs font-mono uppercase font-bold bg-amber-500 text-black rounded-lg hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                                    >
+                                        {transferring ? <Loader2 size={12} className="animate-spin" /> : null}
+                                        Initiate Transfer
+                                    </button>
+                                </div>
+                            </motion.div>
+                        </div>
+                    )}
+                </AnimatePresence>
+
+                {/* View, Print, and Download Payment Receipt / Tax Invoice Modal */}
+                <PaymentReceiptModal
+                    isOpen={receiptModalOpen}
+                    onClose={() => {
+                        setReceiptModalOpen(false);
+                        setSelectedReceiptTicketId(null);
+                    }}
+                    ticketId={selectedReceiptTicketId}
+                />
+
+                {/* Universal Ticket Search Modal (Ctrl+K) */}
+                <AnimatePresence>
+                    {searchModalOpen && (
+                        <div className="fixed inset-0 bg-black/85 flex items-start justify-center p-3 sm:p-6 z-[9999] animate-fadeIn backdrop-blur-md overflow-y-auto">
+                            <motion.div
+                                initial={{ opacity: 0, scale: 0.95, y: -20 }}
+                                animate={{ opacity: 1, scale: 1, y: 0 }}
+                                exit={{ opacity: 0, scale: 0.95, y: -20 }}
+                                className="bg-[#0c0c0c] border border-zinc-800 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl relative text-left my-8"
+                            >
+                                {/* Search Input Bar */}
+                                <div className="p-4 border-b border-zinc-900 bg-black/60 flex items-center gap-3">
+                                    <Search size={18} className="text-emerald-400 shrink-0" />
+                                    <input
+                                        ref={searchInputRef}
+                                        type="text"
+                                        placeholder="Search Ticket ID, Serial, Asset, Model, Brand, Customer, Phone..."
+                                        value={modalSearchQuery}
+                                        onChange={e => setModalSearchQuery(e.target.value)}
+                                        className="w-full bg-transparent text-sm text-white placeholder-zinc-500 focus:outline-none font-mono"
+                                    />
+                                    {modalSearchLoading && (
+                                        <Loader2 size={16} className="text-emerald-400 animate-spin shrink-0" />
+                                    )}
+                                    {modalSearchQuery && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setModalSearchQuery('')}
+                                            className="text-zinc-500 hover:text-white p-1 rounded transition-colors shrink-0 cursor-pointer"
+                                            title="Clear search"
                                         >
-                                            <option value="">-- Select --</option>
-                                            {technicians.filter(t => t.id !== user?.id).map(t => (
-                                                <option key={t.id} value={t.id.toString()}>{t.name}</option>
-                                            ))}
-                                        </select>
-                                    ) : (
-                                        <div className="w-full bg-zinc-950/50 border border-zinc-800/50 rounded-lg p-3 text-xs text-zinc-500 text-center font-mono">
-                                            No other technicians available for transfer.
-                                        </div>
+                                            <X size={16} />
+                                        </button>
                                     )}
                                 </div>
 
-                                <div>
-                                    <label className="block text-xs font-mono text-zinc-400 mb-1.5 uppercase">Reason (Optional)</label>
-                                    <textarea
-                                        value={transferReason}
-                                        onChange={e => setTransferReason(e.target.value)}
-                                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2.5 text-xs text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all resize-none h-20"
-                                        placeholder="Note for the receiving tech..."
-                                    />
+                                {/* Search Results / Recents List */}
+                                <div className="max-h-[60vh] overflow-y-auto p-4 space-y-2.5 custom-scrollbar">
+                                    {modalSearchLoading && modalDisplayList.length === 0 ? (
+                                        <div className="py-12 flex flex-col items-center justify-center text-center text-zinc-500 font-mono text-xs gap-2">
+                                            <Loader2 size={20} className="animate-spin text-emerald-400" />
+                                            <span>Searching authorized tickets...</span>
+                                        </div>
+                                    ) : modalSearchQuery.trim() && modalDisplayList.length === 0 ? (
+                                        <div className="py-12 text-center text-zinc-500 font-mono text-xs space-y-2">
+                                            <p>No authorized tickets match "{modalSearchQuery}".</p>
+                                            <p className="text-[11px] text-zinc-600">
+                                                Search by Ticket ID, Serial #, Asset ID, Customer name, Phone, Brand, or Model.
+                                            </p>
+                                            <button
+                                                type="button"
+                                                onClick={() => setModalSearchQuery('')}
+                                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white transition-colors cursor-pointer border border-zinc-700 font-mono"
+                                            >
+                                                <RotateCcw size={12} />
+                                                Reset Search
+                                            </button>
+                                        </div>
+                                    ) : modalDisplayList.length === 0 ? (
+                                        <div className="py-12 text-center text-zinc-500 font-mono text-xs">
+                                            No tickets have been assigned to your workbench yet.
+                                        </div>
+                                    ) : (
+                                        <>
+                                            {!modalSearchQuery.trim() && (
+                                                <div className="text-[11px] font-mono text-zinc-500 uppercase tracking-wider px-1 pb-1">
+                                                    Active Assigned Workload ({modalDisplayList.length})
+                                                </div>
+                                            )}
+                                            {modalDisplayList.map((task) => {
+                                                const isB2B = Boolean(task.companyId || task.companyName);
+                                                const identifier = task.assetId ? `Asset: ${task.assetId}` : task.serialNumber ? `S/N: ${task.serialNumber}` : 'ID: N/A';
+                                                return (
+                                                    <div
+                                                        key={task.id}
+                                                        onClick={() => {
+                                                            setSearchModalOpen(false);
+                                                            openModal(task);
+                                                        }}
+                                                        className="p-3.5 rounded-xl border border-zinc-900 bg-zinc-900/30 hover:bg-zinc-900/80 hover:border-emerald-500/40 transition-all cursor-pointer group flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                                                    >
+                                                        <div className="space-y-1 min-w-0 flex-1">
+                                                            <div className="flex items-center gap-2 flex-wrap">
+                                                                <span className="font-mono text-xs font-bold text-emerald-400 tracking-wider">
+                                                                    {task.ticketNumber || `TICKET #${task.id}`}
+                                                                </span>
+                                                                {isB2B ? (
+                                                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                                                                        <Building2 size={10} /> {task.companyName || 'B2B'}
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                                                        <User size={10} /> Individual
+                                                                    </span>
+                                                                )}
+                                                                {getPriorityBadge(task.priority)}
+                                                            </div>
+                                                            <div className="text-sm font-semibold text-white truncate">
+                                                                {task.customerName} {task.mobile ? <span className="text-xs font-mono text-zinc-500">· {task.mobile}</span> : null}
+                                                            </div>
+                                                            <div className="text-xs text-zinc-400 truncate">
+                                                                {task.brand} {task.modelNumber || ''} · <span className="font-mono text-zinc-500">{identifier}</span>
+                                                            </div>
+                                                            {task.problemType && (
+                                                                <div className="text-[11px] text-zinc-400 font-mono truncate">
+                                                                    Problem: <span className="text-zinc-300">{task.problemType}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0 border-t sm:border-t-0 pt-2 sm:pt-0 border-zinc-900/60">
+                                                            {task.pendingTechnicianId === user?.id ? (
+                                                                <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-500 border border-amber-500/30">Pending Transfer</span>
+                                                            ) : (
+                                                                getStatusBadge(task.status)
+                                                            )}
+                                                            <span className="text-xs font-mono text-emerald-400 group-hover:underline flex items-center gap-1 font-semibold">
+                                                                Open Workspace <ChevronRight size={12} />
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </>
+                                    )}
                                 </div>
-                            </div>
 
-                            <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-900">
-                                <button
-                                    onClick={() => { setTransferModalOpen(false); setTransferTargetId(''); setTransferReason(''); }}
-                                    className="px-4 py-2 text-xs font-mono uppercase bg-transparent text-zinc-500 hover:text-white transition-colors"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    onClick={handleTransfer}
-                                    disabled={!transferTargetId || transferring}
-                                    className="px-4 py-2 text-xs font-mono uppercase font-bold bg-amber-500 text-black rounded-lg hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-                                >
-                                    {transferring ? <Loader2 size={12} className="animate-spin" /> : null}
-                                    Initiate Transfer
-                                </button>
-                            </div>
-                        </motion.div>
-                    </div>
-                )}
-            </AnimatePresence>
+                                {/* Bottom Footer */}
+                                <div className="p-3 border-t border-zinc-900 bg-black/40 flex items-center justify-between text-[11px] font-mono text-zinc-500">
+                                    <div className="flex items-center gap-2">
+                                        <span>
+                                            {modalSearchQuery.trim() ? `${modalDisplayList.length} matching` : `${tasks.length} total`} authorized {modalDisplayList.length === 1 ? 'ticket' : 'tickets'}
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                        <span className="hidden sm:inline">Ticket ID, Serial, Asset, Model, Brand, Customer & Phone</span>
+                                        <kbd className="px-1.5 py-0.5 bg-zinc-900 border border-zinc-800 rounded text-[10px] text-zinc-400">
+                                            ESC to close
+                                        </kbd>
+                                    </div>
+                                </div>
+                            </motion.div>
+                        </div>
+                    )}
+                </AnimatePresence>
+            </div>
         </div>
     );
 }

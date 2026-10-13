@@ -16,6 +16,9 @@ const submitTestimonial = async (req, res, next) => {
         if (!comment || comment.trim() === '') {
             return res.status(400).json(formatResponse(false, 'Comment is required.'));
         }
+        if (comment.trim().length > 500) {
+            return res.status(400).json(formatResponse(false, 'Feedback comment cannot exceed 500 characters.'));
+        }
 
         const [result] = await connection.query(
             'INSERT INTO testimonials (user_id, rating, comment, is_approved) VALUES (?, ?, ?, FALSE)',
@@ -124,6 +127,9 @@ const editTestimonialAdmin = async (req, res, next) => {
 
         if (!comment || !rating) {
             return res.status(400).json(formatResponse(false, 'Comment and rating are required for edit.'));
+        }
+        if (comment.trim().length > 500) {
+            return res.status(400).json(formatResponse(false, 'Feedback comment cannot exceed 500 characters.'));
         }
 
         const [result] = await connection.query(

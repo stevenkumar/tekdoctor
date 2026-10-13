@@ -9,7 +9,9 @@
     "build":        "npm run build --prefix client",
     "start:backend":  "npm run start --prefix server",
     "start:frontend": "npm run start --prefix client",
-    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\""
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "test:server": "npm run test --prefix server",
+    "test": "npm run test:server && npm run build --prefix client"
   },
   "workspaces": [],
   "devDependencies": {

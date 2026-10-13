@@ -1,3 +1,5 @@
+import { appConfig } from '@/config/appConfig';
+
 /**
  * safeFetch — A safe wrapper around the Fetch API.
  *
@@ -14,6 +16,33 @@ export interface SafeResponse<T = Record<string, unknown>> {
   status: number;
   data: T | null;
   error: string;
+  errors?: Record<string, string>;
+}
+
+// Global active company ID context for multi-tenant admin inspection
+let activeCompanyIdContext: number | null = (() => {
+  if (typeof window !== 'undefined') {
+    const saved = localStorage.getItem('tekdoctor_admin_selected_company_id');
+    if (saved && !isNaN(parseInt(saved, 10))) {
+      return parseInt(saved, 10);
+    }
+  }
+  return null;
+})();
+
+export function setApiCompanyContext(companyId: number | null) {
+  activeCompanyIdContext = companyId;
+  if (typeof window !== 'undefined') {
+    if (companyId) {
+      localStorage.setItem('tekdoctor_admin_selected_company_id', String(companyId));
+    } else {
+      localStorage.removeItem('tekdoctor_admin_selected_company_id');
+    }
+  }
+}
+
+export function getApiCompanyContext(): number | null {
+  return activeCompanyIdContext;
 }
 
 export async function safeFetch<T = Record<string, unknown>>(
@@ -21,7 +50,28 @@ export async function safeFetch<T = Record<string, unknown>>(
   options?: RequestInit
 ): Promise<SafeResponse<T>> {
   try {
-    const response = await fetch(url, options);
+    let finalOptions = options;
+    if (activeCompanyIdContext) {
+      const headersRecord: Record<string, string> = {};
+      if (options?.headers) {
+        if (options.headers instanceof Headers) {
+          options.headers.forEach((v, k) => { headersRecord[k] = v; });
+        } else if (Array.isArray(options.headers)) {
+          options.headers.forEach(([k, v]) => { headersRecord[k] = v; });
+        } else {
+          Object.assign(headersRecord, options.headers);
+        }
+      }
+      if (!headersRecord['X-Company-ID'] && !headersRecord['x-company-id']) {
+        headersRecord['X-Company-ID'] = String(activeCompanyIdContext);
+      }
+      finalOptions = {
+        ...options,
+        headers: headersRecord,
+      };
+    }
+
+    const response = await fetch(url, finalOptions);
 
     // Check Content-Type before attempting JSON.parse.
     // If the server is down or cPanel returns an HTML error page,
@@ -47,11 +97,20 @@ export async function safeFetch<T = Record<string, unknown>>(
     const data = await response.json() as T;
 
     if (!response.ok) {
-      // Extract message from the standard error shape { success, message }
-      const message =
+      // Extract message from the standard error shape { success, message, errors }
+      let message =
         (data as unknown as { message?: string })?.message ||
         `Request failed with status ${response.status}.`;
-      return { ok: false, status: response.status, data, error: message };
+
+      const errorObj = (data as unknown as { errors?: Record<string, string> })?.errors;
+      if (errorObj && typeof errorObj === 'object') {
+        const fieldErrors = Object.values(errorObj).filter(Boolean);
+        if (fieldErrors.length > 0 && (!message || message === 'Validation failed.')) {
+          message = fieldErrors[0];
+        }
+      }
+
+      return { ok: false, status: response.status, data, error: message, errors: errorObj };
     }
 
     return { ok: true, status: response.status, data, error: '' };
@@ -81,7 +140,7 @@ export function getFileUrl(filePath: string | null | undefined): string | null {
   if (filePath.startsWith('http://') || filePath.startsWith('https://') || filePath.startsWith('data:')) {
     return filePath;
   }
-  const base = (typeof window !== 'undefined' ? window.location.origin : '').replace(/\/$/, '');
+  const base = (appConfig.apiUrl || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/$/, '');
   const cleanPath = filePath.startsWith('/') ? filePath : `/${filePath}`;
   return `${base}${cleanPath}`;
 }

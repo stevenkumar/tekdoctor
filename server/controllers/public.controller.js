@@ -70,6 +70,114 @@ const getPublicSiteData = async (req, res, next) => {
     }
 };
 
-module.exports = {
-    getPublicSiteData
+const logger = require('../utils/logger');
+
+// In-memory cache for pincode lookups (1 hour TTL)
+const pincodeCache = new Map();
+const PINCODE_CACHE_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Fetch city, state, and district by 6-digit Indian postal code
+ * GET /api/public/pincode/:pincode
+ */
+const getPincodeLocation = async (req, res) => {
+    try {
+        const rawPincode = req.params.pincode;
+        if (!rawPincode || typeof rawPincode !== 'string') {
+            return res.status(400).json(formatResponse(false, 'Please enter a valid 6-digit postal code.'));
+        }
+
+        const pincode = rawPincode.trim();
+        // Indian postal code: exactly 6 digits, non-zero first digit
+        if (!/^[1-9][0-9]{5}$/.test(pincode)) {
+            return res.status(400).json(formatResponse(false, 'Please enter a valid 6-digit postal code.'));
+        }
+
+        // Check local in-memory cache
+        const cached = pincodeCache.get(pincode);
+        if (cached && (Date.now() - cached.timestamp < PINCODE_CACHE_TTL_MS)) {
+            return res.status(200).json(formatResponse(true, 'Location retrieved successfully', cached.data));
+        }
+
+        let resultData = null;
+
+        // 1. Try India Post API with 4-second timeout
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+            const response = await fetch(`https://api.postalpincode.in/pincode/${pincode}`, {
+                signal: controller.signal,
+                headers: { 'Accept': 'application/json' }
+            });
+            clearTimeout(timeoutId);
+
+            if (response.ok) {
+                const json = await response.json();
+                if (Array.isArray(json) && json[0] && json[0].Status === 'Success' && Array.isArray(json[0].PostOffice) && json[0].PostOffice.length > 0) {
+                    const offices = json[0].PostOffice;
+                    const first = offices[0];
+                    const district = first.District || '';
+                    const state = first.State || '';
+                    const places = [...new Set(offices.map(o => o.Name).filter(Boolean))];
+
+                    resultData = {
+                        pincode,
+                        city: district || places[0] || '',
+                        district: district || '',
+                        state: state || '',
+                        places: places
+                    };
+                }
+            }
+        } catch (fetchErr) {
+            logger.warn(`Primary India Post lookup failed or timed out for ${pincode}: ${fetchErr.message}`);
+        }
+
+        // 2. Fallback to zippopotam if India Post was unavailable
+        if (!resultData) {
+            try {
+                const fbController = new AbortController();
+                const fbTimeout = setTimeout(() => fbController.abort(), 3000);
+
+                const fbRes = await fetch(`https://api.zippopotam.us/in/${pincode}`, {
+                    signal: fbController.signal,
+                    headers: { 'Accept': 'application/json' }
+                });
+                clearTimeout(fbTimeout);
+
+                if (fbRes.ok) {
+                    const fbJson = await fbRes.json();
+                    if (fbJson.places && fbJson.places.length > 0) {
+                        const p = fbJson.places[0];
+                        resultData = {
+                            pincode,
+                            city: p['place name'] || '',
+                            district: p['state abbreviation'] || '',
+                            state: p['state'] || '',
+                            places: fbJson.places.map(x => x['place name']).filter(Boolean)
+                        };
+                    }
+                }
+            } catch (fbErr) {
+                logger.warn(`Secondary postal lookup failed for ${pincode}: ${fbErr.message}`);
+            }
+        }
+
+        if (resultData) {
+            pincodeCache.set(pincode, { data: resultData, timestamp: Date.now() });
+            return res.status(200).json(formatResponse(true, 'Location retrieved successfully', resultData));
+        }
+
+        return res.status(404).json(formatResponse(false, 'No location found for this postal code.'));
+    } catch (error) {
+        logger.error('Error in getPincodeLocation:', error);
+        return res.status(500).json(formatResponse(false, 'Postal code lookup service is temporarily unavailable.'));
+    }
 };
+
+module.exports = {
+    getPublicSiteData,
+    getPincodeLocation
+};
+

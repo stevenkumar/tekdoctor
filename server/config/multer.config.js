@@ -23,8 +23,8 @@ const storage = multer.diskStorage({
   }
 });
 
-// File validation filter
-const fileFilter = (req, file, cb) => {
+// Image validation filter
+const imageFileFilter = (req, file, cb) => {
   if (config.uploads.allowedMimeTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
@@ -32,13 +32,31 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
+const csvMimeTypes = ['text/csv', 'application/csv', 'application/vnd.ms-excel'];
+const csvFileFilter = (req, file, cb) => {
+  if (csvMimeTypes.includes(file.mimetype) || path.extname(file.originalname).toLowerCase() === '.csv') {
+    cb(null, true);
+  } else {
+    cb(new Error('Invalid file type. Upload a CSV file.'), false);
+  }
+};
+
 // Initialize Multer upload middleware
 const upload = multer({
   storage,
-  fileFilter,
+  fileFilter: imageFileFilter,
+  limits: {
+    fileSize: config.uploads.maxSizeBytes
+  }
+});
+
+const csvUpload = multer({
+  storage,
+  fileFilter: csvFileFilter,
   limits: {
     fileSize: config.uploads.maxSizeBytes
   }
 });
 
 module.exports = upload;
+module.exports.csvUpload = csvUpload;

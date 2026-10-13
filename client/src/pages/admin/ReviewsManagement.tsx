@@ -3,12 +3,15 @@ import { useAuth } from '@/context/AuthContext';
 import { testimonialApi } from '@/services/api';
 import { toast } from 'react-hot-toast';
 import { Loader2, Star, Trash2, CheckCircle2, MessageSquare, Edit2, X, Save } from 'lucide-react';
+import { MESSAGE_MAX_LENGTH } from '@/config/constants';
+import { ConfirmModal } from '@/components/ConfirmModal';
 
 export default function ReviewsManagement() {
     const { token } = useAuth();
     const [reviewsList, setReviewsList] = useState<any[]>([]);
     const [reviewsLoading, setReviewsLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState<number | null>(null);
+    const [deleteReviewId, setDeleteReviewId] = useState<number | null>(null);
 
     // Edit state
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -41,12 +44,17 @@ export default function ReviewsManagement() {
         setActionLoading(null);
     };
 
-    const handleDeleteReview = async (id: number) => {
-        if (!confirm('Are you sure you want to delete this review?')) return;
-        if (!token) return;
-        setActionLoading(id);
-        const res = await testimonialApi.delete(token, id);
+    const handleDeleteReview = (id: number) => {
+        setDeleteReviewId(id);
+    };
+
+    const handleConfirmDeleteReview = async () => {
+        if (!token || deleteReviewId === null) return;
+        setActionLoading(deleteReviewId);
+        const res = await testimonialApi.delete(token, deleteReviewId);
         if (res.ok) {
+            toast.success('Review deleted successfully.');
+            setDeleteReviewId(null);
             fetchReviews();
         } else {
             toast.error('Failed to delete review.');
@@ -57,6 +65,11 @@ export default function ReviewsManagement() {
     const handleEditSave = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!token || !editData) return;
+
+        if (editData.comment.length > MESSAGE_MAX_LENGTH) {
+            toast.error(`Review content cannot exceed ${MESSAGE_MAX_LENGTH} characters.`);
+            return;
+        }
 
         setEditSaving(true);
         const res = await testimonialApi.editAdmin(token, editData.id, {
@@ -100,13 +113,13 @@ export default function ReviewsManagement() {
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {reviewsList.map(r => (
-                        <div key={r.id} className={`border rounded-2xl p-6 transition-all ${r.is_approved
-                            ? 'border-zinc-850 bg-zinc-900/10'
+                        <div key={r.id} className={`border rounded-2xl p-4 sm:p-6 transition-all ${r.is_approved
+                            ? 'border-zinc-800/60 bg-zinc-900/10'
                             : 'border-yellow-500/20 bg-yellow-500/[0.02]'
                             }`}>
                             <div className="flex justify-between items-start mb-4">
                                 <div>
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
                                         <h4 className="text-white font-bold text-sm">
                                             {r.company_name ? `${r.user_name} (${r.company_name})` : r.user_name}
                                         </h4>
@@ -119,18 +132,18 @@ export default function ReviewsManagement() {
                                     </div>
                                     <p className="text-[10px] text-zinc-500 mt-0.5 font-mono">{r.user_email}</p>
                                 </div>
-                                <div className="flex gap-0.5">
+                                <div className="flex gap-0.5 shrink-0 ml-2">
                                     {[...Array(5)].map((_, idx) => (
                                         <Star key={idx} size={12} className={idx < r.rating ? 'text-yellow-400 fill-yellow-400' : 'text-zinc-700'} />
                                     ))}
                                 </div>
                             </div>
 
-                            <p className="text-zinc-300 text-xs leading-relaxed italic mb-6">
+                            <p className="text-zinc-300 text-xs leading-relaxed italic mb-6 break-words">
                                 "{r.comment}"
                             </p>
 
-                            <div className="flex justify-between items-center pt-4 border-t border-zinc-900/80">
+                            <div className="flex flex-wrap justify-between items-center gap-2 pt-4 border-t border-zinc-900/80">
                                 <span className="text-[9px] font-mono text-zinc-600">
                                     {new Date(r.created_at).toLocaleDateString()}
                                 </span>
@@ -169,7 +182,7 @@ export default function ReviewsManagement() {
             {isEditModalOpen && editData && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
                     <div className="bg-[#0f0f0f] border border-zinc-800 rounded-2xl w-full max-w-lg shadow-2xl relative">
-                        <div className="p-6 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/20 rounded-t-2xl">
+                        <div className="p-4 sm:p-6 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/20 rounded-t-2xl">
                             <h3 className="text-lg font-bold text-white flex items-center gap-2">
                                 <Edit2 size={18} className="text-indigo-400" />
                                 Edit Review
@@ -182,7 +195,7 @@ export default function ReviewsManagement() {
                             </button>
                         </div>
 
-                        <form onSubmit={handleEditSave} className="p-6 space-y-5">
+                        <form onSubmit={handleEditSave} className="p-4 sm:p-6 space-y-5">
                             <div>
                                 <label className="block text-xs font-mono text-zinc-400 uppercase tracking-wider mb-2">Rating</label>
                                 <div className="flex gap-1">
@@ -198,9 +211,15 @@ export default function ReviewsManagement() {
                             </div>
 
                             <div>
-                                <label className="block text-xs font-mono text-zinc-400 uppercase tracking-wider mb-2">Review Content</label>
+                                <div className="flex items-center justify-between mb-2">
+                                    <label className="block text-xs font-mono text-zinc-400 uppercase tracking-wider">Review Content</label>
+                                    <span className={`text-[10px] font-mono ${editData.comment.length > MESSAGE_MAX_LENGTH ? 'text-red-400 font-bold' : 'text-zinc-500'}`}>
+                                        {editData.comment.length} / {MESSAGE_MAX_LENGTH}
+                                    </span>
+                                </div>
                                 <textarea
                                     value={editData.comment}
+                                    maxLength={MESSAGE_MAX_LENGTH}
                                     onChange={e => setEditData({ ...editData, comment: e.target.value })}
                                     rows={5}
                                     className="w-full bg-[#0a0a0a] border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-300 focus:outline-none focus:border-indigo-500/50 resize-none transition-colors"
@@ -237,6 +256,18 @@ export default function ReviewsManagement() {
                     </div>
                 </div>
             )}
+
+            {/* Delete Review Modal */}
+            <ConfirmModal
+                isOpen={deleteReviewId !== null}
+                title="Delete Testimonial Review"
+                message="Are you sure you want to permanently delete this customer review? This action cannot be undone."
+                confirmText="Delete Review"
+                variant="danger"
+                isLoading={actionLoading === deleteReviewId}
+                onConfirm={handleConfirmDeleteReview}
+                onCancel={() => setDeleteReviewId(null)}
+            />
         </div>
     );
 }

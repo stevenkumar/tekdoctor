@@ -1,19 +1,30 @@
-'use client';
-
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Cpu, Zap, CreditCard, ClipboardList } from 'lucide-react';
 import { useSiteContext } from '../../../context/SiteContext';
+import RepairStepProgress, { type RepairWorkflowTicket, type WorkflowStepKey } from '@/components/RepairStepProgress';
 
-const steps = [
-  { label: 'Device', icon: Cpu },
-  { label: 'Priority', icon: Zap },
-  { label: 'Payment', icon: CreditCard },
-  { label: 'Details', icon: ClipboardList },
-];
+interface HeaderSectionProps {
+  ticket?: RepairWorkflowTicket | null;
+  currentStep?: WorkflowStepKey;
+  onStepClick?: (step: WorkflowStepKey) => void;
+}
 
-export default function HeaderSection() {
+export default function HeaderSection({ ticket, currentStep = 'device', onStepClick }: HeaderSectionProps) {
   const { flattenedSettings } = useSiteContext();
+
+  const handleStepClick = (step: WorkflowStepKey) => {
+    if (onStepClick) {
+      onStepClick(step);
+      return;
+    }
+    if (step === 'device') {
+      const formEl = document.getElementById('repair-inquiry-form');
+      if (formEl) {
+        formEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: -16 }}
@@ -40,49 +51,14 @@ export default function HeaderSection() {
       </p>
 
       {/* Step progress indicator */}
-      <div className="flex items-center gap-0 max-w-md">
-        {steps.map((step, i) => {
-          const Icon = step.icon;
-          const isLast = i === steps.length - 1;
-          const isDevice = step.label === 'Device';
-          return (
-            <React.Fragment key={step.label}>
-              <button
-                type="button"
-                onClick={() => {
-                  if (isDevice) {
-                    const formEl = document.getElementById('repair-inquiry-form');
-                    if (formEl) {
-                      formEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    }
-                  }
-                }}
-                disabled={!isDevice}
-                className={`flex flex-col items-center gap-1.5 focus:outline-none transition-all duration-300 ${isDevice
-                  ? 'cursor-pointer opacity-100'
-                  : 'cursor-not-allowed opacity-40'
-                  }`}
-              >
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300 ${isDevice
-                  ? 'bg-neon-cyan/10 border border-neon-cyan/50 hover:border-neon-cyan'
-                  : 'bg-zinc-900 border border-zinc-800'
-                  }`}>
-                  <Icon size={14} className={isDevice ? 'text-neon-cyan' : 'text-zinc-500'} />
-                </div>
-                <span className={`text-[9px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors ${isDevice
-                  ? 'text-zinc-300 hover:text-neon-cyan'
-                  : 'text-zinc-600'
-                  }`}>
-                  {step.label}
-                </span>
-              </button>
-              {!isLast && (
-                <div className="flex-1 h-px bg-gradient-to-r from-neon-cyan/30 to-zinc-700/40 mx-2 mb-4" />
-              )}
-            </React.Fragment>
-          );
-        })}
+      <div className="max-w-2xl">
+        <RepairStepProgress
+          ticket={ticket}
+          currentActiveStep={currentStep}
+          onStepClick={handleStepClick}
+        />
       </div>
     </motion.div>
   );
 }
+

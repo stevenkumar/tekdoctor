@@ -3,9 +3,11 @@
  * Resolves all API endpoints using appConfig.apiUrl and safeFetch.
  */
 
-import { safeFetch } from '@/utils/api';
+import { safeFetch, getApiCompanyContext } from '@/utils/api';
 import type { SafeResponse } from '@/utils/api';
 import { appConfig } from '@/config/appConfig';
+import { broadcastPaymentSettled } from '@/utils/paymentSync';
+import { getRecaptchaToken } from '@/utils/recaptcha';
 
 // Helper to construct endpoint URLs
 const getUrl = (endpoint: string) => {
@@ -84,6 +86,7 @@ export const ENDPOINTS = {
     DELETE: (id: number) => `/api/testimonials/${id}`,
   },
   COMPANY: {
+    REGISTER: '/api/company/register',
     STATS: '/api/company/stats',
     PROFILE: '/api/company/profile',
     BRANCHES: '/api/company/branches',
@@ -92,10 +95,17 @@ export const ENDPOINTS = {
     EMPLOYEE_BY_ID: (id: number) => `/api/company/employees/${id}`,
     DEVICES: '/api/company/devices',
     DEVICE_BY_ID: (id: number) => `/api/company/devices/${id}`,
+    DEVICE_HISTORY: (id: number) => `/api/company/devices/${id}/history`,
     REPAIRS: '/api/company/repairs',
     MESSAGES: '/api/company/messages',
     BULK_DEVICES: '/api/company/bulk-devices',
     BULK_REQUESTS: '/api/company/bulk-requests',
+    BULK_BRANCHES: '/api/company/bulk-branches',
+    BULK_EMPLOYEES: '/api/company/bulk-employees',
+    EXPORT_BRANCHES: '/api/company/branches/export',
+    EXPORT_EMPLOYEES: '/api/company/employees/export',
+    EXPORT_DEVICES: '/api/company/devices/export',
+    EXPORT_REPAIRS: '/api/company/repairs/export',
     ACTIVITY_LOGS: '/api/company/activity-logs',
   }
 } as const;
@@ -107,6 +117,7 @@ export interface UserResponseData {
   name: string;
   email: string;
   role: 'customer' | 'technician' | 'admin' | 'company';
+  avatar_url?: string;
 }
 
 export interface NotificationItem {
@@ -131,18 +142,56 @@ export interface AuthApiResponse {
 
 export const authApi = {
   signUp: async (payload: Record<string, any>): Promise<SafeResponse<AuthApiResponse>> => {
+    let recaptchaToken = payload.recaptchaToken;
+    if (!recaptchaToken) {
+      try {
+        recaptchaToken = await getRecaptchaToken('signup');
+      } catch (err: any) {
+        return {
+          ok: false,
+          status: 400,
+          data: null,
+          error: err?.message || 'Security verification failed. Please try again.',
+        };
+      }
+    }
+    const cleanPayload = { ...payload };
+    if (recaptchaToken) {
+      cleanPayload.recaptchaToken = recaptchaToken;
+    } else {
+      delete cleanPayload.recaptchaToken;
+    }
     return safeFetch<AuthApiResponse>(getUrl(ENDPOINTS.AUTH.SIGN_UP), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(cleanPayload),
     });
   },
 
   signIn: async (payload: Record<string, any>): Promise<SafeResponse<AuthApiResponse>> => {
+    let recaptchaToken = payload.recaptchaToken;
+    if (!recaptchaToken) {
+      try {
+        recaptchaToken = await getRecaptchaToken('login');
+      } catch (err: any) {
+        return {
+          ok: false,
+          status: 400,
+          data: null,
+          error: err?.message || 'Security verification failed. Please try again.',
+        };
+      }
+    }
+    const cleanPayload = { ...payload };
+    if (recaptchaToken) {
+      cleanPayload.recaptchaToken = recaptchaToken;
+    } else {
+      delete cleanPayload.recaptchaToken;
+    }
     return safeFetch<AuthApiResponse>(getUrl(ENDPOINTS.AUTH.SIGN_IN), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(cleanPayload),
     });
   },
 
@@ -154,6 +203,87 @@ export const authApi = {
         'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify({ password }),
+    });
+  },
+
+  googleSignIn: async (payload: { code?: string; credential?: string; recaptchaToken?: string | null }): Promise<SafeResponse<AuthApiResponse>> => {
+    let recaptchaToken = payload.recaptchaToken;
+    if (!recaptchaToken) {
+      try {
+        recaptchaToken = await getRecaptchaToken('google_login');
+      } catch (err: any) {
+        return {
+          ok: false,
+          status: 400,
+          data: null,
+          error: err?.message || 'Security verification failed for Google Sign-In.',
+        };
+      }
+    }
+    const cleanPayload: Record<string, any> = { ...payload };
+    if (recaptchaToken) {
+      cleanPayload.recaptchaToken = recaptchaToken;
+    } else {
+      delete cleanPayload.recaptchaToken;
+    }
+    return safeFetch<AuthApiResponse>(getUrl('/api/auth/google'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cleanPayload),
+    });
+  },
+
+  forgotPassword: async (email: string, recaptchaToken?: string | null): Promise<SafeResponse<{ success: boolean; message: string }>> => {
+    let token = recaptchaToken;
+    if (!token) {
+      try {
+        token = await getRecaptchaToken('forgot_password');
+      } catch (err: any) {
+        return {
+          ok: false,
+          status: 400,
+          data: null,
+          error: err?.message || 'Security verification failed.',
+        };
+      }
+    }
+    const body: Record<string, any> = { email };
+    if (token) {
+      body.recaptchaToken = token;
+    }
+    return safeFetch<{ success: boolean; message: string }>(getUrl('/api/auth/forgot-password'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  },
+
+  resetPassword: async (token: string, password: string): Promise<SafeResponse<{ success: boolean; message: string }>> => {
+    return safeFetch<{ success: boolean; message: string }>(getUrl('/api/auth/reset-password'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, password, newPassword: password }),
+    });
+  },
+
+  logout: async (token?: string | null): Promise<SafeResponse<{ success: boolean; message: string }>> => {
+    return safeFetch<{ success: boolean; message: string }>(getUrl('/api/auth/logout'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      },
+    });
+  },
+
+  updateProfile: async (token: string, payload: { name?: string; phone?: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl('/api/auth/profile'), {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
     });
   },
 };
@@ -168,10 +298,29 @@ export interface ContactApiResponse {
 
 export const contactApi = {
   submitForm: async (payload: Record<string, any>): Promise<SafeResponse<ContactApiResponse>> => {
+    let recaptchaToken = payload.recaptchaToken;
+    if (!recaptchaToken) {
+      try {
+        recaptchaToken = await getRecaptchaToken('contact_us');
+      } catch (err: any) {
+        return {
+          ok: false,
+          status: 400,
+          data: null,
+          error: err?.message || 'Security verification failed.',
+        };
+      }
+    }
+    const cleanPayload = { ...payload };
+    if (recaptchaToken) {
+      cleanPayload.recaptchaToken = recaptchaToken;
+    } else {
+      delete cleanPayload.recaptchaToken;
+    }
     return safeFetch<ContactApiResponse>(getUrl(ENDPOINTS.CONTACT.SUBMIT), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(cleanPayload),
     });
   },
 };
@@ -183,6 +332,10 @@ export interface RepairApiResponse {
   message: string;
   requestId?: number;
   ticketNumber?: string;
+  isDuplicate?: boolean;
+  isNewCustomer?: boolean;
+  isExistingCustomer?: boolean;
+  data?: any;
   autoLogin?: {
     token: string;
     user: {
@@ -202,6 +355,7 @@ export interface ServiceRequest {
   email: string | null;
   city: string;
   deviceCategory: string;
+  customDeviceCategory?: string | null;
   brand: string;
   customBrand?: string | null;
   modelNumber: string | null;
@@ -218,10 +372,109 @@ export interface ServiceRequest {
   assignedTechnicianId?: number | null;
   pendingTechnicianId?: number | null;
   technicianName?: string | null;
+  assignedAt?: string | null;
+  customProblemType?: string | null;
   customerRepairDescription?: string | null;
   feedbackRating?: number | null;
   feedbackComment?: string | null;
   feedbackDate?: string | null;
+  // Diagnosis & Estimation Fields
+  diagnosis?: string | null;
+  identifiedIssues?: string | null;
+  requiredWork?: string | null;
+  requiredParts?: string | null;
+  estimatedCost?: number;
+  estimated_cost?: number;
+  additionalCharges?: number;
+  additional_charges?: number;
+  totalEstimatedCost?: number;
+  estimatedCompletionDate?: string | null;
+  inspectionNotes?: string | null;
+  deviceCondition?: string | null;
+  inspectedAt?: string | null;
+  estimateSubmittedAt?: string | null;
+  // Customer Approval & Hold Fields
+  customerApprovalStatus?: 'none' | 'pending_approval' | 'approved' | 'rejected' | 'on_hold' | 'reapproval_requested' | 'auto_cancelled' | string;
+  approvedAt?: string | null;
+  approvedBy?: number | null;
+  approvalNotes?: string | null;
+  rejectedAt?: string | null;
+  rejectionReason?: string | null;
+  holdStartDate?: string | null;
+  holdEndDate?: string | null;
+  holdReason?: string | null;
+  holdNotes?: string | null;
+  reapprovalRequestedAt?: string | null;
+  reapprovalNotes?: string | null;
+  cancellationReason?: string | null;
+  cancelledAt?: string | null;
+  cancelledBy?: number | null;
+  // Billing & Payment Fields
+  repairCost?: number;
+  repair_cost?: number;
+  paymentStatus?: string;
+  payment_status?: string;
+  collectionStatus?: string;
+  collection_status?: string;
+  paymentId?: string | null;
+  payment_id?: string | null;
+  paymentMethod?: string | null;
+  payment_method?: string | null;
+  paidAt?: string | null;
+  paid_at?: string | null;
+  amountUpdatedByAdmin?: boolean;
+  adminUpdatedAmount?: number | null;
+  amountUpdatedAt?: string | null;
+  companyId?: number | null;
+  company_id?: number | null;
+  companyName?: string | null;
+  company_name?: string | null;
+  companyEmail?: string | null;
+  company_email?: string | null;
+  companyPhone?: string | null;
+  company_phone?: string | null;
+  companyAddress?: string | null;
+  company_address?: string | null;
+  companyContactPerson?: string | null;
+  company_contact_person?: string | null;
+  companyLogo?: string | null;
+  company_logo?: string | null;
+  companyGst?: string | null;
+  company_gst?: string | null;
+  companyAmcStatus?: string | null;
+  company_amc_status?: string | null;
+  deviceId?: number | null;
+  device_id?: number | null;
+  fleet_device_id?: number | null;
+  employeeId?: number | null;
+  employee_id?: number | null;
+  employeeName?: string | null;
+  employee_name?: string | null;
+  employeeEmail?: string | null;
+  employee_email?: string | null;
+  employeePhone?: string | null;
+  employee_phone?: string | null;
+  employeeDepartment?: string | null;
+  employee_department?: string | null;
+  branchName?: string | null;
+  branch_name?: string | null;
+  assetId?: string | null;
+  asset_id?: string | null;
+  isAmc?: boolean;
+  is_amc?: boolean;
+  amcTag?: string | null;
+  amc_tag?: string | null;
+  invoiceId?: string | null;
+  invoice_id?: string | null;
+  invoiceAmount?: number | null;
+  invoice_amount?: number | null;
+  invoiceDate?: string | null;
+  invoice_date?: string | null;
+  invoiceStatus?: string | null;
+  invoice_status?: string | null;
+  deviceRepairHistory?: any[];
+  repairHistory?: any[];
+  repeatCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -280,9 +533,12 @@ export interface ServiceRequestStatusUpdateResponse {
 
 export interface RepairFilters {
   status?: string;
+  paymentStatus?: string;
   priority?: string;
   technicianId?: string | number;
   deviceCategory?: string;
+  clientType?: string;
+  companyId?: string | number;
   startDate?: string;
   endDate?: string;
   search?: string;
@@ -290,6 +546,24 @@ export interface RepairFilters {
 
 export const repairApi = {
   submitRequest: async (payload: FormData, token?: string | null): Promise<SafeResponse<RepairApiResponse>> => {
+    const existingToken = payload.get('recaptchaToken');
+    if (!existingToken || typeof existingToken !== 'string' || !existingToken.trim()) {
+      try {
+        const recaptchaToken = await getRecaptchaToken('book_repair');
+        if (recaptchaToken) {
+          payload.set('recaptchaToken', recaptchaToken);
+        } else {
+          payload.delete('recaptchaToken');
+        }
+      } catch (err: any) {
+        return {
+          ok: false,
+          status: 400,
+          data: null,
+          error: err?.message || 'Security verification failed for repair booking.',
+        };
+      }
+    }
     const headers: Record<string, string> = {};
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
@@ -307,9 +581,12 @@ export const repairApi = {
     if (filterObj) {
       if (filterObj.search) params.append('search', filterObj.search.trim());
       if (filterObj.status && filterObj.status !== 'all') params.append('status', filterObj.status);
+      if (filterObj.paymentStatus && filterObj.paymentStatus !== 'all') params.append('paymentStatus', filterObj.paymentStatus);
       if (filterObj.priority && filterObj.priority !== 'all') params.append('priority', filterObj.priority);
       if (filterObj.technicianId && filterObj.technicianId !== 'all') params.append('technicianId', filterObj.technicianId.toString());
       if (filterObj.deviceCategory && filterObj.deviceCategory !== 'all') params.append('deviceCategory', filterObj.deviceCategory);
+      if (filterObj.clientType && filterObj.clientType !== 'all') params.append('clientType', filterObj.clientType);
+      if (filterObj.companyId && filterObj.companyId !== 'all') params.append('companyId', filterObj.companyId.toString());
       if (filterObj.startDate) params.append('startDate', filterObj.startDate);
       if (filterObj.endDate) params.append('endDate', filterObj.endDate);
     }
@@ -327,7 +604,7 @@ export const repairApi = {
     });
   },
 
-  getRequestById: async (token: string, id: number): Promise<SafeResponse<{ data: ServiceRequest }>> => {
+  getRequestById: async (token: string, id: number | string): Promise<SafeResponse<{ data: ServiceRequest }>> => {
     return safeFetch<{ data: ServiceRequest }>(getUrl(`${ENDPOINTS.REPAIR.SUBMIT}/${id}`), {
       method: 'GET',
       headers: {
@@ -358,6 +635,24 @@ export const repairApi = {
     });
   },
 
+  bulkDeleteRequests: async (
+    token: string,
+    ticketIds: number[],
+    reason?: string
+  ): Promise<SafeResponse<{ message: string; data?: { deletedCount: number; deletedIds: number[] } }>> => {
+    return safeFetch<{ message: string; data?: { deletedCount: number; deletedIds: number[] } }>(
+      getUrl(`${ENDPOINTS.REPAIR.SUBMIT}/bulk-delete`),
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ticketIds, reason }),
+      }
+    );
+  },
+
   reactivateRequest: async (token: string, id: number): Promise<SafeResponse<{ message: string }>> => {
     return safeFetch<{ message: string }>(getUrl(`${ENDPOINTS.REPAIR.SUBMIT}/${id}/reactivate`), {
       method: 'PUT',
@@ -378,14 +673,19 @@ export const repairApi = {
     });
   },
 
-  updateStatus: async (token: string, id: number, status: string): Promise<SafeResponse<ServiceRequestStatusUpdateResponse>> => {
+  updateStatus: async (
+    token: string,
+    id: number,
+    status: string,
+    options?: { isOverride?: boolean; overrideReason?: string }
+  ): Promise<SafeResponse<ServiceRequestStatusUpdateResponse>> => {
     return safeFetch<ServiceRequestStatusUpdateResponse>(getUrl(`${ENDPOINTS.REPAIR.SUBMIT}/${id}/status`), {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
       },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, ...options }),
     });
   },
 
@@ -400,8 +700,9 @@ export const repairApi = {
     });
   },
 
-  getMyTasks: async (token: string): Promise<SafeResponse<ServiceRequestListResponse>> => {
-    return safeFetch<ServiceRequestListResponse>(getUrl(ENDPOINTS.REPAIR.MY_TASKS), {
+  getMyTasks: async (token: string, search?: string): Promise<SafeResponse<ServiceRequestListResponse>> => {
+    const query = search && search.trim() ? `?search=${encodeURIComponent(search.trim())}` : '';
+    return safeFetch<ServiceRequestListResponse>(getUrl(`${ENDPOINTS.REPAIR.MY_TASKS}${query}`), {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -545,6 +846,47 @@ export const repairApi = {
       },
       body: JSON.stringify({ rating, comment })
     });
+  },
+
+  submitDiagnosis: async (token: string, id: number | string, data: any): Promise<SafeResponse<{ message: string; ticket: any }>> => {
+    return safeFetch(getUrl(`${ENDPOINTS.REPAIR.SUBMIT}/${id}/diagnosis`), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(data)
+    });
+  },
+
+  approveEstimate: async (id: number | string, token?: string | null): Promise<SafeResponse<{ message: string; ticket: any }>> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return safeFetch(getUrl(`${ENDPOINTS.REPAIR.SUBMIT}/${id}/approve-estimate`), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ token: token || undefined })
+    });
+  },
+
+  rejectEstimate: async (id: number | string, reason?: string, token?: string | null): Promise<SafeResponse<{ message: string; ticket: any }>> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return safeFetch(getUrl(`${ENDPOINTS.REPAIR.SUBMIT}/${id}/reject-estimate`), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ reason, token: token || undefined })
+    });
+  },
+
+  requestRepairAgain: async (id: number | string, comment?: string, token?: string | null): Promise<SafeResponse<{ message: string; ticket: any }>> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return safeFetch(getUrl(`${ENDPOINTS.REPAIR.SUBMIT}/${id}/request-repair-again`), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ comment: comment || undefined, token: token || undefined })
+    });
   }
 };
 
@@ -627,14 +969,25 @@ export const technicianApi = {
     });
   },
 
-  create: async (token: string, name: string, email: string, password: string): Promise<SafeResponse<{ data: TechnicianUser }>> => {
+  create: async (token: string, name: string, email: string, password: string, phone?: string): Promise<SafeResponse<{ data: TechnicianUser }>> => {
     return safeFetch<{ data: TechnicianUser }>(getUrl(ENDPOINTS.TECHNICIAN.CREATE), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
       },
-      body: JSON.stringify({ name, email, password }),
+      body: JSON.stringify({ name, email, password, phone: phone?.trim() || undefined }),
+    });
+  },
+
+  update: async (token: string, id: number, data: { name?: string; email?: string; phone?: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.TECHNICIAN.UPDATE(id)), {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(data),
     });
   },
 
@@ -685,13 +1038,38 @@ export const technicianApi = {
         'Authorization': `Bearer ${token}`,
       },
     });
+  },
+
+  updateProfile: async (token: string, payload: { name: string; email: string; phone?: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl('/api/technicians/profile'), {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  changePassword: async (token: string, payload: { currentPassword: string; newPassword: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl('/api/technicians/change-password'), {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
   }
 };
 
 // ── Notification API Methods ─────────────────────────────────────────────────────
 export const notificationApi = {
-  getAll: async (token: string): Promise<SafeResponse<{ data: NotificationItem[] }>> => {
-    return safeFetch<{ data: NotificationItem[] }>(getUrl(ENDPOINTS.NOTIFICATIONS.BASE), {
+  getAll: async (token: string, limit?: number): Promise<SafeResponse<{ data: NotificationItem[]; unreadCount?: number }>> => {
+    const url = (limit !== undefined && limit > 0)
+      ? `${getUrl(ENDPOINTS.NOTIFICATIONS.BASE)}?limit=${encodeURIComponent(limit)}`
+      : getUrl(ENDPOINTS.NOTIFICATIONS.BASE);
+    return safeFetch<{ data: NotificationItem[]; unreadCount?: number }>(url, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${token}`
@@ -724,7 +1102,7 @@ export const notificationApi = {
   }
 };
 
-// ── Billing API Methods (Mocked via Fetch Interceptor in main.tsx) ──────────────
+// ── Billing API Methods (backed by Express /api/billing routes) ──────────────
 
 export interface InvoiceLineItem {
   description: string;
@@ -736,6 +1114,10 @@ export interface InvoiceLineItem {
 export interface Invoice {
   id: string;
   userId: string;
+  ticketId?: number | string | null;
+  ticket_id?: number | string | null;
+  ticketNumber?: string | null;
+  ticket_number?: string | null;
   clientName: string;
   amount: number;
   currency: string;
@@ -745,7 +1127,8 @@ export interface Invoice {
   lineItems: InvoiceLineItem[];
   notes: string;
   createdAt: string;
-  lastUpdatedAt: string;
+  lastUpdatedAt?: string;
+  updatedAt?: string;
 }
 
 export interface BillingPayResponse {
@@ -805,6 +1188,15 @@ export const billingApi = {
     });
   },
 
+  finalizeInvoice: async (token: string | undefined | null, id: string): Promise<SafeResponse<any>> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return safeFetch<any>(getUrl(`/api/billing/invoices/${id}/finalize`), {
+      method: 'POST',
+      headers,
+    });
+  },
+
   payInvoice: async (token: string | undefined | null, payload: { invoiceId: string; paymentMethod: string;[key: string]: any }): Promise<SafeResponse<BillingPayResponse>> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -813,6 +1205,247 @@ export const billingApi = {
       headers,
       body: JSON.stringify(payload),
     });
+  },
+
+  getQuotations: async (token?: string | null): Promise<SafeResponse<any>> => {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return safeFetch<any>(getUrl('/api/billing/quotations'), {
+      method: 'GET',
+      headers,
+    });
+  },
+
+  respondToQuotation: async (token: string | undefined | null, id: string, status: 'Approved' | 'Rejected'): Promise<SafeResponse<any>> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return safeFetch<any>(getUrl(`/api/billing/quotations/${id}/respond`), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ status }),
+    });
+  },
+
+  getConfig: async (): Promise<SafeResponse<{ success: boolean; data: { keyId: string; currency: string; companyName: string } }>> => {
+    return safeFetch<any>(getUrl('/api/billing/config'), {
+      method: 'GET',
+    });
+  },
+
+  getEligibility: async (ticketId: number | string, token?: string | null): Promise<SafeResponse<{
+    success: boolean;
+    data: {
+      eligible: boolean;
+      ticket?: any;
+      amount?: number;
+      currency?: string;
+      reason?: string | null;
+    };
+  }>> => {
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return safeFetch<any>(getUrl(`/api/billing/eligibility/${ticketId}`), {
+      method: 'GET',
+      headers,
+    });
+  },
+
+  createPaymentOrder: async (data: {
+    ticketId?: number | string;
+    ticket_id?: number | string;
+    invoiceId?: number | string;
+    invoice_id?: number | string;
+    ticketNumber?: string;
+    ticket_number?: string;
+    amount?: number;
+    currency?: string;
+  }, token?: string | null): Promise<SafeResponse<{
+    success: boolean;
+    data: {
+      orderId: string;
+      amount: number;
+      currency: string;
+      keyId: string;
+      ticketId?: number;
+      ticket_id?: number;
+      invoiceId?: number;
+      invoice_id?: number;
+    };
+  }>> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const payload = {
+      ...data,
+      ticketId: data.ticketId || data.ticket_id,
+      ticket_id: data.ticket_id || data.ticketId,
+      invoiceId: data.invoiceId || data.invoice_id,
+      invoice_id: data.invoice_id || data.invoiceId,
+      ticketNumber: data.ticketNumber || data.ticket_number,
+      ticket_number: data.ticket_number || data.ticketNumber
+    };
+    return safeFetch<any>(getUrl('/api/billing/create-order'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+  },
+
+  verifyPayment: async (data: {
+    razorpay_payment_id: string;
+    razorpay_order_id: string;
+    razorpay_signature: string;
+    ticketId?: number | string;
+    ticket_id?: number | string;
+    invoiceId?: number | string;
+    invoice_id?: number | string;
+    ticketNumber?: string;
+    ticket_number?: string;
+  }, token?: string | null): Promise<SafeResponse<any>> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const payload = {
+      ...data,
+      ticketId: data.ticketId || data.ticket_id,
+      ticket_id: data.ticket_id || data.ticketId,
+      invoiceId: data.invoiceId || data.invoice_id,
+      invoice_id: data.invoice_id || data.invoiceId,
+      ticketNumber: data.ticketNumber || data.ticket_number,
+      ticket_number: data.ticket_number || data.ticketNumber
+    };
+    const res = await safeFetch<any>(getUrl('/api/billing/verify-payment'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      broadcastPaymentSettled({
+        ticketId: payload.ticketId,
+        paymentId: data.razorpay_payment_id,
+        invoiceId: payload.invoiceId,
+        status: 'paid',
+        amount: res.data?.data?.amount || (res.data as any)?.amount
+      });
+    }
+    return res;
+  },
+
+  reportPaymentFailure: async (data: {
+    orderId?: string;
+    ticketId?: number | string;
+    invoiceId?: number | string;
+    reason?: string;
+    status?: 'failed' | 'cancelled';
+  }, token?: string | null): Promise<SafeResponse<any>> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return safeFetch<any>(getUrl('/api/billing/payment-failed'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    });
+  },
+
+  getPayments: async (token: string, page = 1, limit = 20): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(`/api/billing/payments?page=${page}&limit=${limit}`), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  getPaymentReceiptByTicket: async (ticketId: number | string, token?: string | null): Promise<SafeResponse<any>> => {
+    const headers: Record<string, string> = {};
+    const authToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    return safeFetch<any>(getUrl(`/api/billing/receipt/ticket/${ticketId}`), {
+      method: 'GET',
+      headers,
+    });
+  },
+
+  getPaymentReceiptByInvoice: async (invoiceId: number | string, token?: string | null): Promise<SafeResponse<any>> => {
+    const headers: Record<string, string> = {};
+    const authToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    return safeFetch<any>(getUrl(`/api/billing/receipt/${invoiceId}`), {
+      method: 'GET',
+      headers,
+    });
+  },
+
+  initiateOfflinePayment: async (payload: {
+    ticketId?: number | string;
+    ticketNumber?: string;
+    invoiceId?: string;
+    paymentMethod: 'cash' | 'bank_transfer' | 'offline_upi';
+    referenceNote?: string;
+    notes?: string;
+  }, token?: string | null): Promise<SafeResponse<any>> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return safeFetch<any>(getUrl('/api/billing/offline-payment'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+  },
+
+  switchPaymentMethod: async (payload: {
+    ticketId?: number | string;
+    ticketNumber?: string;
+    invoiceId?: string;
+    targetMethod?: string;
+  }, token?: string | null): Promise<SafeResponse<any>> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return safeFetch<any>(getUrl('/api/billing/switch-payment-method'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+  },
+
+  recordCashCollected: async (payload: {
+    ticketId?: number | string;
+    paymentId?: string;
+    notes?: string;
+  }, token: string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl('/api/billing/record-cash-collected'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  verifyOfflinePayment: async (payload: {
+    paymentId?: string;
+    orderId?: string;
+    ticketId?: number | string;
+    invoiceId?: string;
+    action: 'verify' | 'reject';
+    rejectionReason?: string;
+    notes?: string;
+  }, token: string): Promise<SafeResponse<any>> => {
+    const res = await safeFetch<any>(getUrl('/api/billing/verify-offline-payment'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok && payload.action === 'verify') {
+      broadcastPaymentSettled({
+        ticketId: payload.ticketId,
+        paymentId: payload.paymentId,
+        invoiceId: payload.invoiceId,
+        status: 'paid',
+        amount: res.data?.data?.amount || (res.data as any)?.amount
+      });
+    }
+    return res;
   },
 };
 
@@ -830,14 +1463,20 @@ export interface DashboardStats {
 
 export interface Customer {
   id: number;
+  permanent_customer_id?: string;
   name: string;
   email: string;
   phone: string | null;
   role?: string;
-  is_active: boolean;
+  is_active: boolean | number;
   deactivation_reason?: string;
   deactivated_at?: string;
   deactivated_by?: number;
+  total_tickets?: number;
+  active_tickets?: number;
+  completed_tickets?: number;
+  cancelled_tickets?: number;
+  last_ticket_date?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -897,13 +1536,30 @@ export const adminApi = {
     }),
 
   // Customers
-  getCustomers: (token: string, page = 1, limit = 20, search = '', role = '', status = '') =>
-    safeFetch<{ data: PaginatedResponse<Customer> }>(getUrl(`${ENDPOINTS.ADMIN.CUSTOMERS}?page=${page}&limit=${limit}&search=${encodeURIComponent(search)}${role ? `&role=${role}` : ''}${status ? `&status=${status}` : ''}`), {
+  getCustomers: (token: string, page = 1, limit = 20, search = '', role = '', status = '', startDate = '', endDate = '') =>
+    safeFetch<{ data: PaginatedResponse<Customer> }>(getUrl(`${ENDPOINTS.ADMIN.CUSTOMERS}?page=${page}&limit=${limit}&search=${encodeURIComponent(search)}${role ? `&role=${role}` : ''}${status ? `&status=${status}` : ''}${startDate ? `&startDate=${encodeURIComponent(startDate)}` : ''}${endDate ? `&endDate=${encodeURIComponent(endDate)}` : ''}`), {
       headers: adminHeaders(token),
     }),
 
   getCompanies: (token: string, page = 1, limit = 20, search = '', status = '') =>
     safeFetch<{ data: PaginatedResponse<any> }>(getUrl(`/api/admin/companies?page=${page}&limit=${limit}&search=${encodeURIComponent(search)}${status ? `&status=${status}` : ''}`), {
+      headers: adminHeaders(token),
+    }),
+
+  getCompanyPayments: (token: string, page = 1, limit = 20, companyId = '', search = '', startDate = '', endDate = '') =>
+    safeFetch<{ data: { payments: any[]; companySummaries: any[]; summary: { totalVerifiedIncome: number; totalPaidTransactions: number }; pagination: any } }>(
+      getUrl(`/api/admin/companies/payments?page=${page}&limit=${limit}${companyId ? `&companyId=${companyId}` : ''}${search ? `&search=${encodeURIComponent(search)}` : ''}${startDate ? `&startDate=${startDate}` : ''}${endDate ? `&endDate=${endDate}` : ''}`),
+      { headers: adminHeaders(token) }
+    ),
+
+  getCompanyInvoices: (token: string, page = 1, limit = 20, companyId = '', status = '', search = '') =>
+    safeFetch<{ data: { invoices: any[]; companySummary: any[]; summary: { totalInvoices: number; totalAmount: number }; pagination: any } }>(
+      getUrl(`/api/admin/companies/invoices?page=${page}&limit=${limit}${companyId ? `&companyId=${companyId}` : ''}${status ? `&status=${status}` : ''}${search ? `&search=${encodeURIComponent(search)}` : ''}`),
+      { headers: adminHeaders(token) }
+    ),
+
+  getDeviceRepairHistory: (token: string, deviceId: number) =>
+    safeFetch<{ data: any }>(getUrl(ENDPOINTS.COMPANY.DEVICE_HISTORY(deviceId)), {
       headers: adminHeaders(token),
     }),
 
@@ -983,6 +1639,46 @@ export const adminApi = {
       headers: adminHeaders(token),
     }),
 
+  getCompanyDevices: (token: string, page = 1, limit = 20, search = '', status = '', companyId = '') =>
+    safeFetch<{ data: PaginatedResponse<any> }>(getUrl(`/api/admin/companies/devices?page=${page}&limit=${limit}&search=${encodeURIComponent(search)}${status ? `&status=${status}` : ''}${companyId ? `&companyId=${companyId}` : ''}`), {
+      headers: adminHeaders(token),
+    }),
+
+  getCompanyMessages: (token: string, companyId: number) =>
+    safeFetch<{ data: any[] }>(getUrl(`/api/admin/companies/${companyId}/messages`), {
+      headers: adminHeaders(token),
+    }),
+
+  sendCompanyMessage: (token: string, companyId: number, data: { message: string; repairRequestId?: number }) =>
+    safeFetch(getUrl(`/api/admin/companies/${companyId}/messages`), {
+      method: 'POST',
+      headers: adminHeaders(token),
+      body: JSON.stringify(data),
+    }),
+
+  markCompanyMessagesRead: (token: string, companyId: number) =>
+    safeFetch(getUrl(`/api/admin/companies/${companyId}/messages/read`), {
+      method: 'PUT',
+      headers: adminHeaders(token),
+    }),
+
+  getCompanyTickets: (token: string, page = 1, limit = 20, search = '', status = '', paymentStatus = '', companyId = '') =>
+    safeFetch<{ data: PaginatedResponse<any> }>(getUrl(`/api/repair-request?clientType=company&page=${page}&limit=${limit}&search=${encodeURIComponent(search)}${status && status !== 'all' ? `&status=${status}` : ''}${paymentStatus && paymentStatus !== 'all' ? `&paymentStatus=${paymentStatus}` : ''}${companyId && companyId !== 'all' ? `&companyId=${companyId}` : ''}`), {
+      headers: adminHeaders(token),
+    }),
+
+  setRepairCharges: (token: string, ticketId: number, data: { repairCost: number; notifyCustomer?: boolean; notes?: string }) =>
+    safeFetch(getUrl(`/api/admin/tickets/${ticketId}/charges`), {
+      method: 'PUT',
+      headers: adminHeaders(token),
+      body: JSON.stringify(data),
+    }),
+
+  getPaymentReceipt: (token: string, ticketId: number) =>
+    safeFetch<{ data: any }>(getUrl(`/api/admin/receipt/ticket/${ticketId}`), {
+      headers: adminHeaders(token),
+    }),
+
   bulkUpdateTickets: (token: string, data: { ticketIds: number[]; assignedTechnicianId?: number | null; status?: string }) =>
     safeFetch(getUrl('/api/admin/tickets/bulk'), {
       method: 'POST',
@@ -991,8 +1687,8 @@ export const adminApi = {
     }),
 
   // Contacts
-  getContacts: (token: string, page = 1, limit = 20) =>
-    safeFetch<{ data: PaginatedResponse<Contact> }>(getUrl(`${ENDPOINTS.ADMIN.CONTACTS}?page=${page}&limit=${limit}`), {
+  getContacts: (token: string, page = 1, limit = 20, search = '', startDate = '', endDate = '') =>
+    safeFetch<{ data: PaginatedResponse<Contact> }>(getUrl(`${ENDPOINTS.ADMIN.CONTACTS}?page=${page}&limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ''}${startDate ? `&startDate=${encodeURIComponent(startDate)}` : ''}${endDate ? `&endDate=${encodeURIComponent(endDate)}` : ''}`), {
       headers: adminHeaders(token),
     }),
 
@@ -1000,6 +1696,13 @@ export const adminApi = {
     safeFetch(getUrl(ENDPOINTS.ADMIN.CONTACT_BY_ID(id)), {
       method: 'DELETE',
       headers: adminHeaders(token),
+    }),
+
+  bulkDeleteContacts: (token: string, ids: number[]) =>
+    safeFetch(getUrl('/api/admin/contacts/bulk-delete'), {
+      method: 'POST',
+      headers: adminHeaders(token),
+      body: JSON.stringify({ ids }),
     }),
 
   replyToContact: (token: string, id: number, data: { subject: string; message: string }) =>
@@ -1111,11 +1814,25 @@ export const adminApi = {
   },
 
   // Reports
-  getReports: (token: string, type: 'daily' | 'monthly' = 'monthly', startDate?: string, endDate?: string) => {
-    let url = `${ENDPOINTS.ADMIN.REPORTS}?type=${type}`;
-    if (startDate && endDate) {
-      url += `&startDate=${startDate}&endDate=${endDate}`;
+  getReports: (
+    token: string,
+    type: 'daily' | 'monthly' = 'monthly',
+    startDate?: string,
+    endDate?: string,
+    extraParams?: Record<string, string>
+  ) => {
+    const params = new URLSearchParams();
+    params.append('type', type);
+    if (startDate) params.append('startDate', startDate);
+    if (endDate) params.append('endDate', endDate);
+    if (extraParams) {
+      for (const [key, value] of Object.entries(extraParams)) {
+        if (value !== undefined && value !== null && value !== '') {
+          params.append(key, value);
+        }
+      }
     }
+    const url = `${ENDPOINTS.ADMIN.REPORTS}?${params.toString()}`;
     return safeFetch(getUrl(url), {
       headers: adminHeaders(token),
     });
@@ -1163,6 +1880,13 @@ export const adminApi = {
       headers: adminHeaders(token),
     }),
 
+  bulkDeleteNotifications: (token: string, ids: number[]) =>
+    safeFetch(getUrl('/api/notifications/bulk-delete'), {
+      method: 'POST',
+      headers: adminHeaders(token),
+      body: JSON.stringify({ ids }),
+    }),
+
   // Technician management extensions
   updateTechnician: (token: string, id: number, data: { name: string; email: string; phone?: string }) =>
     safeFetch(getUrl(ENDPOINTS.TECHNICIAN.UPDATE(id)), {
@@ -1193,6 +1917,11 @@ export const adminApi = {
 export const publicApi = {
   getSiteData: async (): Promise<SafeResponse<any>> => {
     return safeFetch<any>(getUrl(ENDPOINTS.PUBLIC.SITE_DATA), {
+      method: 'GET',
+    });
+  },
+  getPincodeLocation: async (pincode: string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(`/api/public/pincode/${pincode}`), {
       method: 'GET',
     });
   },
@@ -1261,18 +1990,43 @@ export const companyApi = {
     });
   },
 
-  getProfile: async (token: string): Promise<SafeResponse<any>> => {
-    return safeFetch<any>(getUrl(ENDPOINTS.COMPANY.PROFILE), {
-      method: 'GET',
-      headers: { 'Authorization': `Bearer ${token}` },
+  registerCompany: async (data: FormData | Record<string, any>): Promise<SafeResponse<any>> => {
+    const isForm = data instanceof FormData;
+    const headers: Record<string, string> = {};
+    if (!isForm) {
+      headers['Content-Type'] = 'application/json';
+    }
+    return safeFetch<any>(getUrl(ENDPOINTS.COMPANY.REGISTER), {
+      method: 'POST',
+      headers,
+      body: isForm ? data : JSON.stringify(data),
     });
   },
 
-  updateProfile: async (token: string, formData: FormData): Promise<SafeResponse<any>> => {
+  getProfile: async (token: string, companyId?: number): Promise<SafeResponse<any>> => {
+    const headers: Record<string, string> = { 'Authorization': `Bearer ${token}` };
+    if (companyId) headers['X-Company-ID'] = String(companyId);
+    return safeFetch<any>(getUrl(ENDPOINTS.COMPANY.PROFILE), {
+      method: 'GET',
+      headers,
+    });
+  },
+
+  updateProfile: async (token: string, data: FormData | Record<string, any>, companyId?: number): Promise<SafeResponse<any>> => {
+    const isForm = data instanceof FormData;
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${token}`
+    };
+    if (companyId) {
+      headers['X-Company-ID'] = String(companyId);
+    }
+    if (!isForm) {
+      headers['Content-Type'] = 'application/json';
+    }
     return safeFetch<any>(getUrl(ENDPOINTS.COMPANY.PROFILE), {
       method: 'PUT',
-      headers: { 'Authorization': `Bearer ${token}` },
-      body: formData,
+      headers,
+      body: isForm ? data : JSON.stringify(data),
     });
   },
 
@@ -1417,9 +2171,25 @@ export const companyApi = {
     });
   },
 
+  getDeviceRepairHistory: async (token: string, id: number): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.COMPANY.DEVICE_HISTORY(id)), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
   // Repairs
-  getRepairs: async (token: string): Promise<SafeResponse<any>> => {
-    return safeFetch<any>(getUrl(ENDPOINTS.COMPANY.REPAIRS), {
+  getRepairs: async (token: string, params?: { approvalStatus?: string; status?: string; search?: string }): Promise<SafeResponse<any>> => {
+    let url = getUrl(ENDPOINTS.COMPANY.REPAIRS);
+    if (params) {
+      const q = new URLSearchParams();
+      if (params.approvalStatus) q.set('approvalStatus', params.approvalStatus);
+      if (params.status) q.set('status', params.status);
+      if (params.search) q.set('search', params.search);
+      const qs = q.toString();
+      if (qs) url += `?${qs}`;
+    }
+    return safeFetch<any>(url, {
       method: 'GET',
       headers: { 'Authorization': `Bearer ${token}` },
     });
@@ -1452,7 +2222,27 @@ export const companyApi = {
     });
   },
 
-  // Bulk Imports
+  // Bulk Imports & Exports
+  importBulkBranches: async (token: string, file: File): Promise<SafeResponse<any>> => {
+    const formData = new FormData();
+    formData.append('csvFile', file);
+    return safeFetch<any>(getUrl(ENDPOINTS.COMPANY.BULK_BRANCHES), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: formData,
+    });
+  },
+
+  importBulkEmployees: async (token: string, file: File): Promise<SafeResponse<any>> => {
+    const formData = new FormData();
+    formData.append('csvFile', file);
+    return safeFetch<any>(getUrl(ENDPOINTS.COMPANY.BULK_EMPLOYEES), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: formData,
+    });
+  },
+
   importBulkDevices: async (token: string, file: File): Promise<SafeResponse<any>> => {
     const formData = new FormData();
     formData.append('csvFile', file);
@@ -1471,6 +2261,86 @@ export const companyApi = {
       headers: { 'Authorization': `Bearer ${token}` },
       body: formData,
     });
+  },
+
+  exportBranches: async (token: string, id?: number): Promise<void> => {
+    const url = id
+      ? getUrl(`${ENDPOINTS.COMPANY.EXPORT_BRANCHES}?id=${id}`)
+      : getUrl(ENDPOINTS.COMPANY.EXPORT_BRANCHES);
+    const headers: Record<string, string> = { 'Authorization': `Bearer ${token}` };
+    const compId = getApiCompanyContext();
+    if (compId) headers['X-Company-ID'] = String(compId);
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new Error('Failed to export branches.');
+    const blob = await res.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = id ? `company_branch_${id}_export.csv` : 'company_branches_export.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(downloadUrl);
+  },
+
+  exportEmployees: async (token: string, id?: number): Promise<void> => {
+    const url = id
+      ? getUrl(`${ENDPOINTS.COMPANY.EXPORT_EMPLOYEES}?id=${id}`)
+      : getUrl(ENDPOINTS.COMPANY.EXPORT_EMPLOYEES);
+    const headers: Record<string, string> = { 'Authorization': `Bearer ${token}` };
+    const compId = getApiCompanyContext();
+    if (compId) headers['X-Company-ID'] = String(compId);
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new Error('Failed to export employees.');
+    const blob = await res.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = id ? `company_employee_${id}_export.csv` : 'company_employees_export.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(downloadUrl);
+  },
+
+  exportDevices: async (token: string, id?: number): Promise<void> => {
+    const url = id
+      ? getUrl(`${ENDPOINTS.COMPANY.EXPORT_DEVICES}?id=${id}`)
+      : getUrl(ENDPOINTS.COMPANY.EXPORT_DEVICES);
+    const headers: Record<string, string> = { 'Authorization': `Bearer ${token}` };
+    const compId = getApiCompanyContext();
+    if (compId) headers['X-Company-ID'] = String(compId);
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new Error('Failed to export devices.');
+    const blob = await res.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = id ? `company_device_${id}_export.csv` : 'company_devices_export.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(downloadUrl);
+  },
+
+  exportRepairs: async (token: string, id?: number): Promise<void> => {
+    const url = id
+      ? getUrl(`${ENDPOINTS.COMPANY.EXPORT_REPAIRS}?id=${id}`)
+      : getUrl(ENDPOINTS.COMPANY.EXPORT_REPAIRS);
+    const headers: Record<string, string> = { 'Authorization': `Bearer ${token}` };
+    const compId = getApiCompanyContext();
+    if (compId) headers['X-Company-ID'] = String(compId);
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new Error('Failed to export repair tickets.');
+    const blob = await res.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = id ? `company_repair_ticket_${id}_export.csv` : 'company_repairs_export.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(downloadUrl);
   },
 
   // Activity Logs

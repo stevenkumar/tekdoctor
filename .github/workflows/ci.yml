@@ -1,0 +1,77 @@
+name: TekDoctor CI
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  build-and-test:
+    name: Build & Verification Suite
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: tekdoctor_db
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping -proot" --health-interval=10s --health-timeout=5s --health-retries=5
+
+    env:
+      NODE_ENV: test
+      PORT: 5000
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: tekdoctor_db
+      JWT_SECRET: c29tZXN1cGVyc2VjcmV0and0a2V5Zm9yY2llbnZpcm9ubWVudG11c3RiZWxvbmcxMjM0NQ==
+      JWT_EXPIRES_IN: 7d
+      CORS_ORIGIN: http://localhost:3000,http://localhost:5173
+      FRONTEND_URL: http://localhost:3000
+      UPLOAD_DIR: uploads
+      LOG_LEVEL: error
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Root & Workspace Dependencies
+        run: |
+          npm ci || npm install
+          npm ci --prefix server || npm install --prefix server
+          npm ci --prefix client || npm install --prefix client
+
+      - name: Run Frontend Lint
+        run: npm run lint --prefix client
+        continue-on-error: true
+
+      - name: Start Backend Server
+        run: |
+          node server.js &
+          # Wait up to 30 seconds for backend health endpoint to respond
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:5000/health | grep -q "UP"; then
+              echo "Backend server is UP and ready."
+              break
+            fi
+            echo "Waiting for server to start... ($i/30)"
+            sleep 1
+          done
+        working-directory: server
+
+      - name: Run Backend Verification Suites
+        run: npm run test:server
+
+      - name: Run Frontend Production Build
+        run: npm run build --prefix client

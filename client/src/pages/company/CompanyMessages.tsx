@@ -1,52 +1,65 @@
 import { useEffect, useState, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { MessageSquare, Send, User, ShieldCheck } from 'lucide-react';
+import { useCompanyContext } from '../../context/CompanyContext';
+import { companyApi } from '../../services/api';
+import { MessageSquare, Send, User, ShieldCheck, RefreshCw } from 'lucide-react';
 import { useSiteContext } from '../../context/SiteContext';
+import { MESSAGE_MAX_LENGTH } from '@/config/constants';
 
 interface ChatMessage {
     id: number;
     sender_role: 'company' | 'admin';
     sender_name: string;
-    content: string;
+    message?: string;
+    content?: string;
     created_at: string;
 }
 
 export default function CompanyMessages() {
     const { token, user } = useAuth();
+    const { selectedCompanyId, isAdminManagingCompany, loadingCompanies } = useCompanyContext();
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [inputText, setInputText] = useState('');
     const [loading, setLoading] = useState(true);
     const [sending, setSending] = useState(false);
+    const [refreshing, setRefreshing] = useState(false);
     const [error, setError] = useState('');
     const { flattenedSettings } = useSiteContext();
 
     const chatEndRef = useRef<HTMLDivElement>(null);
 
-    const fetchMessages = async () => {
+    const fetchMessages = async (silent = false) => {
+        if (!token) return;
+        if (isAdminManagingCompany && !selectedCompanyId && !loadingCompanies) {
+            setLoading(false);
+            return;
+        }
+        if (!silent) setRefreshing(true);
         try {
-            const res = await fetch('http://localhost:5000/api/company/messages', {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            const json = await res.json();
-            if (json.success) {
-                setMessages(json.data);
+            const res = await companyApi.getMessages(token);
+            if (res.ok && res.data) {
+                const list = res.data.data || res.data;
+                setMessages(Array.isArray(list) ? list : []);
+                setError('');
             } else {
-                setError(json.message);
+                if (!silent) setError(res.error || 'Failed to fetch communications thread.');
             }
         } catch {
-            setError('Failed to fetch communications thread.');
+            if (!silent) setError('Failed to fetch communications thread.');
         } finally {
             setLoading(false);
+            if (!silent) setRefreshing(false);
         }
     };
 
     useEffect(() => {
-        fetchMessages();
+        if (isAdminManagingCompany && loadingCompanies) return;
+        fetchMessages(false);
 
-        // Auto-polling messages every 6 seconds for dynamic chat feel
-        const interval = setInterval(fetchMessages, 6000);
+        // Auto-polling messages every 5 seconds for dynamic chat feel
+        const interval = setInterval(() => fetchMessages(true), 5000);
         return () => clearInterval(interval);
-    }, [token]);
+    }, [token, selectedCompanyId, loadingCompanies]);
 
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -54,27 +67,24 @@ export default function CompanyMessages() {
 
     const handleSend = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!inputText.trim() || sending) return;
+        const text = inputText.trim();
+        if (!text || sending || !token) return;
+
+        if (text.length > MESSAGE_MAX_LENGTH) {
+            setError(`Message cannot exceed ${MESSAGE_MAX_LENGTH} characters.`);
+            return;
+        }
 
         setSending(true);
         setError('');
 
         try {
-            const res = await fetch('http://localhost:5000/api/company/messages', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`
-                },
-                body: JSON.stringify({ content: inputText })
-            });
-            const json = await res.json();
-
-            if (json.success) {
+            const res = await companyApi.sendMessage(token, { message: text });
+            if (res.ok && res.data?.success) {
                 setInputText('');
-                fetchMessages();
+                fetchMessages(true);
             } else {
-                setError(json.message);
+                setError(res.error || res.data?.message || 'Message dispatch failed.');
             }
         } catch {
             setError('Message dispatch failed.');
@@ -86,9 +96,20 @@ export default function CompanyMessages() {
     return (
         <div className="space-y-6 animate-fadeIn max-w-4xl h-[calc(100vh-140px)] flex flex-col justify-between">
             {/* Title */}
-            <div className="shrink-0">
-                <h1 className="text-2xl md:text-3xl font-bold text-white tracking-tight">Support Desk</h1>
-                <p className="text-zinc-500 text-sm mt-1">Communicate directly with {flattenedSettings.company_name || 'TekDoctor'} technical administrators concerning asset contracts.</p>
+            <div className="shrink-0 flex justify-between items-start">
+                <div>
+                    <h1 className="text-2xl md:text-3xl font-bold text-white tracking-tight">Support Desk</h1>
+                    <p className="text-zinc-500 text-sm mt-1">Communicate directly with {flattenedSettings.company_name || 'TekDoctor'} technical administrators concerning asset contracts.</p>
+                </div>
+                <button
+                    onClick={() => fetchMessages(false)}
+                    disabled={refreshing}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-zinc-900/60 hover:bg-zinc-800 border border-zinc-800 rounded-xl text-xs font-semibold text-zinc-300 transition-all cursor-pointer"
+                    title="Refresh messages"
+                >
+                    <RefreshCw size={13} className={refreshing ? 'animate-spin text-indigo-400' : ''} />
+                    <span>Refresh</span>
+                </button>
             </div>
 
             {error && (
@@ -107,13 +128,14 @@ export default function CompanyMessages() {
                     <div className="h-full flex flex-col items-center justify-center text-center space-y-3">
                         <MessageSquare size={32} className="text-zinc-700 animate-bounce" />
                         <div className="space-y-1">
-                            <h3 className="text-zinc-300 font-bold text-sm">No Messages Thread</h3>
-                            <p className="text-zinc-650 text-xs max-w-xs">Start a support ticket or dispatch general queries to systems administration.</p>
+                            <h3 className="text-zinc-300 font-bold text-sm">No Messages in Thread</h3>
+                            <p className="text-zinc-650 text-xs max-w-xs">Start a conversation or send general queries to system administrators.</p>
                         </div>
                     </div>
                 ) : (
                     messages.map((msg) => {
                         const isMe = msg.sender_role === 'company';
+                        const text = msg.message || msg.content || '';
                         return (
                             <div
                                 key={msg.id}
@@ -128,13 +150,13 @@ export default function CompanyMessages() {
                                 {/* Message Body */}
                                 <div className="space-y-1">
                                     <div className={`text-[10px] text-zinc-550 font-semibold font-mono ${isMe ? 'text-right' : ''}`}>
-                                        {msg.sender_name} • {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        {msg.sender_name || (isMe ? 'You' : 'Admin')} • {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                     </div>
                                     <div className={`p-4 rounded-2xl text-sm leading-relaxed ${isMe
                                         ? 'bg-indigo-600 text-white rounded-tr-none'
                                         : 'bg-zinc-900 text-zinc-300 rounded-tl-none border border-zinc-800/80'
                                         }`}>
-                                        {msg.content}
+                                        {text}
                                     </div>
                                 </div>
                             </div>
@@ -145,23 +167,31 @@ export default function CompanyMessages() {
             </div>
 
             {/* Input dispatch bar */}
-            <form onSubmit={handleSend} className="shrink-0 flex gap-2">
-                <input
-                    type="text"
-                    placeholder="Write your support message..."
-                    value={inputText}
-                    onChange={e => setInputText(e.target.value)}
-                    className="flex-1 bg-[#0c0c0c] border border-zinc-900 focus:border-indigo-500/50 rounded-xl px-4 py-3 text-sm text-white focus:outline-none transition-colors"
-                    disabled={loading || sending}
-                />
-                <button
-                    type="submit"
-                    className="bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-805 text-white p-3 rounded-xl transition-all hover:scale-[1.02] active:scale-[0.98] shrink-0 cursor-pointer flex items-center justify-center font-bold"
-                    disabled={!inputText.trim() || sending}
-                >
-                    <Send size={18} />
-                </button>
-            </form>
+            <div className="shrink-0 space-y-1">
+                <div className="flex justify-end px-1">
+                    <span className={`text-[10px] font-mono ${inputText.length > MESSAGE_MAX_LENGTH ? 'text-red-400 font-bold' : 'text-zinc-500'}`}>
+                        {inputText.length} / {MESSAGE_MAX_LENGTH}
+                    </span>
+                </div>
+                <form onSubmit={handleSend} className="flex gap-2">
+                    <input
+                        type="text"
+                        maxLength={MESSAGE_MAX_LENGTH}
+                        placeholder="Write your support message..."
+                        value={inputText}
+                        onChange={e => setInputText(e.target.value)}
+                        className="flex-1 bg-[#0c0c0c] border border-zinc-900 focus:border-indigo-500/50 rounded-xl px-4 py-3 text-sm text-white focus:outline-none transition-colors"
+                        disabled={loading || sending}
+                    />
+                    <button
+                        type="submit"
+                        className="bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 text-white p-3 rounded-xl transition-all hover:scale-[1.02] active:scale-[0.98] shrink-0 cursor-pointer flex items-center justify-center font-bold"
+                        disabled={!inputText.trim() || sending}
+                    >
+                        <Send size={18} />
+                    </button>
+                </form>
+            </div>
         </div>
     );
 }

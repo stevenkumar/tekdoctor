@@ -21,16 +21,47 @@ const SiteContext = createContext<SiteContextType>({
 export const useSiteContext = () => useContext(SiteContext);
 
 /**
- * Convert a hex color string (#rrggbb) to an "r, g, b" string
+ * Convert a hex color string (#rrggbb or #rgb) to an "r, g, b" string
  * for use in rgba() with CSS variables.
  */
 function hexToRgb(hex: string): string {
-    const clean = hex.replace('#', '');
+    if (!hex) return '0, 242, 255';
+    let clean = hex.replace('#', '').trim();
+    if (clean.length === 3) {
+        clean = clean.split('').map(c => c + c).join('');
+    }
     const bigint = parseInt(clean, 16);
+    if (isNaN(bigint)) return '0, 242, 255';
     const r = (bigint >> 16) & 255;
     const g = (bigint >> 8) & 255;
     const b = bigint & 255;
     return `${r}, ${g}, ${b}`;
+}
+
+/**
+ * Dynamically broadcasts the active primary and secondary/accent theme
+ * color variables to document.documentElement so all CSS variables and
+ * opacity helpers (--neon-cyan, --neon-cyan-rgb, --neon-teal, etc.) update instantly.
+ */
+function applyThemeVariables(flat: Record<string, string>) {
+    const primaryColor = flat.theme_primary_color || flat.primary_color;
+    if (primaryColor) {
+        const rgb = hexToRgb(primaryColor);
+        document.documentElement.style.setProperty('--color-neon-cyan', primaryColor);
+        document.documentElement.style.setProperty('--neon-cyan', primaryColor);
+        document.documentElement.style.setProperty('--neon-cyan-rgb', rgb);
+        document.documentElement.style.setProperty('--scrollbar-thumb', primaryColor);
+        document.documentElement.style.setProperty('--neon-border', `1px solid rgba(${rgb}, 0.5)`);
+        document.documentElement.style.setProperty('--neon-glow', `0 0 10px rgba(${rgb}, 0.3)`);
+    }
+
+    const secondaryColor = flat.theme_secondary_color || flat.secondary_color;
+    if (secondaryColor) {
+        const rgbSecondary = hexToRgb(secondaryColor);
+        document.documentElement.style.setProperty('--color-neon-teal', secondaryColor);
+        document.documentElement.style.setProperty('--neon-teal', secondaryColor);
+        document.documentElement.style.setProperty('--neon-teal-rgb', rgbSecondary);
+    }
 }
 
 export const SiteProvider = ({ children }: { children: ReactNode }) => {
@@ -55,26 +86,7 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
                         });
                     }
                     setFlattenedSettings(flat);
-
-                    // Apply global theme color variables
-                    // The DB stores the key as "theme_primary_color" in group "theme"
-                    // Also support the branding group key "primary_color"
-                    const primaryColor = flat.theme_primary_color || flat.primary_color;
-                    if (primaryColor) {
-                        const rgb = hexToRgb(primaryColor);
-                        document.documentElement.style.setProperty('--color-neon-cyan', primaryColor);
-                        document.documentElement.style.setProperty('--neon-cyan', primaryColor);
-                        document.documentElement.style.setProperty('--neon-cyan-rgb', rgb);
-                        // Update glow/border vars to use the dynamic color
-                        document.documentElement.style.setProperty('--neon-border', `1px solid rgba(${rgb}, 0.5)`);
-                        document.documentElement.style.setProperty('--neon-glow', `0 0 10px rgba(${rgb}, 0.3)`);
-                    }
-
-                    const secondaryColor = flat.theme_secondary_color || flat.secondary_color;
-                    if (secondaryColor) {
-                        document.documentElement.style.setProperty('--color-neon-teal', secondaryColor);
-                        document.documentElement.style.setProperty('--neon-teal', secondaryColor);
-                    }
+                    applyThemeVariables(flat);
                 }
             } catch (err) {
                 console.error('Failed to load dynamic site settings', err);
@@ -100,22 +112,7 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
                     });
                 }
                 setFlattenedSettings(flat);
-
-                const primaryColor = flat.theme_primary_color || flat.primary_color;
-                if (primaryColor) {
-                    const rgb = hexToRgb(primaryColor);
-                    document.documentElement.style.setProperty('--color-neon-cyan', primaryColor);
-                    document.documentElement.style.setProperty('--neon-cyan', primaryColor);
-                    document.documentElement.style.setProperty('--neon-cyan-rgb', rgb);
-                    document.documentElement.style.setProperty('--neon-border', `1px solid rgba(${rgb}, 0.5)`);
-                    document.documentElement.style.setProperty('--neon-glow', `0 0 10px rgba(${rgb}, 0.3)`);
-                }
-
-                const secondaryColor = flat.theme_secondary_color || flat.secondary_color;
-                if (secondaryColor) {
-                    document.documentElement.style.setProperty('--color-neon-teal', secondaryColor);
-                    document.documentElement.style.setProperty('--neon-teal', secondaryColor);
-                }
+                applyThemeVariables(flat);
             }
         } catch (err) {
             console.error('Failed to load dynamic site settings', err);

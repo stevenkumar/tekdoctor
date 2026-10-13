@@ -1,8 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { useCompanyContext } from '../../context/CompanyContext';
 import { companyApi } from '../../services/api';
-import { MapPin, Phone, Plus, Edit2, ShieldOff, ShieldCheck, X, PlusCircle, RotateCcw } from 'lucide-react';
+import {
+    MapPin, Phone, Plus, Edit2, ShieldOff, ShieldCheck, X,
+    PlusCircle, Upload, Download, Search, FileDown,
+    CheckCircle2, AlertCircle, Loader2
+} from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import PhoneInput from '@/components/PhoneInput';
+import { PromptModal } from '@/components/PromptModal';
+import { NAME_MAX_LENGTH, validateName } from '@/config/constants';
+import { parsePhoneNumber, validatePhoneNumber, DEFAULT_COUNTRY } from '@/utils/phoneUtils';
 
 interface Branch {
     id: number;
@@ -16,21 +25,39 @@ interface Branch {
 
 export default function CompanyBranches() {
     const { token } = useAuth();
+    const { selectedCompanyId, isAdminManagingCompany, loadingCompanies } = useCompanyContext();
     const [branches, setBranches] = useState<Branch[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
     const [statusFilter, setStatusFilter] = useState<'' | 'active' | 'inactive'>('');
+    const [searchQuery, setSearchQuery] = useState('');
 
     // Modal / form states
     const [isOpen, setIsOpen] = useState(false);
+    const [isBulkOpen, setIsBulkOpen] = useState(false);
     const [editingId, setEditingId] = useState<number | null>(null);
     const [name, setName] = useState('');
     const [address, setAddress] = useState('');
     const [phone, setPhone] = useState('');
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [formErrors, setFormErrors] = useState<{ name?: string; address?: string; phone?: string; general?: string }>({});
+    const [deactivateModal, setDeactivateModal] = useState<{ id: number; branchName: string } | null>(null);
+    const [deactivateLoading, setDeactivateLoading] = useState(false);
+    const [bulkError, setBulkError] = useState('');
+
+    // Bulk Import state
+    const [csvFile, setCsvFile] = useState<File | null>(null);
+    const [uploading, setUploading] = useState(false);
+    const [exporting, setExporting] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     const fetchBranches = async () => {
         if (!token) return;
+        if (isAdminManagingCompany && !selectedCompanyId && !loadingCompanies) {
+            setLoading(false);
+            return;
+        }
         setLoading(true);
         try {
             const res = await companyApi.getBranches(token);
@@ -47,13 +74,15 @@ export default function CompanyBranches() {
     };
 
     useEffect(() => {
+        if (isAdminManagingCompany && loadingCompanies) return;
         fetchBranches();
-    }, [token]);
+    }, [token, selectedCompanyId, loadingCompanies]);
 
     const handleOpenCreateModel = () => {
         setName('');
         setAddress('');
         setPhone('');
+        setFormErrors({});
         setEditingId(null);
         setIsOpen(true);
     };
@@ -62,20 +91,42 @@ export default function CompanyBranches() {
         setName(branch.name);
         setAddress(branch.address);
         setPhone(branch.phone || '');
+        setFormErrors({});
         setEditingId(branch.id);
         setIsOpen(true);
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        setError('');
-        setSuccess('');
+        if (isSubmitting) return;
 
-        if (!name || !address) {
-            setError('Branch name and address are required.');
+        const errors: { name?: string; address?: string; phone?: string; general?: string } = {};
+
+        const nameVal = validateName(name, 'Branch name');
+        if (!nameVal.isValid) {
+            errors.name = nameVal.error || 'Please enter a valid branch name.';
+        }
+
+        if (!address.trim()) {
+            errors.address = 'Branch address is required.';
+        } else if (address.trim().length > 150) {
+            errors.address = 'Branch address cannot exceed 150 characters.';
+        }
+
+        if (phone.trim()) {
+            const { country, nationalNumber } = parsePhoneNumber(phone.trim(), DEFAULT_COUNTRY);
+            const val = validatePhoneNumber(nationalNumber, country);
+            if (!val.isValid) {
+                errors.phone = val.error || 'Please enter a valid phone number.';
+            }
+        }
+
+        if (Object.keys(errors).length > 0) {
+            setFormErrors(errors);
             return;
         }
 
+        setIsSubmitting(true);
         try {
             const res = editingId
                 ? await companyApi.updateBranch(token || '', editingId, { name, address, phone })
@@ -84,33 +135,47 @@ export default function CompanyBranches() {
             if (res.ok) {
                 setSuccess(editingId ? 'Branch updated successfully!' : 'Branch created successfully!');
                 setIsOpen(false);
+                setFormErrors({});
                 fetchBranches();
             } else {
-                setError(res.error || 'Failed to submit branch information.');
+                const serverErrors = (res.data as any)?.errors || {};
+                setFormErrors({
+                    name: serverErrors.name,
+                    address: serverErrors.address,
+                    phone: serverErrors.phone,
+                    general: res.error || (res.data as any)?.message || 'Failed to submit branch information.'
+                });
             }
         } catch {
-            setError('Failed to submit branch information.');
+            setFormErrors({ general: 'Failed to submit branch information. Please try again.' });
+        } finally {
+            setIsSubmitting(false);
         }
     };
 
-    const handleDeactivate = async (id: number, branchName: string) => {
-        if (!token) return;
-        const reason = prompt(`Deactivate branch "${branchName}"?\nEnter reason (optional):`);
-        if (reason === null) return;
+    const handleDeactivate = (id: number, branchName: string) => {
+        setDeactivateModal({ id, branchName });
+    };
 
+    const handleConfirmDeactivate = async (reason: string) => {
+        if (!token || !deactivateModal) return;
         setError('');
         setSuccess('');
+        setDeactivateLoading(true);
 
         try {
-            const res = await companyApi.deleteBranch(token, id, reason || undefined);
+            const res = await companyApi.deleteBranch(token, deactivateModal.id, reason.trim() || undefined);
             if (res.ok) {
                 toast.success('Branch deactivated successfully.');
+                setDeactivateModal(null);
                 fetchBranches();
             } else {
                 setError(res.error || 'Failed to deactivate branch.');
             }
         } catch {
             setError('Failed to deactivate branch.');
+        } finally {
+            setDeactivateLoading(false);
         }
     };
 
@@ -132,21 +197,90 @@ export default function CompanyBranches() {
         }
     };
 
+    const handleBulkUpload = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!csvFile || !token) return;
+
+        setUploading(true);
+        setBulkError('');
+
+        try {
+            const res = await companyApi.importBulkBranches(token, csvFile);
+            if (res.ok && res.data?.success) {
+                const importedCount = res.data.data?.imported || res.data.data?.count || 0;
+                setSuccess(`Bulk import complete! Successfully processed ${importedCount} branch(es).`);
+                setIsBulkOpen(false);
+                setCsvFile(null);
+                setBulkError('');
+                fetchBranches();
+            } else {
+                setBulkError(res.error || res.data?.message || 'Failed to import branches from CSV.');
+            }
+        } catch {
+            setBulkError('Failed to upload branches CSV.');
+        } finally {
+            setUploading(false);
+        }
+    };
+
+    const handleDownloadSample = () => {
+        const headers = 'name,address,phone\n';
+        const sample1 = 'London Office,123 High Street London UK,+44 20 7946 0912\n';
+        const sample2 = 'Manchester Hub,45 Deansgate Manchester UK,+44 161 496 0234\n';
+        const csvContent = 'data:text/csv;charset=utf-8,' + encodeURIComponent(headers + sample1 + sample2);
+        const link = document.createElement('a');
+        link.setAttribute('href', csvContent);
+        link.setAttribute('download', 'company_branches_sample_template.csv');
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    const handleBulkExport = async () => {
+        if (!token || exporting) return;
+        setExporting(true);
+        try {
+            await companyApi.exportBranches(token);
+            toast.success('Branches CSV exported successfully.');
+        } catch {
+            toast.error('Failed to export branches.');
+        } finally {
+            setExporting(false);
+        }
+    };
+
+    const handleSingleExport = async (branchId: number, branchName: string) => {
+        if (!token) return;
+        try {
+            await companyApi.exportBranches(token, branchId);
+            toast.success(`Exported branch: ${branchName}`);
+        } catch {
+            toast.error('Failed to export branch record.');
+        }
+    };
+
     const filteredBranches = branches.filter(b => {
-        if (statusFilter === 'active') return b.is_active !== false;
-        if (statusFilter === 'inactive') return b.is_active === false;
+        if (statusFilter === 'active' && b.is_active === false) return false;
+        if (statusFilter === 'inactive' && b.is_active !== false) return false;
+        if (searchQuery.trim()) {
+            const q = searchQuery.toLowerCase();
+            const nameMatch = (b.name || '').toLowerCase().includes(q);
+            const addressMatch = (b.address || '').toLowerCase().includes(q);
+            const phoneMatch = (b.phone || '').toLowerCase().includes(q);
+            if (!nameMatch && !addressMatch && !phoneMatch) return false;
+        }
         return true;
     });
 
     return (
         <div className="space-y-8 animate-fadeIn">
-            {/* Title Header */}
+            {/* Title Header & Actions */}
             <div className="flex flex-wrap justify-between items-center gap-4">
                 <div>
                     <h1 className="text-2xl md:text-3xl font-bold text-white tracking-tight">Branches Management</h1>
                     <p className="text-zinc-500 text-sm mt-1">Manage office operations hubs and repair transfer locations.</p>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
                     <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-xl p-1">
                         {[
                             { label: 'All', value: '' },
@@ -165,9 +299,28 @@ export default function CompanyBranches() {
                             </button>
                         ))}
                     </div>
+
+                    <button
+                        onClick={() => { setBulkError(''); setIsBulkOpen(true); }}
+                        className="border border-zinc-800 hover:border-zinc-700 bg-zinc-950 text-zinc-300 text-sm font-semibold px-3.5 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer"
+                    >
+                        <Upload size={15} className="text-indigo-400" />
+                        <span>CSV Import</span>
+                    </button>
+
+                    <button
+                        onClick={handleBulkExport}
+                        disabled={exporting || branches.length === 0}
+                        className="border border-zinc-800 hover:border-zinc-700 bg-zinc-950 text-zinc-300 text-sm font-semibold px-3.5 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50"
+                        title="Export all branches to CSV"
+                    >
+                        <Download size={15} className="text-emerald-400" />
+                        <span>Export CSV</span>
+                    </button>
+
                     <button
                         onClick={handleOpenCreateModel}
-                        className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2.5 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer shadow-lg shadow-indigo-600/10"
+                        className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer shadow-lg shadow-indigo-600/10"
                     >
                         <Plus size={16} />
                         <span>Add Branch</span>
@@ -175,15 +328,37 @@ export default function CompanyBranches() {
                 </div>
             </div>
 
+            {/* Search Input Bar */}
+            <div className="relative">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" size={16} />
+                <input
+                    type="text"
+                    placeholder="Search branches by name, location address, or contact phone..."
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    className="w-full bg-[#0c0c0c] border border-zinc-900 focus:border-indigo-500/60 rounded-xl pl-10 pr-10 py-2.5 text-sm text-white focus:outline-none transition-colors"
+                />
+                {searchQuery && (
+                    <button
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white p-1"
+                    >
+                        <X size={14} />
+                    </button>
+                )}
+            </div>
+
             {/* Messaging alerts */}
             {success && (
-                <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 p-4 rounded-xl text-sm font-medium animate-fadeIn">
-                    {success}
+                <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 p-4 rounded-xl text-sm font-medium animate-fadeIn flex items-center gap-2">
+                    <CheckCircle2 size={16} className="shrink-0" />
+                    <span>{success}</span>
                 </div>
             )}
             {error && (
-                <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl text-sm font-medium animate-fadeIn">
-                    {error}
+                <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl text-sm font-medium animate-fadeIn flex items-center gap-2">
+                    <AlertCircle size={16} className="shrink-0" />
+                    <span>{error}</span>
                 </div>
             )}
 
@@ -196,15 +371,28 @@ export default function CompanyBranches() {
                 <div className="bg-[#0c0c0c] border border-zinc-900 border-dashed rounded-2xl py-20 text-center flex flex-col items-center justify-center space-y-4">
                     <MapPin size={40} className="text-zinc-700" />
                     <div className="space-y-1">
-                        <h3 className="text-zinc-300 font-bold text-base">No Branches Found</h3>
-                        <p className="text-zinc-650 text-xs max-w-sm">Define your secondary branches to map service tasks and assign employee resources.</p>
+                        <h3 className="text-zinc-300 font-bold text-base">
+                            {searchQuery ? 'No Branches Match Your Search' : 'No Branches Found'}
+                        </h3>
+                        <p className="text-zinc-650 text-xs max-w-sm">
+                            {searchQuery ? 'Try adjusting your search criteria.' : 'Define your secondary branches to map service tasks and assign employee resources.'}
+                        </p>
                     </div>
-                    <button
-                        onClick={handleOpenCreateModel}
-                        className="text-xs text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1.5 cursor-pointer mt-2"
-                    >
-                        <PlusCircle size={14} /> Register Branch
-                    </button>
+                    {searchQuery ? (
+                        <button
+                            onClick={() => setSearchQuery('')}
+                            className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer mt-2"
+                        >
+                            Clear search query
+                        </button>
+                    ) : (
+                        <button
+                            onClick={handleOpenCreateModel}
+                            className="text-xs text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1.5 cursor-pointer mt-2"
+                        >
+                            <PlusCircle size={14} /> Register Branch
+                        </button>
+                    )}
                 </div>
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -226,6 +414,13 @@ export default function CompanyBranches() {
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-1 shrink-0">
+                                        <button
+                                            onClick={() => handleSingleExport(branch.id, branch.name)}
+                                            className="p-1.5 rounded-lg hover:bg-zinc-900 text-zinc-500 hover:text-emerald-400 transition-colors cursor-pointer"
+                                            title="Export Single Branch (CSV)"
+                                        >
+                                            <Download size={13} />
+                                        </button>
                                         <button
                                             onClick={() => handleOpenEditModel(branch)}
                                             className="p-1.5 rounded-lg hover:bg-zinc-900 text-zinc-500 hover:text-zinc-200 transition-colors cursor-pointer"
@@ -288,26 +483,50 @@ export default function CompanyBranches() {
                         </div>
 
                         <form onSubmit={handleSubmit} className="p-6 space-y-4">
+                            {formErrors.general && (
+                                <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-xl text-xs flex items-center gap-2">
+                                    <AlertCircle size={15} className="shrink-0" />
+                                    <span>{formErrors.general}</span>
+                                </div>
+                            )}
+
                             <div className="space-y-1">
                                 <label className="text-xs font-mono uppercase text-zinc-500 tracking-wider">Branch Name *</label>
                                 <input
                                     type="text"
+                                    maxLength={NAME_MAX_LENGTH}
                                     placeholder="e.g. London Office, Chicago Branch"
                                     value={name}
-                                    onChange={e => setName(e.target.value)}
-                                    className="w-full bg-[#050505] border border-zinc-900 focus:border-indigo-500/50 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none transition-colors"
+                                    onChange={e => {
+                                        setName(e.target.value);
+                                        if (formErrors.name) setFormErrors(prev => ({ ...prev, name: undefined }));
+                                    }}
+                                    className={`w-full bg-[#050505] border ${formErrors.name ? 'border-red-500/80 focus:border-red-500' : 'border-zinc-900 focus:border-indigo-500/50'} rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none transition-colors`}
                                 />
+                                {formErrors.name && (
+                                    <p className="text-xs text-rose-400 mt-1 flex items-center gap-1">
+                                        <AlertCircle size={12} className="shrink-0" />
+                                        <span>{formErrors.name}</span>
+                                    </p>
+                                )}
                             </div>
 
                             <div className="space-y-1">
-                                <label className="text-xs font-mono uppercase text-zinc-500 tracking-wider">Branch Phone (Optional)</label>
-                                <input
-                                    type="text"
-                                    placeholder="Phone number"
+                                <PhoneInput
+                                    size="sm"
+                                    label="Branch Phone (Optional)"
                                     value={phone}
-                                    onChange={e => setPhone(e.target.value)}
-                                    className="w-full bg-[#050505] border border-zinc-900 focus:border-indigo-500/50 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none transition-colors"
+                                    onChange={val => {
+                                        setPhone(val);
+                                        if (formErrors.phone) setFormErrors(prev => ({ ...prev, phone: undefined }));
+                                    }}
                                 />
+                                {formErrors.phone && (
+                                    <p className="text-xs text-rose-400 mt-1 flex items-center gap-1">
+                                        <AlertCircle size={12} className="shrink-0" />
+                                        <span>{formErrors.phone}</span>
+                                    </p>
+                                )}
                             </div>
 
                             <div className="space-y-1">
@@ -316,9 +535,18 @@ export default function CompanyBranches() {
                                     rows={3}
                                     placeholder="Full office location address"
                                     value={address}
-                                    onChange={e => setAddress(e.target.value)}
-                                    className="w-full bg-[#050505] border border-zinc-900 focus:border-indigo-500/50 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none transition-colors resize-none"
+                                    onChange={e => {
+                                        setAddress(e.target.value);
+                                        if (formErrors.address) setFormErrors(prev => ({ ...prev, address: undefined }));
+                                    }}
+                                    className={`w-full bg-[#050505] border ${formErrors.address ? 'border-red-500/80 focus:border-red-500' : 'border-zinc-900 focus:border-indigo-500/50'} rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none transition-colors resize-none`}
                                 />
+                                {formErrors.address && (
+                                    <p className="text-xs text-rose-400 mt-1 flex items-center gap-1">
+                                        <AlertCircle size={12} className="shrink-0" />
+                                        <span>{formErrors.address}</span>
+                                    </p>
+                                )}
                             </div>
 
                             <div className="pt-4 border-t border-zinc-900/60 flex justify-end gap-3">
@@ -331,15 +559,106 @@ export default function CompanyBranches() {
                                 </button>
                                 <button
                                     type="submit"
-                                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-colors cursor-pointer"
+                                    disabled={isSubmitting}
+                                    className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-colors cursor-pointer flex items-center gap-2"
                                 >
-                                    {editingId ? 'Save Changes' : 'Create Branch'}
+                                    {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                                    {isSubmitting ? (editingId ? 'Saving...' : 'Creating...') : (editingId ? 'Save Changes' : 'Create Branch')}
                                 </button>
                             </div>
                         </form>
                     </div>
                 </div>
             )}
+
+            {/* Bulk Import Modal */}
+            {isBulkOpen && (
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50 animate-fadeIn bg-blur-sm">
+                    <div className="bg-[#0a0a0a] border border-zinc-900/80 rounded-2xl w-full max-w-md overflow-hidden animate-slideUp">
+                        <div className="px-6 py-4 border-b border-zinc-900/80 flex justify-between items-center">
+                            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                                <Upload size={18} className="text-indigo-400" />
+                                <span>Bulk Import Branches</span>
+                            </h2>
+                            <button
+                                onClick={() => setIsBulkOpen(false)}
+                                className="p-1 rounded-lg hover:bg-zinc-900 text-zinc-500 hover:text-white transition-colors cursor-pointer"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        <form onSubmit={handleBulkUpload} className="p-6 space-y-4">
+                            {bulkError && (
+                                <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-xl text-xs flex items-center gap-2">
+                                    <AlertCircle size={15} className="shrink-0" />
+                                    <span>{bulkError}</span>
+                                </div>
+                            )}
+
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-zinc-400">Need the correct column format?</span>
+                                <button
+                                    type="button"
+                                    onClick={handleDownloadSample}
+                                    className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 cursor-pointer"
+                                >
+                                    <FileDown size={14} /> Download Sample CSV
+                                </button>
+                            </div>
+
+                            <div
+                                onClick={() => fileInputRef.current?.click()}
+                                className="border-2 border-dashed border-zinc-800 hover:border-indigo-500/50 rounded-xl p-6 text-center cursor-pointer transition-colors bg-zinc-950/40"
+                            >
+                                <input
+                                    type="file"
+                                    ref={fileInputRef}
+                                    onChange={e => setCsvFile(e.target.files?.[0] || null)}
+                                    accept=".csv"
+                                    className="hidden"
+                                />
+                                <Upload size={24} className="mx-auto text-zinc-600 mb-2" />
+                                <p className="text-sm font-medium text-zinc-300">
+                                    {csvFile ? csvFile.name : 'Click or drag CSV file to upload'}
+                                </p>
+                                <p className="text-[11px] text-zinc-500 mt-1">Accepts UTF-8 formatted .csv files</p>
+                            </div>
+
+                            <div className="pt-4 border-t border-zinc-900/60 flex justify-end gap-3">
+                                <button
+                                    type="button"
+                                    onClick={() => setIsBulkOpen(false)}
+                                    className="bg-transparent hover:bg-zinc-900 text-zinc-400 hover:text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors cursor-pointer"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={!csvFile || uploading}
+                                    className="bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-colors cursor-pointer flex items-center gap-2"
+                                >
+                                    {uploading ? 'Importing...' : 'Upload & Process'}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Deactivation Modal */}
+            <PromptModal
+                isOpen={deactivateModal !== null}
+                title={`Deactivate Branch - ${deactivateModal?.branchName}`}
+                message={`Deactivate branch "${deactivateModal?.branchName}"? Associated employee and device assignments will remain intact.`}
+                inputLabel="Reason (optional):"
+                placeholder="Enter deactivation reason..."
+                confirmText="Deactivate"
+                variant="warning"
+                isLoading={deactivateLoading}
+                onConfirm={handleConfirmDeactivate}
+                onCancel={() => setDeactivateModal(null)}
+            />
         </div>
     );
 }

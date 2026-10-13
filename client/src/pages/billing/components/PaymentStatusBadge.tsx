@@ -9,15 +9,24 @@ export default function PaymentStatusBadge({ status, size = 'md' }: PaymentStatu
   const getStatusColor = (status: string) => {
     switch (status.toLowerCase()) {
       case 'paid':
-        return 'bg-green-900/30 text-green-400 border-green-500/50';
+        return 'bg-emerald-900/30 text-emerald-400 border-emerald-500/50';
+      case 'final':
+        return 'bg-cyan-900/30 text-cyan-300 border-cyan-500/50';
       case 'overdue':
         return 'bg-red-900/30 text-red-400 border-red-500/50';
       case 'sent':
         return 'bg-blue-900/30 text-blue-400 border-blue-500/50';
+      case 'pending_verification':
+      case 'pending':
+        return 'bg-amber-900/30 text-amber-300 border-amber-500/50';
+      case 'rejected':
+      case 'failed':
+        return 'bg-rose-900/30 text-rose-400 border-rose-500/50';
       case 'draft':
-        return 'bg-yellow-900/30 text-yellow-400 border-yellow-500/50';
+        return 'bg-zinc-800 text-zinc-300 border-zinc-600/50';
+      case 'void':
       case 'cancelled':
-        return 'bg-gray-900/30 text-gray-400 border-gray-500/50';
+        return 'bg-rose-900/30 text-rose-400 border-rose-500/50';
       default:
         return 'bg-zinc-900/30 text-zinc-400 border-zinc-500/50';
     }
@@ -38,7 +47,7 @@ export default function PaymentStatusBadge({ status, size = 'md' }: PaymentStatu
         font-mono tracking-widest
       `}
     >
-      {status.toUpperCase()}
+      {status.replace(/_/g, ' ').toUpperCase()}
     </span>
   );
 }

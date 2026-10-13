@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { useSearchParams, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import InvoiceHeader from './components/InvoiceHeader';
 import InvoiceTable from './components/InvoiceTable';
 import { AlertCircle } from 'lucide-react';
+import { toast } from 'react-hot-toast';
 import { billingApi } from '@/services/api';
 import type { Invoice } from '@/services/api';
 import { useSiteContext } from '../../context/SiteContext';
@@ -12,6 +14,13 @@ import { useSiteContext } from '../../context/SiteContext';
 export default function BillingPage() {
   const { token, user, isAuthenticated } = useAuth();
   const { flattenedSettings } = useSiteContext();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+
+  const navState = location.state as { selectedInvoiceId?: string; status?: string } | null;
+  const targetInvoiceId = searchParams.get('invoiceId') || navState?.selectedInvoiceId || null;
+  const targetStatus = searchParams.get('status') || navState?.status || null;
+
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -21,10 +30,19 @@ export default function BillingPage() {
       setLoading(true);
       setError(null);
 
-      // If user is authenticated, filter by userId, otherwise get all
-      const res = await billingApi.getInvoices(token, isAuthenticated ? user?.id?.toString() : undefined);
+      // Invoice listing requires authentication — skip the API call for guests
+      if (!isAuthenticated) {
+        setInvoices([]);
+        setLoading(false);
+        return;
+      }
+
+      const targetUserId = user?.role === 'admin' ? undefined : (isAuthenticated && user?.id ? user.id.toString() : undefined);
+      const res = await billingApi.getInvoices(token, targetUserId);
       if (res.ok && res.data) {
         setInvoices(Array.isArray(res.data) ? res.data : (res.data.data || []));
+      } else {
+        setError(res.error || 'Failed to load invoices');
       }
     } catch (err) {
       console.error('Error fetching invoices:', err);
@@ -32,7 +50,7 @@ export default function BillingPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, isAuthenticated, user?.id]);
+  }, [token, isAuthenticated, user?.id, user?.role]);
 
   useEffect(() => {
     fetchInvoices();
@@ -40,33 +58,66 @@ export default function BillingPage() {
 
   const handleStatusChange = async (invoiceId: string, newStatus: string) => {
     try {
-      const res = await billingApi.updateInvoice(token, invoiceId, { status: newStatus as any });
-      if (res.ok && res.data) {
-        const updatedInvoice = res.data.data || res.data;
-        // Update local state
-        setInvoices(prev =>
-          prev.map(inv => (inv.id === invoiceId ? updatedInvoice : inv))
-        );
+      const current = invoices.find(inv => inv.id === invoiceId);
+      if (!current) {
+        setError('Invoice not found.');
+        return;
+      }
+      const payload: Partial<Invoice> = {
+        clientName: current.clientName,
+        userId: current.userId,
+        amount: current.amount,
+        currency: current.currency,
+        invoiceDate: current.invoiceDate,
+        dueDate: current.dueDate,
+        lineItems: current.lineItems,
+        notes: current.notes,
+        status: newStatus as any,
+      };
+      const res = await billingApi.updateInvoice(token, invoiceId, payload);
+      if (res.ok) {
+        setInvoices(prev => prev.map(inv => (inv.id === invoiceId ? { ...inv, status: newStatus } : inv)));
+      } else {
+        setError(res.error || 'Failed to update invoice status');
+        throw new Error(res.error || 'Failed to update invoice status');
       }
     } catch (err) {
       console.error('Error updating status:', err);
       setError(err instanceof Error ? err.message : 'Failed to update invoice status');
+      throw err;
     }
   };
 
   const handleUpdateInvoice = async (invoiceId: string, updateData: Partial<Invoice>) => {
     try {
-      const res = await billingApi.updateInvoice(token, invoiceId, updateData);
-      if (res.ok && res.data) {
-        const updatedInvoice = res.data.data || res.data;
-        // Update local state
-        setInvoices(prev =>
-          prev.map(inv => (inv.id === invoiceId ? updatedInvoice : inv))
-        );
+      const current = invoices.find(inv => inv.id === invoiceId);
+      if (!current) {
+        setError('Invoice not found.');
+        return;
+      }
+      // Backend requires the full invoice payload (clientName, userId, amount,
+      // invoiceDate, dueDate, lineItems) — merge the edited fields with the
+      // server record so validation passes.
+      const payload: Partial<Invoice> = {
+        ...updateData,
+        userId: current.userId,
+        clientName: updateData.clientName ?? current.clientName,
+        amount: updateData.amount ?? current.amount,
+        invoiceDate: updateData.invoiceDate ?? current.invoiceDate,
+        dueDate: updateData.dueDate ?? current.dueDate,
+        lineItems: updateData.lineItems ?? current.lineItems,
+      };
+      const res = await billingApi.updateInvoice(token, invoiceId, payload);
+      if (res.ok) {
+        await fetchInvoices();
+      } else {
+        setError(res.error || 'Failed to update invoice');
+        throw new Error(res.error || 'Failed to update invoice');
       }
     } catch (err) {
       console.error('Error updating invoice:', err);
       setError(err instanceof Error ? err.message : 'Failed to update invoice');
+      throw err;
     }
   };
 
@@ -74,11 +125,29 @@ export default function BillingPage() {
     try {
       const res = await billingApi.deleteInvoice(token, invoiceId);
       if (res.ok) {
-        // Update local state
         setInvoices(prev => prev.filter(inv => inv.id !== invoiceId));
+      } else {
+        throw new Error(res.error || 'Failed to delete invoice');
       }
     } catch (err) {
       console.error('Error deleting invoice:', err);
+      throw err;
+    }
+  };
+
+  const handleFinalizeInvoice = async (invoiceId: string) => {
+    try {
+      const res = await billingApi.finalizeInvoice(token, invoiceId);
+      if (res.ok) {
+        toast.success(`Invoice ${invoiceId} finalized successfully.`);
+        await fetchInvoices();
+      } else {
+        setError(res.error || 'Failed to finalize invoice');
+        toast.error(res.error || 'Failed to finalize invoice');
+        throw new Error(res.error || 'Failed to finalize invoice');
+      }
+    } catch (err) {
+      console.error('Error finalizing invoice:', err);
       throw err;
     }
   };
@@ -130,8 +199,12 @@ export default function BillingPage() {
               invoices={invoices}
               onStatusChange={handleStatusChange}
               onUpdateInvoice={handleUpdateInvoice}
+              onFinalizeInvoice={handleFinalizeInvoice}
               onDeleteInvoice={handleDeleteInvoice}
+              canManage={isAuthenticated && user?.role === 'admin'}
               isLoading={loading}
+              initialSelectedInvoiceId={targetInvoiceId}
+              initialFilterStatus={targetStatus}
             />
           </div>
         )}
@@ -149,10 +222,10 @@ export default function BillingPage() {
         )}
 
         {/* Footer Info */}
-        <div className="mt-12 text-center text-xs text-zinc-600 font-mono">
+        {/* <div className="mt-12 text-center text-xs text-zinc-600 font-mono">
           <p>BILLING_SYSTEM • INVOICE_MANAGEMENT_v1.0</p>
           <p className="mt-2">© {new Date().getFullYear()} {flattenedSettings.company_name || 'TekDoctor'}. All rights reserved.</p>
-        </div>
+        </div> */}
       </div>
     </div>
   );

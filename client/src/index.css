@@ -6,6 +6,20 @@
   --color-neon-teal: #008c9e;
   --color-dark-bg: #050505;
   --font-outfit: "Outfit", sans-serif;
+
+  /* Project-Wide Centralized Subtle Border System Tokens */
+  --color-border-subtle: #1c1c22;
+  --color-border-subtle-hover: #2a2a33;
+  --color-border-subtle-card: #16161a;
+
+  /* Custom dark palette tokens (used across dashboards) */
+  --color-zinc-850: #1a1a20;
+  --color-zinc-750: #2d2d35;
+  --color-zinc-650: #484852;
+  --color-zinc-550: #666673;
+
+  /* Ultra-wide 3xl breakpoint (1920px+) */
+  --breakpoint-3xl: 120rem;
   
   @keyframes spin-slow {
     from { transform: rotate(0deg); }
@@ -20,13 +34,19 @@
   --animate-animation-delay-3s: animation-delay 3s;
 }
 
+@layer base {
+  *, ::before, ::after {
+    border-color: var(--color-border-subtle, #1c1c22);
+  }
+}
+
 :root {
   --background: #050505;
   --foreground: #ffffff;
   --neon-cyan: #00f2ff;
   --neon-cyan-rgb: 0, 242, 255;
-  --neon-border: 1px solid rgba(var(--neon-cyan-rgb), 0.5);
-  --neon-glow: 0 0 10px rgba(var(--neon-cyan-rgb), 0.3);
+  --neon-border: 1px solid rgba(var(--neon-cyan-rgb), 0.25);
+  --neon-glow: none;
 }
 
 body {
@@ -36,40 +56,95 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ==========================================================================
+   Global Dynamic-Theme Scrollbar (10px Visible)
+   - Visible 10px scrollbar across all browsers and elements
+   - Dynamically styled using Admin theme variables (--neon-cyan, --neon-cyan-rgb)
+   - Default color: cyan (#00f2ff)
+   - Inset track background (#0e0e11) with refined rounded borders
+   - Preserves 100% native scrolling behaviors (wheel, trackpad, touch, keyboard)
+   ========================================================================== */
+
+/* Firefox 64+ */
+html,
+body,
+#root,
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--neon-cyan, #00f2ff) #0e0e11;
+}
+
+/* WebKit / Blink (Chrome, Edge, Safari, Opera, iOS Safari, Android) */
+::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  display: block;
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track {
+  background: #0e0e11;
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb {
+  background-color: var(--neon-cyan, #00f2ff);
+  border-radius: 6px;
+  border: 2px solid #0e0e11;
+}
+
+::-webkit-scrollbar-thumb:hover,
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(var(--neon-cyan-rgb, 0, 242, 255), 0.85);
+}
+
+::-webkit-scrollbar-corner,
+*::-webkit-scrollbar-corner {
+  background: #0e0e11;
+}
+
 @layer components {
   .neon-border {
     border: var(--neon-border);
-    box-shadow: var(--neon-glow);
-    transition: all 0.3s ease;
+    transition: border-color 0.2s ease;
   }
 
   .neon-border:hover {
-    box-shadow: 0 0 20px rgba(var(--neon-cyan-rgb), 0.6);
-    border-color: var(--neon-cyan);
+    border-color: rgba(var(--neon-cyan-rgb), 0.5);
   }
 
   .btn-neon {
-    @apply px-6 py-2 border border-neon-cyan/50 text-neon-cyan uppercase text-xs tracking-widest rounded-md transition-all duration-300;
-    box-shadow: 0 0 5px rgba(var(--neon-cyan-rgb), 0.2);
+    @apply px-6 py-2 border border-neon-cyan/35 text-neon-cyan uppercase text-xs tracking-widest rounded-md transition-all duration-200;
   }
 
   .btn-neon:hover {
     @apply bg-neon-cyan text-black;
-    box-shadow: 0 0 20px rgba(var(--neon-cyan-rgb), 0.6);
   }
 
   .neon-text {
     @apply text-neon-cyan;
-    text-shadow: 0 0 8px rgba(var(--neon-cyan-rgb), 0.5);
   }
 
   .card-neon {
-    @apply bg-zinc-900/50 border border-neon-cyan/20 p-6 rounded-lg transition-all duration-300;
+    @apply bg-zinc-900/50 border border-zinc-800/80 p-6 rounded-lg transition-all duration-200;
   }
 
   .card-neon:hover {
-    @apply border-neon-cyan/60;
-    box-shadow: 0 0 15px rgba(var(--neon-cyan-rgb), 0.2);
+    @apply border-zinc-700;
+  }
+
+  .border-subtle {
+    border-color: var(--color-border-subtle, #1c1c22);
+  }
+
+  .border-subtle-hover:hover {
+    border-color: var(--color-border-subtle-hover, #2a2a33);
+  }
+
+  .border-subtle-card {
+    border-color: var(--color-border-subtle-card, #16161a);
   }
 
   /* Global Page Spacing Standard */
@@ -77,31 +152,55 @@ body {
     @apply px-6 sm:px-8 md:px-12 py-12 md:py-20;
   }
 
-  /* Custom Scrollbar Styling */
-  .scrollbar-thin::-webkit-scrollbar {
-    width: 6px;
+  /* Scrollbar Utility & Compatibility Classes (10px Dynamic Theme) */
+  .scrollbar-thin,
+  .custom-modal-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: var(--neon-cyan, #00f2ff) #0e0e11;
   }
 
-  .scrollbar-thin::-webkit-scrollbar-track {
-    background: rgba(24, 24, 27, 0.5);
-    border-radius: 10px;
+  .scrollbar-thin::-webkit-scrollbar,
+  .custom-modal-scrollbar::-webkit-scrollbar {
+    display: block;
+    width: 10px;
+    height: 10px;
   }
 
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: rgba(63, 63, 70, 0.8);
-    border-radius: 10px;
-    transition: background 0.3s ease;
+  .scrollbar-thin::-webkit-scrollbar-track,
+  .custom-modal-scrollbar::-webkit-scrollbar-track {
+    background: #0e0e11;
+    border-radius: 6px;
   }
 
-  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-    background: rgba(var(--neon-cyan-rgb), 0.5);
+  .scrollbar-thin::-webkit-scrollbar-thumb,
+  .custom-modal-scrollbar::-webkit-scrollbar-thumb {
+    background-color: var(--neon-cyan, #00f2ff);
+    border-radius: 6px;
+    border: 2px solid #0e0e11;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover,
+  .custom-modal-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(var(--neon-cyan-rgb, 0, 242, 255), 0.85);
   }
 
   .animate-spin-4s {
     animation: spin-4s 4s linear infinite;
   }
 
-  .animation-delay-3s {
+  .animate-delay-3s {
     animation-delay: 3s;
   }
+
+  /* Global removal of browser up/down number spinner arrows */
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
 }
+

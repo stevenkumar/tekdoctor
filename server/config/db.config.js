@@ -16,8 +16,8 @@ const pool = mysql.createPool({
 // Test connection helper
 const testConnection = async () => {
   try {
-    // 1. First ensure the database itself exists by creating a temporary connection without database name
-    try {
+    // Local development may create an empty database. Production users must provision it first.
+    if (!config.isProduction) {
       const tempConn = await mysql.createConnection({
         host: config.db.host,
         port: config.db.port,
@@ -26,11 +26,9 @@ const testConnection = async () => {
       });
       await tempConn.query(`CREATE DATABASE IF NOT EXISTS \`${config.db.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
       await tempConn.end();
-    } catch (createErr) {
-      // Ignored: On cPanel or shared hosting, users do not have CREATE DATABASE privileges. Assuming DB already exists via cPanel UI.
     }
 
-    // 2. Now verify the pool connection (which uses the database name)
+    // Verify the pool connection (which uses the configured database name).
     const connection = await pool.getConnection();
     console.log('MySQL Database connection established successfully.');
     connection.release();

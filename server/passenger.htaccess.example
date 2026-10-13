@@ -1,0 +1,31 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# TekDoctor — cPanel Node.js App (Passenger) root .htaccess
+#
+# PLACE THIS FILE at the ROOT of your cPanel Node.js application folder,
+# i.e. the same folder that contains server/server.js (NOT inside the folder
+# that contains the built frontend assets).
+#
+# cPanel's "Setup Node.js App" normally GENERATES this file automatically.
+# Use this only as a reference to confirm your cPanel app is configured
+# correctly, or as a starting point if your host requires a manual file.
+#
+# A full cPanel/CloudLinux Passenger config looks like this (adjust paths):
+# ─────────────────────────────────────────────────────────────────────────────
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION
+# PassengerAppRoot "/home/thetekdoctor/backend"
+# PassengerBaseURI "/"
+# PassengerNodejs "/home/thetekdoctor/nodevenv/backend/24/bin/node"
+# PassengerAppType node
+# PassengerStartupFile server.js
+# Require all granted
+# Options -MultiViews
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# NOTE: Do NOT place the SPA rewrite/fallback rules (the ones that map every
+# route to index.html) in this folder. In the Passenger model, Express
+# (server.js) performs the SPA fallback itself. Adding Apache rewrite rules
+# here can conflict with Passenger routing.
+#
+# Also: the built frontend assets (client/dist) should NOT carry an Apache
+# SPA-routing .htaccess when served via Passenger — Express already handles
+# client-side routing.

@@ -9,24 +9,36 @@ import {
     LayoutDashboard, Wrench, Users, UserCog, Bell, MessageSquare,
     Settings, Globe, Mail, BarChart3, ScrollText, UserCircle,
     LogOut, ChevronLeft, ChevronRight, Menu, X, ChevronDown, Star, Building2,
-    ArrowUpRight, Trash2, ArrowRightLeft
+    ArrowUpRight, Trash2, ArrowRightLeft, ClipboardList, Cpu, Receipt
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const navItems = [
+interface NavItem {
+    label?: string;
+    icon?: any;
+    path?: string;
+    divider?: boolean;
+    subItems?: { label: string; path: string }[];
+}
+
+const technicianNavItems: NavItem[] = [
+    { label: 'Dashboard', icon: LayoutDashboard, path: ROUTES.TECHNICIAN_DASHBOARD },
+    { label: 'My Assigned Tasks', icon: ClipboardList, path: ROUTES.TECHNICIAN_ASSIGNED_TICKETS },
+    { label: 'Task Transfer', icon: ArrowRightLeft, path: ROUTES.TECHNICIAN_TRANSFERS },
+    { label: 'Diagnosis & Estimate', icon: Cpu, path: ROUTES.TECHNICIAN_DIAGNOSIS },
+    { label: 'Notifications', icon: Bell, path: ROUTES.TECHNICIAN_NOTIFICATIONS },
+    { divider: true },
+    { label: 'My Profile', icon: UserCircle, path: ROUTES.TECHNICIAN_PROFILE },
+];
+
+const navItems: NavItem[] = [
     { label: 'Dashboard', icon: LayoutDashboard, path: ROUTES.ADMIN_DASHBOARD },
     { label: 'Repair Tickets', icon: Wrench, path: ROUTES.ADMIN_TICKETS },
     { label: 'Task Transfers', icon: ArrowRightLeft, path: ROUTES.ADMIN_TRANSFERS },
     { label: 'Technicians', icon: UserCog, path: ROUTES.ADMIN_TECHNICIANS },
     { label: 'Customers', icon: Users, path: `${ROUTES.ADMIN_CUSTOMERS}?type=individual` },
-    {
-        label: 'Company Accounts',
-        icon: Building2,
-        subItems: [
-            { label: 'Manage Companies', path: `${ROUTES.ADMIN_CUSTOMERS}?type=company` },
-            { label: 'Create Company', path: `${ROUTES.ADMIN_CUSTOMERS}?type=company&action=create` }
-        ]
-    },
+    { label: 'Companies', icon: Building2, path: ROUTES.ADMIN_COMPANIES },
+    { label: 'Billing / Invoices', icon: Receipt, path: ROUTES.BILLING },
     { label: 'Notifications', icon: Bell, path: ROUTES.ADMIN_NOTIFICATIONS },
     { label: 'Contact Messages', icon: MessageSquare, path: ROUTES.ADMIN_CONTACTS },
     { divider: true },
@@ -45,14 +57,49 @@ export default function AdminLayout() {
     const location = useLocation();
     const [collapsed, setCollapsed] = useState(false);
     const [mobileOpen, setMobileOpen] = useState(false);
-    const [expandedMenu, setExpandedMenu] = useState<string | null>('Customers');
+    const [expandedMenu, setExpandedMenu] = useState<string | null>(null);
     const { flattenedSettings } = useSiteContext();
 
-    const currentNavItems = user?.role === 'technician'
-        ? [
-            { label: 'Dashboard', icon: LayoutDashboard, path: ROUTES.TECHNICIAN_DASHBOARD }
-        ]
-        : navItems;
+    const currentNavItems = user?.role === 'technician' ? technicianNavItems : navItems;
+
+    const locationRef = useRef(location.pathname);
+    locationRef.current = location.pathname;
+
+    // Global keyboard shortcut: Ctrl+K / Cmd+K to open/focus existing Admin Search
+    useEffect(() => {
+        if (user?.role !== 'admin') return;
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+                const target = e.target as HTMLElement | null;
+                const isEditable = target && (
+                    target.tagName === 'INPUT' ||
+                    target.tagName === 'TEXTAREA' ||
+                    target.tagName === 'SELECT' ||
+                    target.isContentEditable
+                );
+
+                // Do not trigger when actively typing inside an editable field unless it's the search input itself
+                if (isEditable && target?.id !== 'admin-search-input') {
+                    return;
+                }
+
+                e.preventDefault();
+
+                if (locationRef.current === ROUTES.ADMIN_TICKETS) {
+                    const searchInput = document.getElementById('admin-search-input') as HTMLInputElement | null;
+                    if (searchInput) {
+                        searchInput.focus();
+                    }
+                } else {
+                    navigate(ROUTES.ADMIN_TICKETS, { state: { focusSearch: true } });
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [user?.role, navigate]);
 
 
     const handleLogout = () => {
@@ -92,7 +139,7 @@ export default function AdminLayout() {
                                     </div>
                                     <div>
                                         <div className="text-sm font-bold text-white font-outfit tracking-tight">{flattenedSettings.company_name || 'TekDoctor'}</div>
-                                        <div className="text-[9px] font-mono text-neon-cyan uppercase tracking-widest">Admin Panel</div>
+                                        <div className="text-[9px] font-mono text-neon-cyan uppercase tracking-widest">{user?.role === 'technician' ? 'Technician Portal' : 'Admin Panel'}</div>
                                     </div>
                                 </div>
                             )}
@@ -138,7 +185,7 @@ export default function AdminLayout() {
                             return (
                                 <div key={item.label}>
                                     <button
-                                        onClick={() => setExpandedMenu(isExpanded ? null : item.label)}
+                                        onClick={() => setExpandedMenu(isExpanded ? null : (item.label ?? null))}
                                         className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium transition-all group ${isActive ? 'bg-neon-cyan/10 text-neon-cyan border border-neon-cyan/20' : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900/40 border border-transparent'} ${collapsed ? 'justify-center' : ''}`}
                                     >
                                         <div className="flex items-center gap-3">
@@ -198,7 +245,7 @@ export default function AdminLayout() {
                                 {user?.name?.charAt(0) || 'A'}
                             </div>
                             <div className="min-w-0">
-                                <div className="text-xs font-semibold text-white truncate">{user?.name || 'Admin'}</div>
+                                <div className="text-xs font-semibold text-white truncate">{user?.name || (user?.role === 'technician' ? 'Technician' : 'Admin')}</div>
                                 <div className="text-[10px] text-zinc-600 font-mono truncate">{user?.email}</div>
                             </div>
                         </div>
@@ -219,16 +266,59 @@ export default function AdminLayout() {
             </aside>
 
             {/* Main content */}
-            <main className="flex-grow min-h-screen flex flex-col relative w-full overflow-x-hidden">
-                {/* Floating Mobile Toggle Button */}
-                <button
-                    onClick={() => setMobileOpen(true)}
-                    className="lg:hidden absolute top-4 left-4 z-40 p-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white shadow-xl hover:bg-zinc-800 transition-all cursor-pointer"
-                >
-                    <Menu size={20} />
-                </button>
+            <main className="flex-grow min-h-screen flex flex-col relative w-full max-w-full overflow-x-hidden">
+                {/* Mobile Top Header Bar */}
+                <header className="lg:hidden h-14 border-b border-zinc-900/80 bg-[#0a0a0a] flex items-center justify-between px-3 sm:px-4 sticky top-0 z-30">
+                    <button
+                        onClick={() => setMobileOpen(true)}
+                        className="p-2 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white shadow-sm hover:bg-zinc-800 transition-all cursor-pointer"
+                        title="Open navigation menu"
+                    >
+                        <Menu size={18} />
+                    </button>
+                    <div className="flex items-center gap-2">
+                        {flattenedSettings.logo_url ? (
+                            <img src={getMediaUrl(flattenedSettings.logo_url)} alt="Logo" className="h-6 w-auto object-contain" />
+                        ) : (
+                            <div className="flex items-center gap-1.5">
+                                <div className="w-6 h-6 rounded-md bg-gradient-to-br from-neon-cyan to-blue-600 flex items-center justify-center">
+                                    <Wrench size={12} className="text-white" />
+                                </div>
+                                <span className="text-xs font-bold text-white font-outfit tracking-tight">{flattenedSettings.company_name || 'TekDoctor'}</span>
+                            </div>
+                        )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                        {user?.role === 'technician' ? (
+                            <NavLink
+                                to={ROUTES.TECHNICIAN_NOTIFICATIONS}
+                                className={({ isActive }) => `p-2 rounded-xl border transition-all flex items-center justify-center ${
+                                    isActive
+                                        ? 'bg-neon-cyan/10 border-neon-cyan/30 text-neon-cyan'
+                                        : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white'
+                                }`}
+                                title="Notifications"
+                            >
+                                <Bell size={16} />
+                            </NavLink>
+                        ) : (
+                            <NavLink
+                                to={ROUTES.ADMIN_NOTIFICATIONS}
+                                className={({ isActive }) => `p-2 rounded-xl border transition-all flex items-center justify-center ${
+                                    isActive
+                                        ? 'bg-neon-cyan/10 border-neon-cyan/30 text-neon-cyan'
+                                        : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white'
+                                }`}
+                                title="Notifications"
+                            >
+                                <Bell size={16} />
+                            </NavLink>
+                        )}
+                    </div>
+                </header>
+
                 {/* Page content */}
-                <div className="flex-1 p-4 md:p-6 lg:p-8 overflow-auto">
+                <div className="flex-1 p-2.5 sm:p-4 md:p-6 lg:p-8 overflow-x-hidden">
                     <Outlet />
                 </div>
             </main>

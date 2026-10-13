@@ -1,9 +1,17 @@
 import { useEffect, useState, useRef } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { useCompanyContext } from '../../context/CompanyContext';
 import { companyApi } from '../../services/api';
-import { Smartphone, Plus, Edit2, ShieldOff, ShieldCheck, X, Upload, Calendar, FileDown, CheckCircle2, AlertCircle } from 'lucide-react';
+import {
+    Smartphone, Plus, Edit2, ShieldOff, ShieldCheck, X,
+    Upload, Download, Calendar, FileDown, CheckCircle2,
+    AlertCircle, Search, Clock, Wrench, Loader2
+} from 'lucide-react';
 import { useSiteContext } from '../../context/SiteContext';
 import { toast } from 'react-hot-toast';
+import DeviceRepairHistoryModal from '../../components/DeviceRepairHistoryModal';
+import { PromptModal } from '@/components/PromptModal';
 
 interface Employee {
     id: number;
@@ -26,20 +34,29 @@ interface Device {
     employee_name: string;
     is_amc: number;
     amc_tag: string;
-    is_active?: boolean;
+    is_active?: boolean | number;
     status?: string;
     deactivation_reason?: string;
+    repair_count?: number;
+    active_repairs?: number;
+    completed_repairs?: number;
+    last_repair_date?: string;
 }
 
 export default function CompanyDevices() {
     const { token } = useAuth();
-    const { flattenedSettings } = useSiteContext();
+    const navigate = useNavigate();
+    const { selectedCompanyId, isAdminManagingCompany, loadingCompanies } = useCompanyContext();
+    const [searchParams] = useSearchParams();
     const [devices, setDevices] = useState<Device[]>([]);
     const [employees, setEmployees] = useState<Employee[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
     const [statusFilter, setStatusFilter] = useState<'' | 'active' | 'inactive'>('');
+    const [searchQuery, setSearchQuery] = useState(searchParams.get('search') || '');
+    const [exporting, setExporting] = useState(false);
+    const [historyModalDeviceId, setHistoryModalDeviceId] = useState<number | null>(null);
 
     // Form modals
     const [isOpen, setIsOpen] = useState(false);
@@ -57,6 +74,11 @@ export default function CompanyDevices() {
     const [assignedEmployeeId, setAssignedEmployeeId] = useState<string>('');
     const [isAmc, setIsAmc] = useState<boolean>(false);
     const [amcTag, setAmcTag] = useState('');
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [formErrors, setFormErrors] = useState<{ brand?: string; modelNumber?: string; serialNumber?: string; purchaseDate?: string; warrantyExpiry?: string; general?: string }>({});
+    const [bulkError, setBulkError] = useState('');
+    const [decommissionModal, setDecommissionModal] = useState<{ id: number; model: string } | null>(null);
+    const [decommissionLoading, setDecommissionLoading] = useState(false);
 
     // Bulk Upload state
     const [csvFile, setCsvFile] = useState<File | null>(null);
@@ -65,6 +87,10 @@ export default function CompanyDevices() {
 
     const fetchData = async () => {
         if (!token) return;
+        if (isAdminManagingCompany && !selectedCompanyId && !loadingCompanies) {
+            setLoading(false);
+            return;
+        }
         setLoading(true);
         try {
             const [devRes, empRes] = await Promise.all([
@@ -82,8 +108,9 @@ export default function CompanyDevices() {
     };
 
     useEffect(() => {
+        if (isAdminManagingCompany && loadingCompanies) return;
         fetchData();
-    }, [token]);
+    }, [token, selectedCompanyId, loadingCompanies]);
 
     const handleOpenCreateModel = () => {
         setCategory('Laptop');
@@ -96,35 +123,64 @@ export default function CompanyDevices() {
         setAssignedEmployeeId('');
         setIsAmc(false);
         setAmcTag('');
+        setFormErrors({});
         setEditingId(null);
         setIsOpen(true);
     };
 
     const handleOpenEditModel = (dev: Device) => {
-        setCategory(dev.category || dev.device_category || 'Laptop');
+        setCategory(dev.device_category || dev.category || 'Laptop');
         setBrand(dev.brand);
         setModelNumber(dev.model_number);
         setSerialNumber(dev.serial_number);
         setAssetTag(dev.asset_tag || dev.asset_id || '');
         setPurchaseDate(dev.purchase_date ? dev.purchase_date.split('T')[0] : '');
         setWarrantyExpiry(dev.warranty_expiry ? dev.warranty_expiry.split('T')[0] : '');
-        setAssignedEmployeeId(dev.assigned_employee_id ? String(dev.assigned_employee_id) : dev.employee_id ? String(dev.employee_id) : '');
+        const currentEmpId = dev.assigned_employee_id || dev.employee_id;
+        setAssignedEmployeeId(currentEmpId ? String(currentEmpId) : '');
         setIsAmc(Boolean(dev.is_amc));
         setAmcTag(dev.amc_tag || '');
+        setFormErrors({});
         setEditingId(dev.id);
         setIsOpen(true);
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        setError('');
-        setSuccess('');
+        if (isSubmitting) return;
 
-        if (!brand || !modelNumber || !serialNumber) {
-            setError('Brand, model, and serial number are required.');
+        const errors: { brand?: string; modelNumber?: string; serialNumber?: string; purchaseDate?: string; warrantyExpiry?: string; general?: string } = {};
+
+        if (!brand.trim()) {
+            errors.brand = 'Brand / Manufacturer is required.';
+        } else if (brand.trim().length > 50) {
+            errors.brand = 'Brand cannot exceed 50 characters.';
+        }
+
+        if (!modelNumber.trim()) {
+            errors.modelNumber = 'Model name/number is required.';
+        } else if (modelNumber.trim().length > 30) {
+            errors.modelNumber = 'Model number cannot exceed 30 characters.';
+        }
+
+        if (!serialNumber.trim()) {
+            errors.serialNumber = 'Serial number is required.';
+        } else if (serialNumber.trim().length > 30) {
+            errors.serialNumber = 'Serial number cannot exceed 30 characters.';
+        }
+
+        if (purchaseDate && warrantyExpiry) {
+            if (new Date(warrantyExpiry) < new Date(purchaseDate)) {
+                errors.warrantyExpiry = 'Warranty expiry date cannot be earlier than purchase date.';
+            }
+        }
+
+        if (Object.keys(errors).length > 0) {
+            setFormErrors(errors);
             return;
         }
 
+        setIsSubmitting(true);
         try {
             const payload = {
                 deviceCategory: category,
@@ -148,33 +204,49 @@ export default function CompanyDevices() {
             if (res.ok) {
                 setSuccess(editingId ? 'Asset details updated!' : 'Device registered in assets catalogue.');
                 setIsOpen(false);
+                setFormErrors({});
                 fetchData();
             } else {
-                setError(res.error || 'Failed to save device information.');
+                const serverErrors = (res.data as any)?.errors || {};
+                setFormErrors({
+                    brand: serverErrors.brand,
+                    modelNumber: serverErrors.modelNumber,
+                    serialNumber: serverErrors.serialNumber,
+                    purchaseDate: serverErrors.purchaseDate,
+                    warrantyExpiry: serverErrors.warrantyExpiry,
+                    general: res.error || (res.data as any)?.message || 'Failed to save device information.'
+                });
             }
         } catch {
-            setError('Failed to save device information.');
+            setFormErrors({ general: 'Failed to save device information. Please try again.' });
+        } finally {
+            setIsSubmitting(false);
         }
     };
 
-    const handleDecommission = async (id: number, model: string) => {
-        if (!token) return;
-        const reason = prompt(`Decommission/deactivate device "${model}"?\nEnter reason (optional):`);
-        if (reason === null) return;
+    const handleDecommission = (id: number, model: string) => {
+        setDecommissionModal({ id, model });
+    };
 
+    const handleConfirmDecommission = async (reason: string) => {
+        if (!token || !decommissionModal) return;
         setError('');
         setSuccess('');
+        setDecommissionLoading(true);
 
         try {
-            const res = await companyApi.deleteDevice(token, id, reason || undefined);
+            const res = await companyApi.deleteDevice(token, decommissionModal.id, reason.trim() || undefined);
             if (res.ok) {
                 toast.success('Device decommissioned / deactivated.');
+                setDecommissionModal(null);
                 fetchData();
             } else {
                 setError(res.error || 'Failed to decommission device.');
             }
         } catch {
             setError('Failed to decommission device.');
+        } finally {
+            setDecommissionLoading(false);
         }
     };
 
@@ -198,35 +270,50 @@ export default function CompanyDevices() {
 
     const handleBulkUpload = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!csvFile) return;
+        if (!csvFile || !token) return;
 
-        setError('');
-        setSuccess('');
         setUploading(true);
-
-        const formData = new FormData();
-        formData.append('csvFile', csvFile);
+        setBulkError('');
 
         try {
-            const res = await fetch('http://localhost:5000/api/company/bulk-devices', {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${token}` },
-                body: formData
-            });
-            const json = await res.json();
-
-            if (json.success) {
-                setSuccess(`Bulk upload successful! Imported ${json.data.imported} assets.`);
+            const res = await companyApi.importBulkDevices(token, csvFile);
+            if (res.ok && res.data?.success) {
+                const imported = res.data.data?.imported || res.data.data?.count || 0;
+                setSuccess(`Bulk upload successful! Imported ${imported} assets.`);
                 setIsBulkOpen(false);
                 setCsvFile(null);
+                setBulkError('');
                 fetchData();
             } else {
-                setError(json.message);
+                setBulkError(res.error || res.data?.message || 'Failed to process bulk import. Check file format.');
             }
         } catch {
-            setError('Failed to process bulk import. Check file format.');
+            setBulkError('Failed to process bulk import. Check file format.');
         } finally {
             setUploading(false);
+        }
+    };
+
+    const handleBulkExport = async () => {
+        if (!token || exporting) return;
+        setExporting(true);
+        try {
+            await companyApi.exportDevices(token);
+            toast.success('Fleet devices CSV exported successfully.');
+        } catch {
+            toast.error('Failed to export devices.');
+        } finally {
+            setExporting(false);
+        }
+    };
+
+    const handleSingleExport = async (devId: number, devName: string) => {
+        if (!token) return;
+        try {
+            await companyApi.exportDevices(token, devId);
+            toast.success(`Exported device: ${devName}`);
+        } catch {
+            toast.error('Failed to export device record.');
         }
     };
 
@@ -237,15 +324,24 @@ export default function CompanyDevices() {
         const csvContent = 'data:text/csv;charset=utf-8,' + encodeURIComponent(headers + row);
         const link = document.createElement('a');
         link.setAttribute('href', csvContent);
-        link.setAttribute('download', `${(flattenedSettings.company_name || 'tekdoctor').toLowerCase().replace(/\s+/g, '_')}_device_template.csv`);
+        link.setAttribute('download', 'company_device_template.csv');
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
     };
 
     const filteredDevices = devices.filter(dev => {
-        if (statusFilter === 'active') return dev.is_active !== false && dev.status !== 'decommissioned';
-        if (statusFilter === 'inactive') return dev.is_active === false || dev.status === 'decommissioned';
+        if (statusFilter === 'active' && (dev.is_active === false || dev.status === 'decommissioned')) return false;
+        if (statusFilter === 'inactive' && !(dev.is_active === false || dev.status === 'decommissioned')) return false;
+        if (searchQuery.trim()) {
+            const q = searchQuery.toLowerCase();
+            const tagMatch = (dev.asset_tag || dev.asset_id || '').toLowerCase().includes(q);
+            const brandMatch = (dev.brand || '').toLowerCase().includes(q);
+            const modelMatch = (dev.model_number || '').toLowerCase().includes(q);
+            const serialMatch = (dev.serial_number || '').toLowerCase().includes(q);
+            const empMatch = (dev.employee_name || '').toLowerCase().includes(q);
+            if (!tagMatch && !brandMatch && !modelMatch && !serialMatch && !empMatch) return false;
+        }
         return true;
     });
 
@@ -277,20 +373,49 @@ export default function CompanyDevices() {
                         ))}
                     </div>
                     <button
-                        onClick={() => setIsBulkOpen(true)}
-                        className="border border-zinc-800 hover:border-zinc-700 bg-zinc-950 text-zinc-300 text-sm font-semibold px-4 py-2.5 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer"
+                        onClick={() => { setBulkError(''); setIsBulkOpen(true); }}
+                        className="border border-zinc-800 hover:border-zinc-700 bg-zinc-950 text-zinc-300 text-sm font-semibold px-3.5 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer"
                     >
-                        <Upload size={16} className="text-indigo-400" />
+                        <Upload size={15} className="text-indigo-400" />
                         <span>CSV Import</span>
                     </button>
                     <button
+                        onClick={handleBulkExport}
+                        disabled={exporting || devices.length === 0}
+                        className="border border-zinc-800 hover:border-zinc-700 bg-zinc-950 text-zinc-300 text-sm font-semibold px-3.5 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50"
+                        title="Export all fleet devices to CSV"
+                    >
+                        <Download size={15} className="text-emerald-400" />
+                        <span>Export CSV</span>
+                    </button>
+                    <button
                         onClick={handleOpenCreateModel}
-                        className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2.5 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer shadow-lg"
+                        className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer shadow-lg"
                     >
                         <Plus size={16} />
                         <span>Add Asset</span>
                     </button>
                 </div>
+            </div>
+
+            {/* Search Input Bar */}
+            <div className="relative">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" size={16} />
+                <input
+                    type="text"
+                    placeholder="Search fleet assets by tag, brand, model, serial number, or assigned staff..."
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    className="w-full bg-[#0c0c0c] border border-zinc-900 focus:border-indigo-500/60 rounded-xl pl-10 pr-10 py-2.5 text-sm text-white focus:outline-none transition-colors"
+                />
+                {searchQuery && (
+                    <button
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white p-1"
+                    >
+                        <X size={14} />
+                    </button>
+                )}
             </div>
 
             {success && (
@@ -343,6 +468,7 @@ export default function CompanyDevices() {
                                     <th className="py-4 px-4">Brand & Model</th>
                                     <th className="py-4 px-4 font-mono">Serial Number</th>
                                     <th className="py-4 px-4">Assigned To</th>
+                                    <th className="py-4 px-4">Repair History</th>
                                     <th className="py-4 px-4">Warranty Expiry</th>
                                     <th className="py-4 px-4 text-center">Status</th>
                                     <th className="py-4 px-6 text-right">Actions</th>
@@ -353,7 +479,7 @@ export default function CompanyDevices() {
                                     const isWarrantyExpired = dev.warranty_expiry
                                         ? new Date(dev.warranty_expiry) < new Date()
                                         : false;
-                                    const isDecommissioned = dev.is_active === false || dev.status === 'decommissioned';
+                                    const isDecommissioned = dev.is_active === false || dev.is_active === 0 || dev.status === 'decommissioned' || dev.status === 'inactive';
 
                                     return (
                                         <tr key={dev.id} className={`hover:bg-zinc-900/10 transition-colors ${isDecommissioned ? 'opacity-70 bg-zinc-950/30' : ''}`}>
@@ -387,6 +513,24 @@ export default function CompanyDevices() {
                                                 )}
                                             </td>
                                             <td className="py-4 px-4">
+                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                    <button
+                                                        onClick={() => setHistoryModalDeviceId(dev.id)}
+                                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-cyan-500/10 hover:text-cyan-400 border border-zinc-800 hover:border-cyan-500/30 text-xs font-mono text-zinc-300 transition-colors cursor-pointer"
+                                                        title="View Complete Repair Lifecycle"
+                                                    >
+                                                        <Clock size={12} />
+                                                        <span>{dev.repair_count || 0} repairs</span>
+                                                    </button>
+                                                    {Number(dev.active_repairs || 0) > 0 && (
+                                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                                                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                                                            {dev.active_repairs} active
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </td>
+                                            <td className="py-4 px-4">
                                                 {dev.warranty_expiry ? (
                                                     <span className={`inline-flex items-center gap-1 text-xs font-semibold ${isWarrantyExpired ? 'text-red-400' : 'text-emerald-400'
                                                         }`}>
@@ -405,6 +549,29 @@ export default function CompanyDevices() {
                                             </td>
                                             <td className="py-4 px-6 text-right">
                                                 <div className="flex justify-end gap-1">
+                                                    {!isDecommissioned ? (
+                                                        <button
+                                                            onClick={() => navigate(`/company/repairs?deviceId=${dev.id}`)}
+                                                            className="p-2 rounded-lg hover:bg-cyan-500/10 text-zinc-400 hover:text-cyan-400 transition-colors cursor-pointer"
+                                                            title="Raise Repair Ticket for this Device"
+                                                        >
+                                                            <Wrench size={14} />
+                                                        </button>
+                                                    ) : (
+                                                        <span
+                                                            className="p-2 rounded-lg text-zinc-600 opacity-40 cursor-not-allowed inline-flex items-center justify-center"
+                                                            title="Device is deactivated and cannot raise a repair ticket"
+                                                        >
+                                                            <Wrench size={14} />
+                                                        </span>
+                                                    )}
+                                                    <button
+                                                        onClick={() => handleSingleExport(dev.id, `${dev.brand} ${dev.model_number}`)}
+                                                        className="p-2 rounded-lg hover:bg-zinc-900 text-zinc-400 hover:text-emerald-400 transition-colors cursor-pointer"
+                                                        title="Export Single Device (CSV)"
+                                                    >
+                                                        <Download size={14} />
+                                                    </button>
                                                     <button
                                                         onClick={() => handleOpenEditModel(dev)}
                                                         className="p-2 rounded-lg hover:bg-zinc-900 text-zinc-400 hover:text-white transition-colors cursor-pointer"
@@ -440,6 +607,15 @@ export default function CompanyDevices() {
                 </div>
             )}
 
+            {/* Device Repair History Modal */}
+            {historyModalDeviceId && (
+                <DeviceRepairHistoryModal
+                    deviceId={historyModalDeviceId}
+                    onClose={() => setHistoryModalDeviceId(null)}
+                    onRaiseRepair={(device) => navigate(`/company/repairs?deviceId=${device.id}`)}
+                />
+            )}
+
             {/* Write/Edit Asset Modal */}
             {isOpen && (
                 <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50 animate-fadeIn bg-blur-sm">
@@ -457,6 +633,13 @@ export default function CompanyDevices() {
                         </div>
 
                         <form onSubmit={handleSubmit} className="p-6 space-y-4">
+                            {formErrors.general && (
+                                <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-xl text-xs flex items-center gap-2">
+                                    <AlertCircle size={15} className="shrink-0" />
+                                    <span>{formErrors.general}</span>
+                                </div>
+                            )}
+
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-1">
                                     <label className="text-xs font-mono uppercase text-zinc-500 tracking-wider">Asset Category</label>
@@ -492,9 +675,18 @@ export default function CompanyDevices() {
                                         type="text"
                                         placeholder="Apple, Dell, Lenovo"
                                         value={brand}
-                                        onChange={e => setBrand(e.target.value)}
-                                        className="w-full bg-[#050505] border border-zinc-900 focus:border-indigo-500/50 rounded-xl px-4 py-2 text-sm text-white focus:outline-none transition-colors animate-pulse-once"
+                                        onChange={e => {
+                                            setBrand(e.target.value);
+                                            if (formErrors.brand) setFormErrors(prev => ({ ...prev, brand: undefined }));
+                                        }}
+                                        className={`w-full bg-[#050505] border ${formErrors.brand ? 'border-red-500/80 focus:border-red-500' : 'border-zinc-900 focus:border-indigo-500/50'} rounded-xl px-4 py-2 text-sm text-white focus:outline-none transition-colors`}
                                     />
+                                    {formErrors.brand && (
+                                        <p className="text-xs text-rose-400 mt-1 flex items-center gap-1">
+                                            <AlertCircle size={12} className="shrink-0" />
+                                            <span>{formErrors.brand}</span>
+                                        </p>
+                                    )}
                                 </div>
                                 <div className="space-y-1">
                                     <label className="text-xs font-mono uppercase text-zinc-550 tracking-wider font-semibold">Model Name/Number *</label>
@@ -502,9 +694,18 @@ export default function CompanyDevices() {
                                         type="text"
                                         placeholder="MacBook Pro M3 Max"
                                         value={modelNumber}
-                                        onChange={e => setModelNumber(e.target.value)}
-                                        className="w-full bg-[#050505] border border-zinc-900 focus:border-indigo-500/50 rounded-xl px-4 py-2 text-sm text-white focus:outline-none transition-colors"
+                                        onChange={e => {
+                                            setModelNumber(e.target.value);
+                                            if (formErrors.modelNumber) setFormErrors(prev => ({ ...prev, modelNumber: undefined }));
+                                        }}
+                                        className={`w-full bg-[#050505] border ${formErrors.modelNumber ? 'border-red-500/80 focus:border-red-500' : 'border-zinc-900 focus:border-indigo-500/50'} rounded-xl px-4 py-2 text-sm text-white focus:outline-none transition-colors`}
                                     />
+                                    {formErrors.modelNumber && (
+                                        <p className="text-xs text-rose-400 mt-1 flex items-center gap-1">
+                                            <AlertCircle size={12} className="shrink-0" />
+                                            <span>{formErrors.modelNumber}</span>
+                                        </p>
+                                    )}
                                 </div>
                             </div>
 
@@ -515,9 +716,18 @@ export default function CompanyDevices() {
                                         type="text"
                                         placeholder="Provide exact hardware key"
                                         value={serialNumber}
-                                        onChange={e => setSerialNumber(e.target.value)}
-                                        className="w-full bg-[#050505] border border-zinc-900 focus:border-indigo-500/50 rounded-xl px-4 py-2 text-sm text-white focus:outline-none transition-colors font-mono"
+                                        onChange={e => {
+                                            setSerialNumber(e.target.value);
+                                            if (formErrors.serialNumber) setFormErrors(prev => ({ ...prev, serialNumber: undefined }));
+                                        }}
+                                        className={`w-full bg-[#050505] border ${formErrors.serialNumber ? 'border-red-500/80 focus:border-red-500' : 'border-zinc-900 focus:border-indigo-500/50'} rounded-xl px-4 py-2 text-sm text-white focus:outline-none transition-colors font-mono`}
                                     />
+                                    {formErrors.serialNumber && (
+                                        <p className="text-xs text-rose-400 mt-1 flex items-center gap-1">
+                                            <AlertCircle size={12} className="shrink-0" />
+                                            <span>{formErrors.serialNumber}</span>
+                                        </p>
+                                    )}
                                 </div>
                             </div>
 
@@ -527,18 +737,36 @@ export default function CompanyDevices() {
                                     <input
                                         type="date"
                                         value={purchaseDate}
-                                        onChange={e => setPurchaseDate(e.target.value)}
-                                        className="w-full bg-[#050505] border border-zinc-900 focus:border-indigo-500/50 rounded-xl px-4 py-2 text-sm text-zinc-400 focus:outline-none transition-colors"
+                                        onChange={e => {
+                                            setPurchaseDate(e.target.value);
+                                            if (formErrors.purchaseDate || formErrors.warrantyExpiry) setFormErrors(prev => ({ ...prev, purchaseDate: undefined, warrantyExpiry: undefined }));
+                                        }}
+                                        className={`w-full bg-[#050505] border ${formErrors.purchaseDate ? 'border-red-500/80 focus:border-red-500' : 'border-zinc-900 focus:border-indigo-500/50'} rounded-xl px-4 py-2 text-sm text-zinc-400 focus:outline-none transition-colors`}
                                     />
+                                    {formErrors.purchaseDate && (
+                                        <p className="text-xs text-rose-400 mt-1 flex items-center gap-1">
+                                            <AlertCircle size={12} className="shrink-0" />
+                                            <span>{formErrors.purchaseDate}</span>
+                                        </p>
+                                    )}
                                 </div>
                                 <div className="space-y-1">
                                     <label className="text-xs font-mono uppercase text-zinc-550 tracking-wider font-semibold">Warranty Expiry</label>
                                     <input
                                         type="date"
                                         value={warrantyExpiry}
-                                        onChange={e => setWarrantyExpiry(e.target.value)}
-                                        className="w-full bg-[#050505] border border-zinc-900 focus:border-indigo-500/50 rounded-xl px-4 py-2 text-sm text-zinc-400 focus:outline-none transition-colors"
+                                        onChange={e => {
+                                            setWarrantyExpiry(e.target.value);
+                                            if (formErrors.warrantyExpiry) setFormErrors(prev => ({ ...prev, warrantyExpiry: undefined }));
+                                        }}
+                                        className={`w-full bg-[#050505] border ${formErrors.warrantyExpiry ? 'border-red-500/80 focus:border-red-500' : 'border-zinc-900 focus:border-indigo-500/50'} rounded-xl px-4 py-2 text-sm text-zinc-400 focus:outline-none transition-colors`}
                                     />
+                                    {formErrors.warrantyExpiry && (
+                                        <p className="text-xs text-rose-400 mt-1 flex items-center gap-1">
+                                            <AlertCircle size={12} className="shrink-0" />
+                                            <span>{formErrors.warrantyExpiry}</span>
+                                        </p>
+                                    )}
                                 </div>
                             </div>
 
@@ -593,9 +821,11 @@ export default function CompanyDevices() {
                                 </button>
                                 <button
                                     type="submit"
-                                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-colors cursor-pointer"
+                                    disabled={isSubmitting}
+                                    className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-colors cursor-pointer flex items-center gap-2"
                                 >
-                                    {editingId ? 'Save Changes' : 'Register Asset'}
+                                    {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                                    {isSubmitting ? (editingId ? 'Saving...' : 'Registering...') : (editingId ? 'Save Changes' : 'Register Asset')}
                                 </button>
                             </div>
                         </form>
@@ -621,6 +851,13 @@ export default function CompanyDevices() {
                         </div>
 
                         <form onSubmit={handleBulkUpload} className="p-6 space-y-6">
+                            {bulkError && (
+                                <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-xl text-xs flex items-center gap-2">
+                                    <AlertCircle size={15} className="shrink-0" />
+                                    <span>{bulkError}</span>
+                                </div>
+                            )}
+
                             <div className="text-xs text-zinc-500 leading-relaxed space-y-2">
                                 <p>Import many devices at once. Use a CSV document with the column headers below.</p>
                                 <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-900 font-mono text-[10px] text-zinc-405 overflow-x-auto select-all">
@@ -685,6 +922,20 @@ export default function CompanyDevices() {
                     </div>
                 </div>
             )}
+
+            {/* Decommission Device Modal */}
+            <PromptModal
+                isOpen={decommissionModal !== null}
+                title={`Decommission Device - ${decommissionModal?.model}`}
+                message={`Decommission / deactivate device "${decommissionModal?.model}"?\nHistorical service requests, tickets, and repair logs will remain intact.`}
+                inputLabel="Reason (optional):"
+                placeholder="Enter decommission reason..."
+                confirmText="Decommission"
+                variant="warning"
+                isLoading={decommissionLoading}
+                onConfirm={handleConfirmDecommission}
+                onCancel={() => setDecommissionModal(null)}
+            />
         </div>
     );
 }

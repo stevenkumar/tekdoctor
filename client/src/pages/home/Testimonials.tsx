@@ -161,13 +161,13 @@ export default function Testimonials() {
               >
                 <ChevronLeft size={18} />
               </button>
-              <button
+              {/* <button
                 onClick={goNext}
                 aria-label="Next testimonials"
                 className="absolute -right-2 sm:-right-4 top-1/2 -translate-y-1/2 z-20 w-9 h-9 sm:w-11 sm:h-11 bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-700 hover:border-neon-cyan/40 rounded-full flex items-center justify-center text-zinc-400 hover:text-neon-cyan transition-all cursor-pointer backdrop-blur-sm shadow-lg"
               >
                 <ChevronRight size={18} />
-              </button>
+              </button> */}
             </>
           )}
 

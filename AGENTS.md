@@ -9,16 +9,12 @@
 
 ---
 
-## Critical Path Mismatch
-**Root `package.json` scripts reference `backend`/`frontend` but folders are `server`/`client`**. Fix before using root commands:
+## Monorepo Layout
+Root `package.json` delegates to the real folders via `--prefix`:
 ```json
-// Current (broken)
-"dev:backend":  "npm run dev  --prefix backend",
-"dev:frontend": "npm run dev  --prefix frontend",
-
-// Should be
 "dev:backend":  "npm run dev  --prefix server",
 "dev:frontend": "npm run dev  --prefix client",
+"build":        "npm run build --prefix client",
 ```
 
 ---
@@ -35,7 +31,7 @@
 ### Frontend (`client/`)
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Vite dev server on port 3000, proxies `/api` & `/uploads` to `localhost:5000` |
+| `npm run dev` | Vite dev server on port 3000 (`strictPort`), proxies `/api` & `/uploads` to `VITE_DEV_PROXY_TARGET` (dev only) |
 | `npm run build` | TypeScript build + Vite production build → `client/dist/` |
 | `npm run lint` | ESLint check |
 | `npm run preview` | Preview production build |
@@ -51,23 +47,44 @@
 
 ### Server (`server/.env` — copy from `server/.env.example`)
 ```bash
+# Development
 NODE_ENV=development
 PORT=5000
-DB_HOST=localhost
+DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_USER=root
 DB_PASSWORD=
 DB_NAME=tekdoctor_db
-JWT_SECRET=change-in-production
-JWT_EXPIRES_IN=7d
 CORS_ORIGIN=http://localhost:3000,http://localhost:5173
-UPLOAD_DIR=uploads
+FRONTEND_URL=http://localhost:3000
 FRONTEND_BUILD_PATH=../client/dist
-LOG_LEVEL=debug
+
+# Production (cPanel) — live domain https://thetekdoctor.com
+NODE_ENV=production
+PORT=5000
+HOST=0.0.0.0
+CORS_ORIGIN=https://thetekdoctor.com
+FRONTEND_URL=https://thetekdoctor.com
+DB_HOST=127.0.0.1          # cPanel MySQL only accepts localhost connections
+DB_USER=<cpanel-db-user>
+DB_NAME=<cpanel-db-name>
+FRONTEND_BUILD_PATH=/home/<user>/public_html
+
+# Shared
+JWT_SECRET=<openssl rand -base64 48>   # startup blocked in production if weak
+JWT_EXPIRES_IN=7d
+UPLOAD_DIR=uploads
+LOG_LEVEL=info
 EMAIL_USER=your@gmail.com
 EMAIL_PASS="app-password"
 ADMIN_EMAIL=your@gmail.com
 ```
+
+> **Env file loading:** `config/app.config.js` reads `server/.env`, then
+> `server/.env.<NODE_ENV>` if present. Neither overrides variables already set
+> in the real process environment (so cPanel UI variables win). Within a single
+> file, a **duplicate key is silently last-one-wins** — never define
+> `CORS_ORIGIN` or `FRONTEND_URL` twice.
 
 ### Key Paths (resolved in `server/config/app.config.js`)
 | Config | Default | Production Override |
@@ -112,21 +129,27 @@ All routes mounted under `/api` (configurable via `config.server.apiPrefix`)
 
 ## Production Deployment Notes (from `server/server.js`)
 
-### VPS (PM2 + Nginx)
+### cPanel / Hostinger (Passenger) — the primary production target
+- Express serves the SPA, `/api/*`, `/uploads/*` and `/health` from the domain
+  root. No Nginx/Apache SPA rewrite rules are needed.
+- `server/.env`: `NODE_ENV=production`, `HOST=0.0.0.0`, live `CORS_ORIGIN` /
+  `FRONTEND_URL`, cPanel DB credentials, `FRONTEND_BUILD_PATH` = `public_html`.
+- `PORT=5000` is an internal socket only Passenger talks to. Never open it.
+- Startup file is `server.js`; register the app via Setup Node.js App.
+- Build the client with `VITE_API_URL` set to the live domain, then upload
+  `client/dist` into `public_html`.
+- See `DEPLOY-CPANEL.md` for the full runbook.
+
+### VPS (PM2 + Nginx) — alternative
 ```bash
 # Server
 pm2 start server.js --name "tekdoctor-server"
 
 # Nginx
-location /api { proxy_pass http://localhost:5000; }
+location /api { proxy_pass http://127.0.0.1:5000; }
 location /uploads { alias /var/www/tekdoctor/server/uploads; }
 location / { root /var/www/tekdoctor/client/dist; try_files $uri $uri/ /index.html; }
 ```
-
-### cPanel / Hostinger
-- Set `FRONTEND_BUILD_PATH` to `public_html` path
-- Set `UPLOAD_DIR` to writable path under `public_html/uploads`
-- Node.js app in cPanel points to `server.js`
 
 ---
 
@@ -162,13 +185,14 @@ location / { root /var/www/tekdoctor/client/dist; try_files $uri $uri/ /index.ht
 
 ## Verification Checklist (before production)
 
-- [ ] Fix root `package.json` script paths (`backend`→`server`, `frontend`→`client`)
+- [x] Fix root `package.json` script paths (`backend`→`server`, `frontend`→`client`)
 - [ ] Set strong `JWT_SECRET` in production `.env`
-- [ ] Configure production `CORS_ORIGIN` with actual domain
-- [ ] Set `NODE_ENV=production`
+- [ ] Configure production `CORS_ORIGIN` with actual domain (exactly once — no duplicate key)
+- [ ] Set `NODE_ENV=production` and `HOST=0.0.0.0`
 - [ ] Configure real `DB_*` credentials
+- [ ] Set `FRONTEND_URL` to the live domain (drives password-reset links)
 - [ ] Set `FRONTEND_BUILD_PATH` to deployed frontend location
-- [ ] Ensure `UPLOAD_DIR` is writable and served by Nginx
+- [ ] Ensure `UPLOAD_DIR` is writable and served by Express at `/uploads/*`
 - [ ] Configure `EMAIL_USER`/`EMAIL_PASS` for transactional emails
-- [ ] Run `npm run build` in `client/` and verify `dist/` output
+- [ ] Run `npm run build` in `client/` and verify `dist/` bakes in the live `VITE_API_URL`
 - [ ] Test health endpoint: `GET /health` returns `{ "status": "UP", "database": "connected" }`

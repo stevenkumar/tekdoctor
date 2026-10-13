@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Local secrets and environment configuration
+.env
+.env.*
+!.env.example
+
+# Generated frontend output
+client/dist/
+*.tsbuildinfo
+
+# cPanel deploy package (contains server/.env with real credentials)
+deploy/
+
+# Runtime files and user uploads
+server/logs/
+server/uploads/
+*.log
+
+# Local diagnostics and test output
+server/db-output.json
+server/integration-test-results.txt
+coverage/

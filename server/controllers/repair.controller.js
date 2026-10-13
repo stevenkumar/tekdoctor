@@ -1,20 +1,35 @@
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const { pool } = require('../config/db.config');
+const jwt = require('jsonwebtoken');
 const config = require('../config/app.config');
-const { formatResponse, generateTicketNumber } = require('../utils/helpers');
+const { pool } = require('../config/db.config');
+const { formatResponse, generateTicketNumber, generateInvoiceId } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const { sendAdminNotification, sendCustomerNotification } = require('../utils/email.utils');
 const { logActivity } = require('../utils/activity.logger');
+const { generateToken, generateEstimateActionToken, verifyEstimateAuthorization, canTechnicianAccessTicket } = require('../utils/auth.helpers');
 
-// Generate JWT token helper
-const generateToken = (user) => {
-  return jwt.sign(
-    { id: user.id, name: user.name, email: user.email, role: user.role, token_version: user.token_version || 1 },
-    config.jwt.secret,
-    { expiresIn: config.jwt.expiresIn }
-  );
+const getFrontendBaseUrl = (req) => {
+  if (config.frontend && config.frontend.url) {
+    return config.frontend.url.replace(/\/+$/, '');
+  }
+  if (process.env.FRONTEND_URL && process.env.FRONTEND_URL.trim()) {
+    return process.env.FRONTEND_URL.trim().replace(/\/+$/, '');
+  }
+  const origin = req.get('origin');
+  if (origin && origin !== 'null' && !origin.includes(`localhost:${config.server?.port || 5000}`)) {
+    return origin.replace(/\/+$/, '');
+  }
+  const referer = req.get('referer');
+  if (referer) {
+    try {
+      const parsed = new URL(referer);
+      if (!parsed.host.includes(`localhost:${config.server?.port || 5000}`)) {
+        return `${parsed.protocol}//${parsed.host}`;
+      }
+    } catch (_) {}
+  }
+  return config.frontend?.url || config.server?.publicOrigin || '';
 };
 
 /**
@@ -32,57 +47,246 @@ const createRepairRequest = async (req, res, next) => {
       email,
       city,
       deviceCategory,
+      customDeviceCategory,
       brand,
       customBrand,
       modelNumber,
       serialNumber,
       deviceConfiguration,
       problemType,
+      customProblemType,
       problemDescription,
       serviceType,
+      customServiceType,
       priority,
       preferredContactMethod,
       address,
       state,
-      zipCode
+      zipCode,
+      deviceId,
+      employeeId,
+      companyId,
+      clientSubmissionId
     } = req.body;
 
     let userId = req.user ? req.user.id : null;
     let autoLoginData = null;
 
+    let contactMethodStr = 'WhatsApp';
+    if (Array.isArray(preferredContactMethod)) {
+      contactMethodStr = preferredContactMethod.filter(Boolean).join(', ') || 'WhatsApp';
+    } else if (typeof preferredContactMethod === 'string' && preferredContactMethod.trim()) {
+      contactMethodStr = preferredContactMethod.trim();
+    }
+
+    // Resolve company identifiers if submitted by a corporate client or referencing a device
+    let targetCompanyId = null;
+    if (req.user && req.user.role === 'company') {
+      targetCompanyId = req.user.id;
+    } else if (companyId) {
+      targetCompanyId = Number(companyId);
+    }
+
+    let targetDeviceId = deviceId ? Number(deviceId) : null;
+    let targetEmployeeId = employeeId ? Number(employeeId) : null;
+
+    let resolvedBrand = brand;
+    let resolvedModelNumber = modelNumber;
+    let resolvedSerialNumber = serialNumber;
+    let resolvedDeviceCategory = deviceCategory;
+    let resolvedDeviceConfig = deviceConfiguration;
+
+    if (targetDeviceId) {
+      const [devRows] = await connection.query(
+        'SELECT id, company_id, employee_id, brand, model_number, serial_number, device_category, notes, is_active, status FROM company_devices WHERE id = ?',
+        [targetDeviceId]
+      );
+      if (devRows.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({
+          success: false,
+          message: 'The specified company device was not found.'
+        });
+      }
+
+      const d = devRows[0];
+
+      // Company isolation: if authenticated as company or companyId resolved, device must belong to this company
+      if ((req.user && req.user.role === 'company' && d.company_id !== req.user.id) || (targetCompanyId && d.company_id !== targetCompanyId)) {
+        await connection.rollback();
+        return res.status(403).json({
+          success: false,
+          message: 'You are not authorized to create a repair request for this device.'
+        });
+      }
+
+      // Check if device is deactivated / inactive / decommissioned
+      const isDeactivated = d.is_active === 0 || d.is_active === false || d.status === 'decommissioned' || d.status === 'inactive' || d.status === 'retired' || d.status === 'disposed';
+      if (isDeactivated) {
+        await connection.rollback();
+        return res.status(403).json({
+          success: false,
+          message: 'This device is inactive/deactivated and cannot be used to create a new repair ticket.'
+        });
+      }
+
+      if (!targetCompanyId) targetCompanyId = d.company_id;
+      if (!targetEmployeeId && d.employee_id) targetEmployeeId = d.employee_id;
+      if (!resolvedBrand) resolvedBrand = d.brand;
+      if (!resolvedModelNumber) resolvedModelNumber = d.model_number;
+      if (!resolvedSerialNumber) resolvedSerialNumber = d.serial_number;
+      if (!resolvedDeviceCategory) resolvedDeviceCategory = d.device_category;
+      if (!resolvedDeviceConfig && d.notes) {
+        resolvedDeviceConfig = d.notes;
+      }
+    } else if (targetCompanyId && resolvedSerialNumber) {
+      // If company ticket submitted with serial number without deviceId, resolve and enforce status
+      const [matchedDevs] = await connection.query(
+        'SELECT id, company_id, employee_id, brand, model_number, serial_number, device_category, notes, is_active, status FROM company_devices WHERE serial_number = ? LIMIT 1',
+        [resolvedSerialNumber.trim()]
+      );
+      if (matchedDevs.length > 0) {
+        const d = matchedDevs[0];
+        if (d.company_id !== targetCompanyId) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: 'You are not authorized to create a repair request for this device.'
+          });
+        }
+        const isDeactivated = d.is_active === 0 || d.is_active === false || d.status === 'decommissioned' || d.status === 'inactive' || d.status === 'retired' || d.status === 'disposed';
+        if (isDeactivated) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: 'This device is inactive/deactivated and cannot be used to create a new repair ticket.'
+          });
+        }
+        targetDeviceId = d.id;
+        if (!targetEmployeeId && d.employee_id) targetEmployeeId = d.employee_id;
+        if (!resolvedBrand) resolvedBrand = d.brand;
+        if (!resolvedModelNumber) resolvedModelNumber = d.model_number;
+        if (!resolvedDeviceCategory) resolvedDeviceCategory = d.device_category;
+        if (!resolvedDeviceConfig && d.notes) {
+          resolvedDeviceConfig = d.notes;
+        }
+      }
+    }
+
     // Guest flow: User is not authenticated but provided an email
     if (!userId && email) {
-      // Check if user already exists
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanMobile = mobile ? mobile.trim() : null;
+
+      // Check if user already exists by email
       const [existingUsers] = await connection.query(
-        'SELECT id, name, email, role FROM users WHERE email = ? LIMIT 1',
-        [email]
+        'SELECT id, name, email, phone, role, token_version FROM users WHERE LOWER(email) = ? LIMIT 1',
+        [cleanEmail]
       );
 
-      if (existingUsers.length > 0) {
-        // Associate request with existing user
-        userId = existingUsers[0].id;
-      } else {
-        // Auto-create guest user account
-        const randomPassword = uuidv4().substring(0, 12);
-        const salt = await bcrypt.genSalt(12);
-        const hashedPassword = await bcrypt.hash(randomPassword, salt);
+      let matchedUser = existingUsers.length > 0 ? existingUsers[0] : null;
 
-        const [userResult] = await connection.query(
-          'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)',
-          [customerName, email, hashedPassword, 'customer']
+      // If not matched by email but mobile provided, check if user exists by phone
+      if (!matchedUser && cleanMobile) {
+        const [phoneUsers] = await connection.query(
+          'SELECT id, name, email, phone, role, token_version FROM users WHERE phone = ? LIMIT 1',
+          [cleanMobile]
+        );
+        if (phoneUsers.length > 0) {
+          matchedUser = phoneUsers[0];
+        }
+      }
+
+      if (matchedUser) {
+        // Securely resolve ownership
+        userId = matchedUser.id;
+
+        // If user is a customer, verify ownership and establish authenticated session
+        if (matchedUser.role === 'customer') {
+          // If customer has no phone on record yet, attach cleanMobile
+          if (!matchedUser.phone && cleanMobile) {
+            await connection.query(
+              'UPDATE users SET phone = ? WHERE id = ? AND (phone IS NULL OR phone = "")',
+              [cleanMobile, matchedUser.id]
+            );
+            matchedUser.phone = cleanMobile;
+          }
+
+          const customerToken = generateToken({
+            id: matchedUser.id,
+            name: matchedUser.name,
+            email: matchedUser.email,
+            role: 'customer',
+            token_version: matchedUser.token_version || 1
+          });
+
+          autoLoginData = {
+            token: customerToken,
+            user: {
+              id: matchedUser.id,
+              name: matchedUser.name,
+              email: matchedUser.email,
+              role: 'customer'
+            },
+            isExistingCustomer: true
+          };
+
+          logger.info(`Existing customer verified & linked: ${matchedUser.email} (ID: ${userId})`);
+        } else {
+          // For non-customer accounts (admin, technician, company), never auto-login from guest form
+          logger.info(`Guest repair associated with existing non-customer user ID ${userId} (${matchedUser.role}) without auto-login session.`);
+        }
+      } else {
+        // Auto-create new customer account with secure random bcrypt hash
+        const randomSecret = uuidv4() + uuidv4();
+        const salt = await bcrypt.genSalt(12);
+        const hashedPassword = await bcrypt.hash(randomSecret, salt);
+
+        let newUserId;
+        try {
+          const [userResult] = await connection.query(
+            'INSERT INTO users (name, email, phone, password, role, token_version) VALUES (?, ?, ?, ?, "customer", 1)',
+            [customerName, cleanEmail, cleanMobile, hashedPassword]
+          );
+          newUserId = userResult.insertId;
+        } catch (insertErr) {
+          // Concurrency safety against rapid double submit race conditions
+          if (insertErr.code === 'ER_DUP_ENTRY') {
+            const [dupUsers] = await connection.query('SELECT id, name, email, role, token_version FROM users WHERE LOWER(email) = ? LIMIT 1', [cleanEmail]);
+            if (dupUsers.length > 0) {
+              newUserId = dupUsers[0].id;
+            } else {
+              throw insertErr;
+            }
+          } else {
+            throw insertErr;
+          }
+        }
+
+        userId = newUserId;
+        const newUser = { id: userId, name: customerName, email: cleanEmail, role: 'customer', token_version: 1 };
+        const sessionToken = generateToken(newUser);
+
+        // Generate secure, short-lived (24h) set-password token bound to user and token_version
+        const setPasswordToken = jwt.sign(
+          {
+            id: userId,
+            email: cleanEmail,
+            type: 'set_password',
+            token_version: 1
+          },
+          config.jwt.secret,
+          { expiresIn: '24h' }
         );
 
-        userId = userResult.insertId;
-        const newUser = { id: userId, name: customerName, email, role: 'customer' };
-        const token = generateToken(newUser);
-
         autoLoginData = {
-          token,
+          token: sessionToken,
           user: newUser,
-          generatedPassword: randomPassword // Include this for debugging/informing if needed
+          setPasswordToken,
+          isNewCustomer: true
         };
 
-        logger.info(`Guest account auto-created: ${email} (ID: ${userId})`);
+        logger.info(`New customer account auto-created: ${cleanEmail} (ID: ${userId})`);
       }
     }
 
@@ -99,33 +303,114 @@ const createRepairRequest = async (req, res, next) => {
       }
     }
 
-    let userRole = req.user ? req.user.role : (autoLoginData?.user?.role || 'customer');
-    let ticketPrefix = userRole === 'company' ? 'TD-C' : 'TD-';
-
-    let customerIdStr = userId ? `${ticketPrefix}${String(userId).padStart(3, '0')}` : `${ticketPrefix}GUEST-${Math.floor(1000 + Math.random() * 9000)}`;
-
-    let requestCount = 1;
-    if (userId) {
-      const [existingCount] = await connection.query('SELECT COUNT(*) as count FROM service_requests WHERE user_id = ?', [userId]);
-      requestCount = existingCount[0].count + 1;
+    // 1. Check idempotency token (clientSubmissionId) if provided
+    const submissionKey = (clientSubmissionId || req.headers['x-submission-id'] || '').trim();
+    if (submissionKey) {
+      const [existingSub] = await connection.query(
+        'SELECT id, ticket_number, status, customer_name FROM service_requests WHERE submission_id = ? LIMIT 1',
+        [submissionKey]
+      );
+      if (existingSub.length > 0) {
+        logger.info(`Duplicate repair submission prevented via submission_id [${submissionKey}]. Existing ticket: ${existingSub[0].ticket_number}`);
+        await connection.rollback();
+        return res.status(200).json({
+          success: true,
+          isDuplicate: true,
+          message: `You have already submitted this repair request. Ticket ID: ${existingSub[0].ticket_number}`,
+          ticketNumber: existingSub[0].ticket_number,
+          isNewCustomer: Boolean(autoLoginData?.isNewCustomer),
+          isExistingCustomer: Boolean(autoLoginData?.isExistingCustomer),
+          autoLogin: autoLoginData ? { token: autoLoginData.token, user: autoLoginData.user } : null,
+          data: {
+            id: existingSub[0].id,
+            ticketNumber: existingSub[0].ticket_number,
+            status: existingSub[0].status,
+            alreadySubmitted: true
+          }
+        });
+      }
     }
 
-    const ticketNumber = `${customerIdStr}-R${String(requestCount).padStart(3, '0')}`;
+    // 2. Content fingerprint & 60-second window duplicate check
+    const cleanDesc = (problemDescription || '').trim();
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanMobile = (mobile || '').trim();
+    const [recentSub] = await connection.query(
+      `SELECT id, ticket_number, status FROM service_requests 
+       WHERE (user_id = ? OR (email = ? AND mobile = ?)) 
+         AND problem_type = ? AND problem_description = ? 
+         AND created_at >= NOW() - INTERVAL 60 SECOND 
+       ORDER BY id DESC LIMIT 1`,
+      [userId || -1, cleanEmail, cleanMobile, problemType, cleanDesc]
+    );
+    if (recentSub.length > 0) {
+      logger.info(`Duplicate repair submission prevented via 60s window for ${customerName} (${cleanEmail}). Existing ticket: ${recentSub[0].ticket_number}`);
+      await connection.rollback();
+      return res.status(200).json({
+        success: true,
+        isDuplicate: true,
+        message: `You have already submitted this repair request. Ticket ID: ${recentSub[0].ticket_number}`,
+        ticketNumber: recentSub[0].ticket_number,
+        isNewCustomer: Boolean(autoLoginData?.isNewCustomer),
+        isExistingCustomer: Boolean(autoLoginData?.isExistingCustomer),
+        autoLogin: autoLoginData ? { token: autoLoginData.token, user: autoLoginData.user } : null,
+        data: {
+          id: recentSub[0].id,
+          ticketNumber: recentSub[0].ticket_number,
+          status: recentSub[0].status,
+          alreadySubmitted: true
+        }
+      });
+    }
 
-    // Insert service request
+    // 3. Resolve ticket sequence category and permanent account ID
+    let userRole = req.user ? req.user.role : (autoLoginData?.user?.role || 'customer');
+    if (userRole === 'company' && !targetCompanyId) {
+      targetCompanyId = userId;
+    }
+
+    let isAmc = false;
+    if (targetCompanyId) {
+      const [profiles] = await connection.query(
+        'SELECT amc_status, company_type FROM company_profiles WHERE user_id = ? LIMIT 1',
+        [targetCompanyId]
+      );
+      isAmc = (profiles[0]?.amc_status || '').toLowerCase() === 'active' || (profiles[0]?.company_type || '').toUpperCase() === 'AMC';
+      if (!isAmc && targetDeviceId) {
+        const [devRows] = await connection.query('SELECT is_amc FROM company_devices WHERE id = ? LIMIT 1', [targetDeviceId]);
+        if (devRows[0]?.is_amc === 1) isAmc = true;
+      }
+    }
+
+    // Authoritative per-account sequential ticket number generation (TD-xxx-01, TD-Cxxx-01, TD-AMC-Cxxx-01)
+    const ticketNumber = await generateTicketNumber(connection, {
+      userId,
+      companyId: targetCompanyId,
+      isAmc
+    });
+
+    const finalDeviceCategory = resolvedDeviceCategory ? resolvedDeviceCategory.trim() : '';
+    const finalCustomDeviceCategory = (finalDeviceCategory.toLowerCase() === 'other' && customDeviceCategory)
+      ? customDeviceCategory.trim()
+      : null;
+
+    // Insert service request with corporate linkages and submission_id
     const [result] = await connection.query(`
       INSERT INTO service_requests (
-        user_id, customer_name, mobile, email, address, city, state, zip_code, device_category, 
-        brand, custom_brand, model_number, serial_number, device_configuration, problem_type, 
-        problem_description, service_type, priority, preferred_contact_method, 
-        image_path, screenshot_path, status, ticket_number
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+        user_id, company_id, device_id, employee_id, customer_name, mobile, email, address, city, state, zip_code, 
+        device_category, custom_device_category, brand, custom_brand, model_number, 
+        serial_number, device_configuration, problem_type, custom_problem_type, 
+        problem_description, service_type, custom_service_type, priority, preferred_contact_method, 
+        image_path, screenshot_path, status, ticket_number, submission_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
     `, [
-      userId, customerName, mobile, email || null, address || null, city,
-      state || null, zipCode || null, deviceCategory, brand, customBrand || null,
-      modelNumber || null, serialNumber || null, deviceConfiguration || null, problemType,
-      problemDescription, serviceType || 'Bring to Service Center', priority || 'Standard',
-      preferredContactMethod || 'WhatsApp', deviceImagePath, screenshotPath, ticketNumber
+      userId, targetCompanyId, targetDeviceId, targetEmployeeId, customerName, mobile, email || null, address || null, city,
+      state || null, zipCode || null, finalDeviceCategory, finalCustomDeviceCategory,
+      resolvedBrand, customBrand || null, resolvedModelNumber || null, resolvedSerialNumber || null,
+      resolvedDeviceConfig || null, problemType, customProblemType || null,
+      cleanDesc, serviceType || 'Bring to Service Center', customServiceType || null,
+      priority || 'Standard', contactMethodStr,
+      deviceImagePath, screenshotPath, ticketNumber, submissionKey || null
     ]);
 
     const requestId = result.insertId;
@@ -153,15 +438,18 @@ const createRepairRequest = async (req, res, next) => {
           mobile,
           email,
           city,
-          deviceCategory,
-          brand,
+          deviceCategory: finalDeviceCategory,
+          customDeviceCategory: finalCustomDeviceCategory,
+          brand: resolvedBrand,
           customBrand,
-          modelNumber,
-          serialNumber,
-          deviceConfiguration,
+          modelNumber: resolvedModelNumber,
+          serialNumber: resolvedSerialNumber,
+          deviceConfiguration: resolvedDeviceConfig,
           problemType,
+          customProblemType,
           problemDescription,
           serviceType,
+          customServiceType,
           priority,
           preferredContactMethod
         }).catch(err => logger.error('Failed to trigger Google Sheets Webhook for repair request:', err));
@@ -171,6 +459,11 @@ const createRepairRequest = async (req, res, next) => {
     }
 
     // Asynchronously send email notification to admin
+    const displayCategory = finalDeviceCategory.toLowerCase() === 'other' && finalCustomDeviceCategory ? `Other (${finalCustomDeviceCategory})` : finalDeviceCategory;
+    const displayBrand = resolvedBrand === 'Other' && customBrand ? `Other (${customBrand})` : resolvedBrand;
+    const displayProblem = problemType === 'Other' && customProblemType ? `Other (${customProblemType})` : problemType;
+    const displayService = serviceType === 'Other' && customServiceType ? `Other (${customServiceType})` : (serviceType || 'Bring to Service Center');
+
     const emailSubject = `New Repair Request [ID: ${requestId}] - ${customerName}`;
     const emailHtml = `
       <h2>New Repair Request Submitted</h2>
@@ -178,42 +471,86 @@ const createRepairRequest = async (req, res, next) => {
       <p><strong>Customer Name:</strong> ${customerName}</p>
       <p><strong>Mobile:</strong> ${mobile}</p>
       <p><strong>Email:</strong> ${email || 'N/A'}</p>
-      <p><strong>Device:</strong> ${brand} ${modelNumber || ''} (${deviceCategory})</p>
-      <p><strong>Serial Number:</strong> ${serialNumber || 'N/A'}</p>
-      <p><strong>Device Configuration:</strong> ${deviceConfiguration || 'N/A'}</p>
-      <p><strong>Problem:</strong> ${problemType}</p>
+      <p><strong>Device:</strong> ${displayBrand} ${resolvedModelNumber || ''} (${displayCategory})</p>
+      <p><strong>Serial Number:</strong> ${resolvedSerialNumber || 'N/A'}</p>
+      <p><strong>Device Configuration:</strong> ${resolvedDeviceConfig || 'N/A'}</p>
+      <p><strong>Problem:</strong> ${displayProblem}</p>
       <p><strong>Description:</strong><br/>${problemDescription}</p>
-      <p><strong>Service Preference:</strong> ${serviceType || 'Bring to Service Center'}</p>
+      <p><strong>Service Preference:</strong> ${displayService}</p>
       <p><strong>Priority:</strong> ${priority || 'Standard'}</p>
     `;
     sendAdminNotification(emailSubject, emailHtml).catch(err => logger.error('Failed to send repair notification'));
 
-    const responsePayload = { requestId, ticketNumber };
-    if (autoLoginData) {
-      responsePayload.autoLogin = autoLoginData;
+    const responsePayload = {
+      id: requestId,
+      requestId,
+      ticketNumber,
+      isNewCustomer: Boolean(autoLoginData?.isNewCustomer),
+      isExistingCustomer: Boolean(autoLoginData?.isExistingCustomer)
+    };
 
-      // Send Welcome/Password Setup Email to the newly auto-registered customer
-      const welcomeSubject = `Welcome to TekDoctor! Your Account is Ready`;
-      const welcomeHtml = `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
-          <h2 style="color: #00e5ff;">Welcome, ${autoLoginData.user.name}!</h2>
-          <p>Thank you for submitting a repair request. We have automatically created a customer account for you to track your service status easily.</p>
-          <div style="background: #f4f4f5; padding: 15px; border-radius: 8px; margin: 20px 0;">
-            <p style="margin: 0 0 10px 0;"><strong>Your Login Credentials:</strong></p>
-            <p style="margin: 0 0 5px 0;"><strong>Email:</strong> ${autoLoginData.user.email}</p>
-            <p style="margin: 0;"><strong>Temporary Password:</strong> ${autoLoginData.generatedPassword}</p>
+    if (autoLoginData) {
+      // Only include token and user in the response — never expose any passwords
+      responsePayload.autoLogin = {
+        token: autoLoginData.token,
+        user: autoLoginData.user
+      };
+
+      // Send Welcome / Set Password Email to newly auto-registered customer
+      if (autoLoginData.isNewCustomer && autoLoginData.setPasswordToken) {
+        const baseUrl = getFrontendBaseUrl(req);
+        const setPasswordUrl = `${baseUrl}/auth/reset-password?token=${encodeURIComponent(autoLoginData.setPasswordToken)}&email=${encodeURIComponent(autoLoginData.user.email)}&mode=setup`;
+
+        const welcomeSubject = 'Welcome to TekDoctor — Your Customer Account Is Ready';
+        const welcomeHtml = `
+          <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #0d0d12; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; overflow: hidden; padding: 32px 24px;">
+            <div style="margin-bottom: 24px;">
+              <span style="font-size: 20px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.5px; color: #ffffff;">TEK<span style="color: #00e5ff;">DOCTOR</span></span>
+            </div>
+            <h2 style="font-size: 22px; font-weight: 700; color: #ffffff; margin-top: 0; margin-bottom: 12px;">Your Customer Account Is Ready</h2>
+            <p style="font-size: 14px; line-height: 1.6; color: #a1a1aa; margin-bottom: 16px;">Hello ${autoLoginData.user.name || 'Valued Customer'},</p>
+            <p style="font-size: 14px; line-height: 1.6; color: #a1a1aa; margin-bottom: 20px;">
+              Thank you for booking a repair with TekDoctor. We have automatically initialized your secure Customer Account so you can track repair progress, approve estimates, view diagnostics, and access payment receipts.
+            </p>
+
+            <div style="background-color: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 13px; line-height: 1.6;">
+              <div style="color: #00e5ff; font-weight: 700; font-family: monospace; font-size: 14px; margin-bottom: 8px;">TICKET ID: #${ticketNumber}</div>
+              <div style="color: #d4d4d8;"><strong>Device:</strong> ${displayBrand} ${resolvedModelNumber || ''} (${displayCategory})</div>
+              <div style="color: #d4d4d8;"><strong>Problem:</strong> ${displayProblem}</div>
+              <div style="color: #d4d4d8;"><strong>Current Status:</strong> Pending Review / In Queue</div>
+            </div>
+
+            <p style="font-size: 14px; line-height: 1.6; color: #a1a1aa; margin-bottom: 24px;">
+              You are currently authenticated on the browser where you placed this booking. To sign in to your Customer Account from <strong>any other device or browser</strong>, please set your password using the link below:
+            </p>
+
+            <div style="margin: 28px 0; text-align: center;">
+              <a href="${setPasswordUrl}" style="background-color: #00e5ff; color: #000000; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 14px; display: inline-block; text-transform: uppercase; letter-spacing: 0.5px;">Set Your Password</a>
+            </div>
+
+            <p style="font-size: 12px; color: #71717a; margin-bottom: 8px;">If the button above does not work, copy and paste this URL into your browser:</p>
+            <p style="font-size: 11px; word-break: break-all; color: #00e5ff; background-color: #18181b; padding: 10px; border-radius: 6px; margin-bottom: 24px; font-family: monospace;">${setPasswordUrl}</p>
+
+            <hr style="border: 0; border-top: 1px solid #27272a; margin: 24px 0;" />
+            <p style="font-size: 11px; color: #71717a; line-height: 1.5; margin: 0;">This setup link is single-use, user-bound, and expires in 24 hours. Once configured, you can log in directly from our Customer Login terminal at any time.</p>
           </div>
-          <p>You can sign in from any device to check your repair progress. We recommend logging in and changing this temporary password from your Profile page as soon as possible.</p>
-          <p>Best regards,<br/>The TekDoctor Team</p>
-        </div>
-      `;
-      sendCustomerNotification(autoLoginData.user.email, welcomeSubject, welcomeHtml).catch(err => logger.error('Failed to send auto-registration welcome email'));
+        `;
+
+        sendCustomerNotification(autoLoginData.user.email, welcomeSubject, welcomeHtml).catch(err => logger.error('Failed to send auto-registration welcome email'));
+
+        if (config.env === 'development') {
+          logger.info(`[DEV SET PASSWORD LINK] User: ${autoLoginData.user.email} | URL: ${setPasswordUrl}`);
+        }
+      }
     }
 
     // Log Activity
     await logActivity(req.user ? req.user.id : null, 'repair', 'create_repair_request', 'service_requests', requestId, { ticketNumber }, req.ip);
 
-    return res.status(201).json(formatResponse(true, 'Repair request submitted successfully.', responsePayload));
+    const jsonResponse = formatResponse(true, 'Repair request submitted successfully.', responsePayload);
+    Object.assign(jsonResponse, responsePayload);
+
+    return res.status(201).json(jsonResponse);
 
   } catch (error) {
     if (connection) await connection.rollback();
@@ -245,38 +582,91 @@ const getRepairRequests = async (req, res, next) => {
     const endDate = req.query.endDate;
     const search = req.query.search ? req.query.search.trim() : '';
 
-    let baseQuery = ' FROM service_requests';
+    let baseQuery = `
+      FROM service_requests sr
+      LEFT JOIN company_profiles cp ON sr.company_id = cp.user_id
+      LEFT JOIN company_devices cd ON sr.device_id = cd.id
+      LEFT JOIN company_employees ce ON sr.employee_id = ce.id
+      LEFT JOIN users tu ON sr.assigned_technician_id = tu.id
+      LEFT JOIN invoices inv ON inv.id = (
+        SELECT i2.id FROM invoices i2
+        WHERE i2.ticket_id = sr.id AND i2.is_active = TRUE
+        ORDER BY i2.created_at DESC
+        LIMIT 1
+      )
+    `;
     const queryParams = [];
     const whereConditions = [];
 
     if (search) {
-      whereConditions.push('(ticket_number LIKE ? OR customer_name LIKE ? OR mobile LIKE ? OR email LIKE ? OR brand LIKE ? OR model_number LIKE ? OR serial_number LIKE ? OR device_category LIKE ? OR city LIKE ?)');
+      whereConditions.push('(sr.ticket_number LIKE ? OR sr.customer_name LIKE ? OR sr.mobile LIKE ? OR sr.email LIKE ? OR sr.brand LIKE ? OR sr.model_number LIKE ? OR sr.serial_number LIKE ? OR sr.device_category LIKE ? OR sr.city LIKE ? OR cp.company_name LIKE ? OR cd.serial_number LIKE ? OR cd.asset_id LIKE ? OR ce.name LIKE ?)');
       const searchPattern = `%${search}%`;
-      queryParams.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
+      queryParams.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
     }
 
     if (statusFilter && statusFilter !== 'all') {
-      whereConditions.push('status = ?');
+      whereConditions.push('sr.status = ?');
       queryParams.push(statusFilter);
     }
 
     if (priorityFilter && priorityFilter !== 'all') {
-      whereConditions.push('priority = ?');
+      whereConditions.push('sr.priority = ?');
       queryParams.push(priorityFilter);
     }
 
-    if (technicianFilter && technicianFilter !== 'all') {
+    // Enforce role-based technician isolation server-side:
+    // Technicians can ONLY view tickets where they are the assigned or pending technician.
+    // Client-provided technicianId filters are overridden to prevent IDOR / privilege escalation.
+    if (req.user && req.user.role === 'technician') {
+      whereConditions.push('(sr.assigned_technician_id = ? OR sr.pending_technician_id = ?)');
+      queryParams.push(req.user.id, req.user.id);
+    } else if (technicianFilter && technicianFilter !== 'all') {
       if (technicianFilter === 'unassigned') {
-        whereConditions.push('(assigned_technician_id IS NULL OR assigned_technician_id = 0)');
+        whereConditions.push('(sr.assigned_technician_id IS NULL OR sr.assigned_technician_id = 0)');
       } else {
-        whereConditions.push('assigned_technician_id = ?');
+        whereConditions.push('sr.assigned_technician_id = ?');
         queryParams.push(technicianFilter);
       }
     }
 
     if (deviceCategoryFilter && deviceCategoryFilter !== 'all') {
-      whereConditions.push('device_category = ?');
+      whereConditions.push('sr.device_category = ?');
       queryParams.push(deviceCategoryFilter);
+    }
+
+    const companyIdFilter = req.query.companyId;
+    if (companyIdFilter && companyIdFilter !== 'all') {
+      whereConditions.push('sr.company_id = ?');
+      queryParams.push(companyIdFilter);
+    }
+
+    const deviceIdFilter = req.query.deviceId;
+    if (deviceIdFilter && deviceIdFilter !== 'all') {
+      whereConditions.push('sr.device_id = ?');
+      queryParams.push(deviceIdFilter);
+    }
+
+    const clientTypeFilter = req.query.clientType;
+    if (clientTypeFilter === 'company') {
+      whereConditions.push('sr.company_id IS NOT NULL');
+    } else if (clientTypeFilter === 'individual') {
+      whereConditions.push('sr.company_id IS NULL');
+    }
+
+    const paymentStatusFilter = req.query.paymentStatus;
+    if (paymentStatusFilter && paymentStatusFilter !== 'all') {
+      if (paymentStatusFilter === 'paid') {
+        whereConditions.push("sr.payment_status = 'paid'");
+      } else if (paymentStatusFilter === 'unpaid') {
+        whereConditions.push("(sr.payment_status = 'unpaid' OR sr.payment_status IS NULL OR sr.payment_status = 'pending')");
+      } else if (paymentStatusFilter === 'not_set') {
+        whereConditions.push("(sr.repair_cost IS NULL OR sr.repair_cost <= 0)");
+      } else if (paymentStatusFilter === 'set') {
+        whereConditions.push("(sr.repair_cost > 0)");
+      } else {
+        whereConditions.push("sr.payment_status = ?");
+        queryParams.push(paymentStatusFilter);
+      }
     }
 
     const sanitizeDate = (d) => {
@@ -288,12 +678,12 @@ const getRepairRequests = async (req, res, next) => {
     const sanitizedEndDate = sanitizeDate(endDate);
 
     if (sanitizedStartDate) {
-      whereConditions.push('DATE(created_at) >= ?');
+      whereConditions.push('DATE(sr.created_at) >= ?');
       queryParams.push(sanitizedStartDate);
     }
 
     if (sanitizedEndDate) {
-      whereConditions.push('DATE(created_at) <= ?');
+      whereConditions.push('DATE(sr.created_at) <= ?');
       queryParams.push(sanitizedEndDate);
     }
 
@@ -302,23 +692,56 @@ const getRepairRequests = async (req, res, next) => {
     }
 
     // Get total count
-    const [countResult] = await connection.query(`SELECT COUNT(*) as total${baseQuery}`, queryParams);
+    const [countResult] = await connection.query(`SELECT COUNT(*) as total ${baseQuery}`, queryParams);
     const total = countResult[0].total;
     const totalPages = Math.ceil(total / limit);
 
     // Get paginated data
-    const dataQuery = `SELECT *${baseQuery} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+    const dataQuery = `SELECT sr.*, 
+                              cp.company_name, 
+                              cp.company_logo,
+                              cp.contact_person as company_contact_person,
+                              cp.amc_status as company_amc_status,
+                              cd.serial_number as device_serial,
+                              cd.asset_id,
+                              cd.is_amc,
+                              cd.amc_tag,
+                              ce.name as employee_name,
+                              tu.name as technician_name,
+                              inv.id as invoice_id,
+                              inv.amount as invoice_amount,
+                              inv.status as invoice_status,
+                              inv.invoice_date,
+                              inv.paid_at as invoice_paid_at
+                       ${baseQuery} 
+                       ORDER BY sr.created_at DESC 
+                       LIMIT ? OFFSET ?`;
     const dataParams = [...queryParams, limit, offset];
 
     const [rows] = await connection.query(dataQuery, dataParams);
 
-    // Map response keys to match CamelCase expectations of React frontend if needed
-    // e.g. mapping snake_case db columns to camelCase
+    // Map response keys to match CamelCase expectations of React frontend
     const requests = rows.map(row => ({
       id: row.id,
       ticketNumber: row.ticket_number,
       userId: row.user_id,
-      deviceId: row.device_id || null, // Map device ID
+      invoiceId: row.invoice_id || null,
+      invoice_id: row.invoice_id || null,
+      invoiceAmount: row.invoice_amount ? parseFloat(row.invoice_amount) : null,
+      invoiceStatus: row.invoice_status || null,
+      invoice_status: row.invoice_status || null,
+      invoiceDate: row.invoice_date || null,
+      companyId: row.company_id || null,
+      companyName: row.company_name || null,
+      companyLogo: row.company_logo || null,
+      companyContactPerson: row.company_contact_person || null,
+      companyAmcStatus: row.company_amc_status || null,
+      deviceId: row.device_id || null,
+      employeeId: row.employee_id || null,
+      employeeName: row.employee_name || null,
+      assetId: row.asset_id || null,
+      isAmc: !!row.is_amc,
+      amcTag: row.amc_tag || null,
       customerName: row.customer_name,
       mobile: row.mobile,
       email: row.email,
@@ -327,14 +750,17 @@ const getRepairRequests = async (req, res, next) => {
       state: row.state,
       zipCode: row.zip_code,
       deviceCategory: row.device_category,
+      customDeviceCategory: row.custom_device_category || null,
       brand: row.brand,
-      customBrand: row.custom_brand,
+      customBrand: row.custom_brand || null,
       modelNumber: row.model_number,
-      serialNumber: row.serial_number,
+      serialNumber: row.device_serial || row.serial_number,
       deviceConfiguration: row.device_configuration,
       problemType: row.problem_type,
+      customProblemType: row.custom_problem_type || null,
       problemDescription: row.problem_description,
       serviceType: row.service_type,
+      customServiceType: row.custom_service_type || null,
       priority: row.priority,
       preferredContactMethod: row.preferred_contact_method,
       imagePath: row.image_path,
@@ -342,57 +768,162 @@ const getRepairRequests = async (req, res, next) => {
       status: row.status,
       assignedTechnicianId: row.assigned_technician_id,
       pendingTechnicianId: row.pending_technician_id,
+      technicianName: row.technician_name || null,
       customerRepairDescription: row.customer_repair_description,
+      slaDeadline: row.sla_deadline,
+      repairCost: row.repair_cost ? parseFloat(row.repair_cost) : 0,
+      repair_cost: row.repair_cost ? parseFloat(row.repair_cost) : 0,
+      paymentStatus: row.payment_status || 'unpaid',
+      payment_status: row.payment_status || 'unpaid',
+      collectionStatus: row.collection_status || 'not_applicable',
+      collection_status: row.collection_status || 'not_applicable',
+      paymentId: row.payment_id || null,
+      payment_id: row.payment_id || null,
+      paymentMethod: row.payment_method || null,
+      payment_method: row.payment_method || null,
+      paidAt: row.paid_at || null,
+      paid_at: row.paid_at || null,
+      repairNotes: row.repair_notes,
       feedbackRating: row.feedback_rating,
       feedbackComment: row.feedback_comment,
       feedbackDate: row.feedback_date,
+      // Diagnosis & Estimation Fields
+      diagnosis: row.diagnosis || null,
+      identifiedIssues: row.identified_issues || null,
+      requiredWork: row.required_work || null,
+      estimatedCost: row.estimated_cost !== null && row.estimated_cost !== undefined && Number(row.estimated_cost) > 0 ? parseFloat(row.estimated_cost) : (row.repair_cost ? parseFloat(row.repair_cost) : 0),
+      additionalCharges: row.additional_charges ? parseFloat(row.additional_charges) : 0,
+      totalEstimatedCost: (row.estimated_cost !== null && row.estimated_cost !== undefined && Number(row.estimated_cost) > 0)
+        ? (parseFloat(row.estimated_cost) + (row.additional_charges ? parseFloat(row.additional_charges) : 0))
+        : (row.repair_cost ? parseFloat(row.repair_cost) : 0),
+      inspectionNotes: row.inspection_notes || null,
+      deviceCondition: row.device_condition || null,
+      inspectedAt: row.inspected_at || null,
+      estimateSubmittedAt: row.estimate_submitted_at || null,
+      // Customer Approval & Hold Fields
+      customerApprovalStatus: row.customer_approval_status || 'none',
+      approvedAt: row.approved_at || null,
+      approvedBy: row.approved_by || null,
+      approvalNotes: row.approval_notes || null,
+      rejectedAt: row.rejected_at || null,
+      rejectionReason: row.rejection_reason || null,
+      holdStartDate: row.hold_start_date || null,
+      holdEndDate: row.hold_end_date || null,
+      holdReason: row.hold_reason || null,
+      holdNotes: row.hold_notes || null,
+      reapprovalRequestedAt: row.reapproval_requested_at || null,
+      reapprovalNotes: row.reapproval_notes || null,
+      cancellationReason: row.cancellation_reason || null,
+      cancelledAt: row.cancelled_at || null,
+      cancelledBy: row.cancelled_by || null,
+      amountUpdatedByAdmin: Boolean(row.amount_updated_by_admin),
+      adminUpdatedAmount: row.admin_updated_amount ? parseFloat(row.admin_updated_amount) : null,
+      amountUpdatedAt: row.amount_updated_at || null,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     }));
 
-    for (const r of requests) {
-      let repeatRows = [];
-      if (r.deviceId) {
+    if (requests.length > 0) {
+      // 1. Batch fetch company device serial numbers if any deviceIds exist
+      const deviceIds = requests.map(r => r.deviceId).filter(Boolean);
+      const deviceSerialMap = new Map();
+      if (deviceIds.length > 0) {
         const [devRows] = await connection.query(
-          'SELECT serial_number FROM company_devices WHERE id = ? LIMIT 1',
-          [r.deviceId]
+          'SELECT id, serial_number FROM company_devices WHERE id IN (?)',
+          [deviceIds]
         );
-        if (devRows.length > 0 && devRows[0].serial_number) {
-          const serial = devRows[0].serial_number;
-          const [history] = await connection.query(
-            `SELECT sr.id, sr.created_at as createdAt, sr.status, sr.problem_description as problemDescription, u.name as techName 
-             FROM service_requests sr
-             LEFT JOIN company_devices d ON sr.device_id = d.id
-             LEFT JOIN users u ON sr.assigned_technician_id = u.id
-             WHERE (d.serial_number = ?) AND sr.id != ?
-             ORDER BY sr.created_at DESC`,
-            [serial, r.id]
-          );
-          repeatRows = history;
+        devRows.forEach(d => {
+          if (d.serial_number) deviceSerialMap.set(d.id, d.serial_number);
+        });
+      }
+
+      // 2. Collect unique serials and (mobile, modelNumber) keys for batch querying
+      const serials = [];
+      const mobiles = [];
+      const models = [];
+
+      requests.forEach(r => {
+        const serial = r.deviceId ? deviceSerialMap.get(r.deviceId) : null;
+        if (serial) {
+          serials.push(serial);
+        } else if (r.mobile && r.modelNumber) {
+          mobiles.push(r.mobile);
+          models.push(r.modelNumber);
         }
+      });
+
+      // 3. Batch fetch repeat repair histories in a single query if there are criteria
+      const conditions = [];
+      const queryParams = [];
+
+      if (serials.length > 0) {
+        conditions.push('d.serial_number IN (?)');
+        queryParams.push(serials);
       }
-      // B2C Fallback mapping
-      if (repeatRows.length === 0 && r.mobile && r.modelNumber) {
-        const [history] = await connection.query(
-          `SELECT sr.id, sr.created_at as createdAt, sr.status, sr.problem_description as problemDescription, u.name as techName 
+      if (mobiles.length > 0 && models.length > 0) {
+        conditions.push('(sr.mobile IN (?) AND sr.model_number IN (?))');
+        queryParams.push([...new Set(mobiles)], [...new Set(models)]);
+      }
+
+      let allHistory = [];
+      if (conditions.length > 0) {
+        const [historyRows] = await connection.query(
+          `SELECT sr.id, sr.device_id, sr.mobile, sr.model_number, sr.created_at as createdAt, sr.status, 
+                  sr.problem_description as problemDescription, u.name as techName, d.serial_number as serialNumber
            FROM service_requests sr
+           LEFT JOIN company_devices d ON sr.device_id = d.id
            LEFT JOIN users u ON sr.assigned_technician_id = u.id
-           WHERE sr.mobile = ? AND sr.model_number = ? AND sr.id != ?
+           WHERE (${conditions.join(' OR ')})
            ORDER BY sr.created_at DESC`,
-          [r.mobile, r.modelNumber, r.id]
+          queryParams
         );
-        repeatRows = history;
+        allHistory = historyRows;
       }
-      r.repeatCount = repeatRows.length + 1;
-      r.repairHistory = repeatRows;
+
+      // 4. Map histories back to each request in-memory
+      for (const r of requests) {
+        const serial = r.deviceId ? deviceSerialMap.get(r.deviceId) : null;
+        let repeatRows = [];
+
+        if (serial) {
+          repeatRows = allHistory.filter(h => h.serialNumber === serial && h.id !== r.id);
+        } else if (r.mobile && r.modelNumber) {
+          repeatRows = allHistory.filter(h => h.mobile === r.mobile && h.model_number === r.modelNumber && h.id !== r.id);
+        }
+
+        r.repeatCount = repeatRows.length + 1;
+        r.repairHistory = repeatRows.map(h => ({
+          id: h.id,
+          createdAt: h.createdAt,
+          status: h.status,
+          problemDescription: h.problemDescription,
+          techName: h.techName
+        }));
+      }
     }
 
-    // Calculate global status counts for tabs
+    // Calculate status counts for tabs (scoped to company filters if set)
+    let countBase = ' FROM service_requests sr';
+    const countWhere = [];
+    const countParams = [];
+    if (companyIdFilter && companyIdFilter !== 'all') {
+      countWhere.push('sr.company_id = ?');
+      countParams.push(companyIdFilter);
+    }
+    if (clientTypeFilter === 'company') {
+      countWhere.push('sr.company_id IS NOT NULL');
+    } else if (clientTypeFilter === 'individual') {
+      countWhere.push('sr.company_id IS NULL');
+    }
+    if (countWhere.length > 0) {
+      countBase += ' WHERE ' + countWhere.join(' AND ');
+    }
+
     const [statusCountRows] = await connection.query(`
-      SELECT status, COUNT(*) as count 
-      FROM service_requests 
-      GROUP BY status
-    `);
+      SELECT sr.status, COUNT(*) as count 
+      ${countBase} 
+      GROUP BY sr.status
+    `, countParams);
     const statusCounts = {
       all: 0,
       pending: 0,
@@ -439,15 +970,98 @@ const getMyTasks = async (req, res, next) => {
   try {
     connection = await pool.getConnection();
 
-    const [rows] = await connection.query(
-      'SELECT * FROM service_requests WHERE assigned_technician_id = ? OR pending_technician_id = ? ORDER BY created_at DESC',
-      [req.user.id, req.user.id]
-    );
+    const search = (req.query.search || req.query.q || '').trim();
+
+    let sqlQuery = `
+      SELECT sr.*,
+             cp.company_name,
+             cp.contact_person as company_contact_person,
+             cp.phone_number as company_phone,
+             cp.address as company_address,
+             cp.company_logo,
+             cp.gst_number as company_gst,
+             comp_u.email as company_email,
+             cd.asset_id,
+             cd.serial_number as device_serial_number,
+             cd.model_number as device_model_number,
+             ce.name as employee_name,
+             ce.email as employee_email,
+             ce.phone as employee_phone,
+             inv.id as invoice_id,
+             inv.amount as invoice_amount,
+             inv.status as invoice_status,
+             inv.invoice_date,
+             inv.paid_at as invoice_paid_at
+      FROM service_requests sr
+      LEFT JOIN company_profiles cp ON (sr.company_id = cp.user_id OR (sr.company_id IS NULL AND sr.user_id = cp.user_id))
+      LEFT JOIN users comp_u ON (sr.company_id = comp_u.id OR (sr.company_id IS NULL AND sr.user_id = comp_u.id AND comp_u.role = 'company'))
+      LEFT JOIN company_devices cd ON sr.device_id = cd.id
+      LEFT JOIN company_employees ce ON sr.employee_id = ce.id
+      LEFT JOIN invoices inv ON inv.id = (
+        SELECT i2.id FROM invoices i2
+        WHERE i2.ticket_id = sr.id AND i2.is_active = TRUE
+        ORDER BY i2.created_at DESC
+        LIMIT 1
+      )
+      WHERE (sr.assigned_technician_id = ? OR sr.pending_technician_id = ?)
+    `;
+
+    const queryParams = [req.user.id, req.user.id];
+
+    if (search) {
+      sqlQuery += ` AND (
+        sr.ticket_number LIKE ?
+        OR sr.serial_number LIKE ?
+        OR cd.serial_number LIKE ?
+        OR cd.asset_id LIKE ?
+        OR sr.model_number LIKE ?
+        OR cd.model_number LIKE ?
+        OR sr.brand LIKE ?
+        OR sr.custom_brand LIKE ?
+        OR sr.customer_name LIKE ?
+        OR cp.company_name LIKE ?
+        OR cp.contact_person LIKE ?
+        OR ce.name LIKE ?
+        OR sr.mobile LIKE ?
+        OR cp.phone_number LIKE ?
+        OR ce.phone LIKE ?
+      )`;
+      const pattern = `%${search}%`;
+      queryParams.push(
+        pattern, // sr.ticket_number
+        pattern, // sr.serial_number
+        pattern, // cd.serial_number
+        pattern, // cd.asset_id
+        pattern, // sr.model_number
+        pattern, // cd.model_number
+        pattern, // sr.brand
+        pattern, // sr.custom_brand
+        pattern, // sr.customer_name
+        pattern, // cp.company_name
+        pattern, // cp.contact_person
+        pattern, // ce.name
+        pattern, // sr.mobile
+        pattern, // cp.phone_number
+        pattern  // ce.phone
+      );
+    }
+
+    sqlQuery += ` ORDER BY sr.created_at DESC`;
+
+    const [rows] = await connection.query(sqlQuery, queryParams);
 
     const requests = rows.map(row => ({
       id: row.id,
       ticketNumber: row.ticket_number,
       userId: row.user_id,
+      invoiceId: row.invoice_id || null,
+      invoice_id: row.invoice_id || null,
+      invoiceStatus: row.invoice_status || null,
+      invoice_status: row.invoice_status || null,
+      invoiceAmount: row.invoice_amount ? parseFloat(row.invoice_amount) : null,
+      invoice_amount: row.invoice_amount ? parseFloat(row.invoice_amount) : null,
+      invoiceDate: row.invoice_date || null,
+      invoicePaidAt: row.invoice_paid_at || null,
       customerName: row.customer_name,
       mobile: row.mobile,
       email: row.email,
@@ -456,14 +1070,17 @@ const getMyTasks = async (req, res, next) => {
       state: row.state,
       zipCode: row.zip_code,
       deviceCategory: row.device_category,
+      customDeviceCategory: row.custom_device_category || null,
       brand: row.brand,
-      customBrand: row.custom_brand,
-      modelNumber: row.model_number,
-      serialNumber: row.serial_number,
+      customBrand: row.custom_brand || null,
+      modelNumber: row.model_number || row.device_model_number || null,
+      serialNumber: row.serial_number || row.device_serial_number || null,
       deviceConfiguration: row.device_configuration,
       problemType: row.problem_type,
+      customProblemType: row.custom_problem_type || null,
       problemDescription: row.problem_description,
       serviceType: row.service_type,
+      customServiceType: row.custom_service_type || null,
       priority: row.priority,
       preferredContactMethod: row.preferred_contact_method,
       imagePath: row.image_path,
@@ -475,6 +1092,61 @@ const getMyTasks = async (req, res, next) => {
       feedbackRating: row.feedback_rating,
       feedbackComment: row.feedback_comment,
       feedbackDate: row.feedback_date,
+      // Corporate B2B Fields
+      companyId: row.company_id || (row.company_name ? row.user_id : null),
+      companyName: row.company_name || null,
+      companyEmail: row.company_email || null,
+      companyPhone: row.company_phone || null,
+      companyAddress: row.company_address || null,
+      companyContactPerson: row.company_contact_person || null,
+      companyLogo: row.company_logo || null,
+      companyGst: row.company_gst || null,
+      assetId: row.asset_id || null,
+      employeeName: row.employee_name || null,
+      employeeEmail: row.employee_email || null,
+      employeePhone: row.employee_phone || null,
+      assignedAt: row.assigned_at || row.updated_at || row.created_at,
+      // Diagnosis & Estimation Fields
+      diagnosis: row.diagnosis || null,
+      identifiedIssues: row.identified_issues || null,
+      requiredWork: row.required_work || null,
+      estimatedCost: row.estimated_cost !== null && row.estimated_cost !== undefined && Number(row.estimated_cost) > 0 ? parseFloat(row.estimated_cost) : (row.repair_cost ? parseFloat(row.repair_cost) : 0),
+      additionalCharges: row.additional_charges ? parseFloat(row.additional_charges) : 0,
+      totalEstimatedCost: (row.estimated_cost !== null && row.estimated_cost !== undefined && Number(row.estimated_cost) > 0)
+        ? (parseFloat(row.estimated_cost) + (row.additional_charges ? parseFloat(row.additional_charges) : 0))
+        : (row.repair_cost ? parseFloat(row.repair_cost) : 0),
+      inspectionNotes: row.inspection_notes || null,
+      deviceCondition: row.device_condition || null,
+      inspectedAt: row.inspected_at || null,
+      estimateSubmittedAt: row.estimate_submitted_at || null,
+      // Customer Approval & Hold Fields
+      customerApprovalStatus: row.customer_approval_status || 'none',
+      approvedAt: row.approved_at || null,
+      approvedBy: row.approved_by || null,
+      approvalNotes: row.approval_notes || null,
+      rejectedAt: row.rejected_at || null,
+      rejectionReason: row.rejection_reason || null,
+      holdStartDate: row.hold_start_date || null,
+      holdEndDate: row.hold_end_date || null,
+      holdReason: row.hold_reason || null,
+      holdNotes: row.hold_notes || null,
+      reapprovalRequestedAt: row.reapproval_requested_at || null,
+      reapprovalNotes: row.reapproval_notes || null,
+      cancellationReason: row.cancellation_reason || null,
+      cancelledAt: row.cancelled_at || null,
+      cancelledBy: row.cancelled_by || null,
+      repairCost: row.repair_cost ? parseFloat(row.repair_cost) : 0,
+      repair_cost: row.repair_cost ? parseFloat(row.repair_cost) : 0,
+      paymentStatus: row.payment_status || 'unpaid',
+      payment_status: row.payment_status || 'unpaid',
+      collectionStatus: row.collection_status || 'not_applicable',
+      collection_status: row.collection_status || 'not_applicable',
+      paymentId: row.payment_id || null,
+      paymentMethod: row.payment_method || null,
+      paidAt: row.paid_at || null,
+      amountUpdatedByAdmin: Boolean(row.amount_updated_by_admin),
+      adminUpdatedAmount: row.admin_updated_amount ? parseFloat(row.admin_updated_amount) : null,
+      amountUpdatedAt: row.amount_updated_at || null,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     }));
@@ -503,7 +1175,7 @@ const getCustomerHistory = async (req, res, next) => {
     const [metricResult] = await connection.query(
       `SELECT 
          COUNT(*) as total,
-         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as total_completed
+         SUM(CASE WHEN status IN ('completed', 'delivered') THEN 1 ELSE 0 END) as total_completed
        FROM service_requests WHERE user_id = ?`,
       [req.user.id]
     );
@@ -530,14 +1202,17 @@ const getCustomerHistory = async (req, res, next) => {
       state: row.state,
       zipCode: row.zip_code,
       deviceCategory: row.device_category,
+      customDeviceCategory: row.custom_device_category || null,
       brand: row.brand,
-      customBrand: row.custom_brand,
+      customBrand: row.custom_brand || null,
       modelNumber: row.model_number,
       serialNumber: row.serial_number,
       deviceConfiguration: row.device_configuration,
       problemType: row.problem_type,
+      customProblemType: row.custom_problem_type || null,
       problemDescription: row.problem_description,
       serviceType: row.service_type,
+      customServiceType: row.custom_service_type || null,
       priority: row.priority,
       preferredContactMethod: row.preferred_contact_method,
       imagePath: row.image_path,
@@ -551,6 +1226,47 @@ const getCustomerHistory = async (req, res, next) => {
       feedbackRating: row.feedback_rating,
       feedbackComment: row.feedback_comment,
       feedbackDate: row.feedback_date,
+      // Diagnosis & Estimation Fields
+      diagnosis: row.diagnosis || null,
+      identifiedIssues: row.identified_issues || null,
+      requiredWork: row.required_work || null,
+      estimatedCost: row.estimated_cost !== null && row.estimated_cost !== undefined && Number(row.estimated_cost) > 0 ? parseFloat(row.estimated_cost) : (row.repair_cost ? parseFloat(row.repair_cost) : 0),
+      additionalCharges: row.additional_charges ? parseFloat(row.additional_charges) : 0,
+      totalEstimatedCost: (row.estimated_cost !== null && row.estimated_cost !== undefined && Number(row.estimated_cost) > 0)
+        ? (parseFloat(row.estimated_cost) + (row.additional_charges ? parseFloat(row.additional_charges) : 0))
+        : (row.repair_cost ? parseFloat(row.repair_cost) : 0),
+      inspectionNotes: row.inspection_notes || null,
+      deviceCondition: row.device_condition || null,
+      inspectedAt: row.inspected_at || null,
+      estimateSubmittedAt: row.estimate_submitted_at || null,
+      // Customer Approval & Hold Fields
+      customerApprovalStatus: row.customer_approval_status || 'none',
+      approvedAt: row.approved_at || null,
+      approvedBy: row.approved_by || null,
+      approvalNotes: row.approval_notes || null,
+      rejectedAt: row.rejected_at || null,
+      rejectionReason: row.rejection_reason || null,
+      holdStartDate: row.hold_start_date || null,
+      holdEndDate: row.hold_end_date || null,
+      holdReason: row.hold_reason || null,
+      holdNotes: row.hold_notes || null,
+      reapprovalRequestedAt: row.reapproval_requested_at || null,
+      reapprovalNotes: row.reapproval_notes || null,
+      cancellationReason: row.cancellation_reason || null,
+      cancelledAt: row.cancelled_at || null,
+      cancelledBy: row.cancelled_by || null,
+      repairCost: row.repair_cost ? parseFloat(row.repair_cost) : 0,
+      repair_cost: row.repair_cost ? parseFloat(row.repair_cost) : 0,
+      paymentStatus: row.payment_status || 'unpaid',
+      payment_status: row.payment_status || 'unpaid',
+      collectionStatus: row.collection_status || 'not_applicable',
+      collection_status: row.collection_status || 'not_applicable',
+      paymentId: row.payment_id || null,
+      paymentMethod: row.payment_method || null,
+      paidAt: row.paid_at || null,
+      amountUpdatedByAdmin: Boolean(row.amount_updated_by_admin),
+      adminUpdatedAmount: row.admin_updated_amount ? parseFloat(row.admin_updated_amount) : null,
+      amountUpdatedAt: row.amount_updated_at || null,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     }));
@@ -579,37 +1295,141 @@ const getCustomerHistory = async (req, res, next) => {
  */
 const updateRequestStatus = async (req, res, next) => {
   const { id } = req.params;
-  const { status, assignedTechnicianId } = req.body;
+  const { status, assignedTechnicianId, isOverride, overrideReason } = req.body;
   let connection;
 
   try {
     connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    // Check if the request exists
+    // Check if the request exists and acquire exclusive row lock
     const [existing] = await connection.query(
-      'SELECT * FROM service_requests WHERE id = ? LIMIT 1',
+      'SELECT * FROM service_requests WHERE id = ? LIMIT 1 FOR UPDATE',
       [id]
     );
 
     if (existing.length === 0) {
+      await connection.rollback();
       return res.status(404).json(formatResponse(false, 'Repair request not found.'));
     }
 
     const request = existing[0];
 
+    // Status Transition Rules: Enforce locks and permissions on completed and delivered tasks
+    if ((request.status === 'completed' || request.status === 'delivered') && req.user && req.user.role === 'technician') {
+      await connection.rollback();
+      return res.status(403).json(
+        formatResponse(false, `${request.status === 'completed' ? 'Completed' : 'Delivered'} repair tickets are terminal and locked. Technicians cannot modify or update this ticket.`)
+      );
+    }
+
+    if (request.status === 'completed' && status !== 'completed') {
+      // 1. Technician is completely locked out from reverting completed tasks
+      if (req.user && req.user.role === 'technician') {
+        await connection.rollback();
+        return res.status(403).json(
+          formatResponse(false, 'Completed repair tasks are terminal and locked. Technicians cannot revert or reopen a completed repair task.')
+        );
+      }
+
+      // 2. Completed -> Pending is strictly forbidden for ALL roles (including Admin)
+      if (status === 'pending') {
+        await connection.rollback();
+        return res.status(400).json(
+          formatResponse(false, 'Invalid status transition: A completed repair task cannot be reverted to Pending.')
+        );
+      }
+
+      // 3. Completed -> In Progress requires authorized Admin override
+      if (status === 'in_progress') {
+        if (!req.user || req.user.role !== 'admin') {
+          await connection.rollback();
+          return res.status(403).json(
+            formatResponse(false, 'Unauthorized: Only an Administrator can perform a status override on a completed task.')
+          );
+        }
+
+        const isAuthorizedOverride = isOverride === true || Boolean(overrideReason && overrideReason.trim());
+        if (!isAuthorizedOverride) {
+          await connection.rollback();
+          return res.status(400).json(
+            formatResponse(false, 'Completed repair tasks are protected. To reopen a completed repair, an authorized Admin override with confirmation and reason is required.')
+          );
+        }
+      }
+    }
+
+    if (request.status === 'delivered') {
+      // 1. Technician is completely locked out from mutating delivered tickets
+      if (req.user && req.user.role === 'technician') {
+        await connection.rollback();
+        return res.status(403).json(
+          formatResponse(false, 'Delivered repair tickets are terminal and locked. Technicians cannot modify or revert a delivered repair ticket.')
+        );
+      }
+
+      // 2. Delivered -> Pending is strictly forbidden for ALL roles (including Admin)
+      if (status === 'pending') {
+        await connection.rollback();
+        return res.status(400).json(
+          formatResponse(false, 'Invalid status transition: A delivered repair ticket cannot be reverted to Pending.')
+        );
+      }
+
+      // 3. Delivered -> In Progress or Completed requires authorized Admin override
+      if (status !== 'delivered') {
+        if (!req.user || req.user.role !== 'admin') {
+          await connection.rollback();
+          return res.status(403).json(
+            formatResponse(false, 'Unauthorized: Only an Administrator can perform a status override on a delivered ticket.')
+          );
+        }
+
+        const isAuthorizedOverride = isOverride === true || Boolean(overrideReason && overrideReason.trim());
+        if (!isAuthorizedOverride) {
+          await connection.rollback();
+          return res.status(400).json(
+            formatResponse(false, 'Delivered repair tickets are protected. To reopen or modify a delivered repair, an authorized Admin override with confirmation and reason is required.')
+          );
+        }
+      }
+    }
+
     // Ownership & Decision Restriction: Technicians can only modify decisions/status for their own assigned tasks
     if (req.user && req.user.role === 'technician') {
       if (request.assigned_technician_id !== req.user.id) {
+        await connection.rollback();
         return res.status(403).json(
           formatResponse(false, "Unauthorized: You cannot modify another technician's decision or ticket status.")
         );
       }
       if (assignedTechnicianId !== undefined && assignedTechnicianId !== null && Number(assignedTechnicianId) !== Number(request.assigned_technician_id)) {
+        await connection.rollback();
         return res.status(403).json(
           formatResponse(false, 'Unauthorized: Technicians cannot directly reassign tickets. Please use the task transfer workflow.')
         );
       }
+
+      // Technicians cannot revert in_progress -> pending
+      if (request.status === 'in_progress' && status === 'pending') {
+        await connection.rollback();
+        return res.status(400).json(
+          formatResponse(false, 'Technicians cannot revert an In Progress task back to Pending.')
+        );
+      }
+
+      // Restrict technician from marking in_progress or completed before customer approves estimate
+      if ((status === 'in_progress' || status === 'completed') && request.customer_approval_status !== 'approved') {
+        await connection.rollback();
+        return res.status(400).json(
+          formatResponse(false, 'Cannot start or complete repair before the customer has approved the estimated repair cost.')
+        );
+      }
     }
+
+    // Detect if this is an authorized Admin override from completed/delivered -> in_progress/completed
+    const isOverrideAction = ['completed', 'delivered'].includes(request.status) && ['in_progress', 'completed'].includes(status) && req.user?.role === 'admin';
+    const cleanOverrideReason = (overrideReason || req.body.reason || `Admin status override: Reopened repair task from ${request.status} to ${status}`).trim();
 
     let updateQuery = 'UPDATE service_requests SET status = ?';
     const params = [status];
@@ -617,8 +1437,14 @@ const updateRequestStatus = async (req, res, next) => {
     // If technician assignment is passed
     if (assignedTechnicianId !== undefined) {
       if (assignedTechnicianId) {
-        updateQuery += ', pending_technician_id = ?';
-        params.push(assignedTechnicianId);
+        if (req.user && req.user.role === 'admin') {
+          // Direct admin assignment: assign immediately to technician
+          updateQuery += ', assigned_technician_id = ?, pending_technician_id = NULL';
+          params.push(assignedTechnicianId);
+        } else {
+          updateQuery += ', pending_technician_id = ?';
+          params.push(assignedTechnicianId);
+        }
       } else {
         updateQuery += ', assigned_technician_id = NULL, pending_technician_id = NULL';
       }
@@ -629,22 +1455,86 @@ const updateRequestStatus = async (req, res, next) => {
 
     await connection.query(updateQuery, params);
 
-    logger.info(`Repair request ID ${id} status updated to: ${status}${assignedTechnicianId ? ` (Assigned to tech: ${assignedTechnicianId})` : ''}`);
+    logger.info(`Repair request ID ${id} status updated to: ${status}${assignedTechnicianId ? ` (Assigned to tech: ${assignedTechnicianId})` : ''}${isOverrideAction ? ' [ADMIN OVERRIDE]' : ''}`);
 
-    // Dispatch notification to Pending Technician
-    if (assignedTechnicianId) {
+    // If Admin override was performed, record comprehensive audit trail & notify technician
+    if (isOverrideAction) {
+      // 1. Audit Log via logActivity
+      await logActivity(
+        req.user.id,
+        'repair',
+        'admin_status_override',
+        'service_requests',
+        id,
+        {
+          previousStatus: request.status,
+          newStatus: status,
+          reason: cleanOverrideReason,
+          adminId: req.user.id,
+          adminName: req.user.name,
+          adminEmail: req.user.email,
+          ticketNumber: request.ticket_number
+        },
+        req.ip
+      );
+
+      // 2. Work log entry in technician_work_logs
       try {
         await connection.query(
-          'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
-          [assignedTechnicianId, 'Ticket Assignment Unconfirmed', `You have been assigned Ticket ${request.ticket_number || id}. Please Review and Accept.`, id, req.user ? req.user.id : null]
+          `INSERT INTO technician_work_logs (repair_request_id, technician_id, repair_stage, action_performed, notes)
+           VALUES (?, ?, ?, ?, ?)`,
+          [
+            id,
+            request.assigned_technician_id || req.user.id,
+            status,
+            `Admin Status Override: ${request.status} -> ${status}`,
+            `Admin override performed by ${req.user.name || 'Admin'} (${req.user.email || req.user.id}): ${cleanOverrideReason}`
+          ]
         );
-      } catch (e) {
-        logger.warn('Failed to dispatch notification to pending tech ' + e.message);
+      } catch (wlErr) {
+        logger.warn('Failed to insert work log on admin status override: ' + wlErr.message);
+      }
+
+      // 3. Notify assigned technician (if assigned)
+      if (request.assigned_technician_id) {
+        try {
+          await connection.query(
+            `INSERT INTO notifications (user_id, title, message, ticket_id, sender_id)
+             VALUES (?, ?, ?, ?, ?)`,
+            [
+              request.assigned_technician_id,
+              `Ticket Reopened by Admin [${request.ticket_number || id}]`,
+              `Admin ${req.user.name || 'Admin'} has reopened this ${request.status} repair task to '${status}'. Reason: ${cleanOverrideReason}`,
+              id,
+              req.user.id
+            ]
+          );
+        } catch (notifErr) {
+          logger.warn('Failed to dispatch reopen notification to technician: ' + notifErr.message);
+        }
       }
     }
 
-    // Log Activity
-    await logActivity(req.user ? req.user.id : null, 'repair', 'update_status', 'service_requests', id, { status, assignedTechnicianId }, req.ip);
+    // Dispatch notification to Assigned Technician
+    if (assignedTechnicianId) {
+      try {
+        const notifTitle = req.user?.role === 'admin'
+          ? `Repair Ticket Assigned [${request.ticket_number || id}]`
+          : 'Ticket Assignment Unconfirmed';
+        const notifMsg = req.user?.role === 'admin'
+          ? `Admin assigned Ticket #${request.ticket_number || id} (${request.brand || ''} ${request.model_number || ''}) to you.`
+          : `You have been assigned Ticket ${request.ticket_number || id}. Please Review and Accept.`;
+        await connection.query(
+          'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
+          [assignedTechnicianId, notifTitle, notifMsg, id, req.user ? req.user.id : null]
+        );
+      } catch (e) {
+        logger.warn('Failed to dispatch notification to tech: ' + e.message);
+      }
+    }
+
+    // Log standard status update Activity
+    await logActivity(req.user ? req.user.id : null, 'repair', 'update_status', 'service_requests', id, { status, assignedTechnicianId, isOverride: isOverrideAction }, req.ip);
 
     // If cancelled manually by Admin/Technician, notify all admins
     if (status === 'cancelled') {
@@ -665,6 +1555,96 @@ const updateRequestStatus = async (req, res, next) => {
       }
     }
 
+    // If completed or delivered, ensure Draft invoice exists for this ticket
+    if (status === 'completed' || status === 'delivered') {
+      try {
+        const [existingInvs] = await connection.query(
+          'SELECT id, status FROM invoices WHERE ticket_id = ? AND is_active = TRUE LIMIT 1 FOR UPDATE',
+          [id]
+        );
+        if (existingInvs.length === 0) {
+          const draftInvId = await generateInvoiceId(connection);
+          const rawAddCharges = parseFloat(request.additional_charges || 0);
+          const rawEstCost = parseFloat(request.estimated_cost || 0);
+          const rawRepairCost = parseFloat(request.repair_cost || 0);
+
+          let baseServiceCost = 0;
+          let additionalCharges = Math.max(0, isNaN(rawAddCharges) ? 0 : rawAddCharges);
+
+          if (rawEstCost > 0) {
+            baseServiceCost = rawEstCost;
+          } else if (rawRepairCost > 0) {
+            baseServiceCost = Math.max(0, rawRepairCost - additionalCharges);
+          } else {
+            baseServiceCost = 0;
+          }
+
+          let gstEnabled = true;
+          let gstRate = 18.0;
+          try {
+            const [gstSettings] = await connection.query(
+              "SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN ('invoice_gst_enabled', 'default_gst_rate')"
+            );
+            for (const s of gstSettings) {
+              if (s.setting_key === 'invoice_gst_enabled') gstEnabled = s.setting_value !== 'false';
+              if (s.setting_key === 'default_gst_rate') {
+                const parsedRate = parseFloat(s.setting_value);
+                if (!isNaN(parsedRate) && parsedRate >= 0) gstRate = parsedRate;
+              }
+            }
+          } catch (_) {}
+
+          const effectiveTaxRate = gstEnabled ? gstRate : 0.0;
+          const defaultSubtotal = Math.round((baseServiceCost + additionalCharges) * 100) / 100;
+          const defaultTax = Math.round((defaultSubtotal * (effectiveTaxRate / 100)) * 100) / 100;
+          const defaultCgst = Math.round((defaultTax / 2) * 100) / 100;
+          const defaultSgst = Math.round((defaultTax - defaultCgst) * 100) / 100;
+          const defaultTotal = Math.round((defaultSubtotal + defaultTax) * 100) / 100;
+          const clientName = request.customer_name || request.user_name || 'Customer';
+
+          await connection.query(`
+            INSERT INTO invoices (
+              id, user_id, ticket_id, client_name, amount, subtotal, tax_amount,
+              cgst_amount, sgst_amount, igst_amount, is_interstate, original_estimate,
+              currency, invoice_date, due_date, status, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.00, FALSE, ?, 'INR', NOW(), DATE_ADD(NOW(), INTERVAL 7 DAY), 'Draft', ?)
+          `, [
+            draftInvId,
+            request.user_id || request.company_id || null,
+            id,
+            clientName,
+            defaultTotal,
+            defaultSubtotal,
+            defaultTax,
+            defaultCgst,
+            defaultSgst,
+            (rawEstCost > 0 ? rawEstCost : (rawRepairCost > 0 ? rawRepairCost : defaultSubtotal)),
+            `Draft invoice auto-created upon repair completion for ticket ${request.ticket_number || id}.`
+          ]);
+
+          const desc = `Device Repair Service - ${request.brand || ''} ${request.model_number || ''}`.trim() || 'Device Repair Service';
+          const baseTax = Math.round((baseServiceCost * (effectiveTaxRate / 100)) * 100) / 100;
+          await connection.query(`
+            INSERT INTO invoice_line_items (invoice_id, description, hsn_sac, quantity, unit_price, total, tax_rate, tax_amount)
+            VALUES (?, ?, '9987', 1, ?, ?, ?, ?)
+          `, [draftInvId, desc, baseServiceCost, baseServiceCost, effectiveTaxRate, baseTax]);
+
+          if (additionalCharges > 0) {
+            const addTax = Math.round((additionalCharges * (effectiveTaxRate / 100)) * 100) / 100;
+            await connection.query(`
+              INSERT INTO invoice_line_items (invoice_id, description, hsn_sac, quantity, unit_price, total, tax_rate, tax_amount)
+              VALUES (?, 'Additional Approved Service / Component Charges', '9987', 1, ?, ?, ?, ?)
+            `, [draftInvId, additionalCharges, additionalCharges, effectiveTaxRate, addTax]);
+          }
+
+          logger.info(`Auto-created Draft invoice ${draftInvId} upon repair completion for ticket ${id} (Base: ₹${baseServiceCost}, Additional: ₹${additionalCharges}, Total: ₹${defaultTotal})`);
+        }
+      } catch (invErr) {
+        logger.error('Failed to auto-create Draft invoice on repair completion: ' + invErr.message);
+        throw invErr;
+      }
+    }
+
     // If completed, notify customer to leave feedback
     if (status === 'completed' && request.status !== 'completed' && request.user_id) {
       try {
@@ -679,9 +1659,29 @@ const updateRequestStatus = async (req, res, next) => {
       }
     }
 
+    // If delivered, notify customer
+    if (status === 'delivered' && request.status !== 'delivered' && request.user_id) {
+      try {
+        const notificationTitle = `Device Delivered [${request.ticket_number || id}]`;
+        const notificationMessage = `Your device has been delivered! Thank you for choosing TekDoctor. Please review your repair summary and invoice.`;
+        await connection.query(
+          'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
+          [request.user_id, notificationTitle, notificationMessage, id, req.user ? req.user.id : null]
+        );
+      } catch (notifErr) {
+        logger.error('Failed to create in-app delivery notification: ' + notifErr.message);
+      }
+    }
+
+    await connection.commit();
     return res.status(200).json(formatResponse(true, `Repair request status updated to ${status}.`));
 
   } catch (error) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (_) {}
+    }
     next(error);
   } finally {
     if (connection) connection.release();
@@ -698,7 +1698,58 @@ const getRepairRequestById = async (req, res, next) => {
     const { id } = req.params;
     connection = await pool.getConnection();
 
-    const [rows] = await connection.query('SELECT * FROM service_requests WHERE id = ? LIMIT 1', [id]);
+    const isNumericId = !isNaN(Number(id)) && /^\d+$/.test(String(id));
+    const whereSql = isNumericId ? 'WHERE sr.id = ? OR sr.ticket_number = ?' : 'WHERE sr.ticket_number = ?';
+    const whereParams = isNumericId ? [Number(id), String(id)] : [String(id)];
+
+    const [rows] = await connection.query(`
+      SELECT sr.*, 
+             d.id as fleet_device_id,
+             d.device_category as linked_device_category,
+             d.brand as linked_brand,
+             d.model_number as linked_model,
+             d.serial_number as linked_serial,
+             d.notes as linked_device_notes,
+             d.asset_id,
+             d.is_amc,
+             d.amc_tag,
+             d.purchase_date as device_purchase_date,
+             e.name as employee_name,
+             e.email as employee_email,
+             e.phone as employee_phone,
+             e.department as employee_department,
+             b.name as branch_name,
+             tech.name as technician_name,
+             tech.email as technician_email,
+             tech.phone as technician_phone,
+             cp.company_name,
+             cp.contact_person as company_contact_person,
+             cp.phone_number as company_phone,
+             cp.address as company_address,
+             cp.company_logo,
+             cp.gst_number as company_gst,
+             comp_u.email as company_email,
+             inv.id as invoice_id,
+             inv.amount as invoice_amount,
+             inv.invoice_date,
+             inv.status as invoice_status,
+             inv.paid_at as invoice_paid_at
+      FROM service_requests sr
+      LEFT JOIN company_devices d ON sr.device_id = d.id
+      LEFT JOIN company_employees e ON sr.employee_id = e.id
+      LEFT JOIN company_branches b ON (e.branch_id = b.id OR d.branch_id = b.id)
+      LEFT JOIN users tech ON sr.assigned_technician_id = tech.id
+      LEFT JOIN users comp_u ON (sr.company_id = comp_u.id OR (sr.company_id IS NULL AND sr.user_id = comp_u.id AND comp_u.role = 'company'))
+      LEFT JOIN company_profiles cp ON (cp.user_id = sr.company_id OR (sr.company_id IS NULL AND cp.user_id = sr.user_id))
+      LEFT JOIN invoices inv ON inv.id = (
+        SELECT i2.id FROM invoices i2
+        WHERE i2.ticket_id = sr.id
+        ORDER BY i2.is_active DESC, i2.created_at DESC
+        LIMIT 1
+      )
+      ${whereSql}
+      LIMIT 1
+    `, whereParams);
 
     if (rows.length === 0) {
       return res.status(404).json(formatResponse(false, 'Repair request not found.'));
@@ -707,48 +1758,230 @@ const getRepairRequestById = async (req, res, next) => {
     const row = rows[0];
 
     // Ownership & Role-based Authorization:
-    // - Admin and Technician have access
-    // - Customer & Company can only view their own repair request
-    if (req.user && (req.user.role === 'customer' || req.user.role === 'company')) {
-      if (row.user_id && row.user_id !== req.user.id) {
-        return res.status(403).json(formatResponse(false, 'Unauthorized to view this repair request.'));
+    // - Admin has global access
+    // - Technician can view only if assigned, pending, or involved in task transfers
+    // - Company can view if company_id or user_id matches
+    // - Customer can view if user_id matches
+    if (req.user) {
+      if (req.user.role === 'technician') {
+        const canAccess = await canTechnicianAccessTicket(req.user.id, row, connection);
+        if (!canAccess) {
+          return res.status(403).json(formatResponse(false, 'Unauthorized to view this repair request.'));
+        }
+      } else if (req.user.role === 'company') {
+        const rowCompId = row.company_id ? Number(row.company_id) : null;
+        const rowUserId = row.user_id ? Number(row.user_id) : null;
+        const reqUserId = Number(req.user.id);
+        if (rowCompId !== reqUserId && rowUserId !== reqUserId) {
+          return res.status(403).json(formatResponse(false, 'Unauthorized to view this corporate repair request.'));
+        }
+      } else if (req.user.role === 'customer') {
+        if (Number(row.user_id) !== Number(req.user.id)) {
+          return res.status(403).json(formatResponse(false, 'Unauthorized to view this repair request.'));
+        }
       }
     }
 
+    // Fetch associated technician work logs
+    let workLogs = [];
+    try {
+      const [logRows] = await connection.query(
+        `SELECT wl.*, u.name as technician_name, u.email as technician_email 
+         FROM technician_work_logs wl 
+         LEFT JOIN users u ON wl.technician_id = u.id 
+         WHERE wl.repair_request_id = ? 
+         ORDER BY wl.created_at ASC`,
+        [row.id]
+      );
+      workLogs = logRows;
+    } catch (_) { }
+
+    // Fetch prior repair history for this device / serial number
+    let deviceRepairHistory = [];
+    try {
+      const targetDeviceId = row.device_id || row.fleet_device_id;
+      const targetSerial = row.linked_serial || row.serial_number;
+      if (targetDeviceId) {
+        const [histRows] = await connection.query(`
+          SELECT sr.id, sr.ticket_number, sr.created_at, sr.status, sr.priority, 
+                 sr.problem_type, sr.problem_description, sr.repair_cost, sr.payment_status,
+                 tech.name as technician_name
+          FROM service_requests sr
+          LEFT JOIN users tech ON sr.assigned_technician_id = tech.id
+          WHERE sr.device_id = ? AND sr.id != ?
+          ORDER BY sr.created_at DESC
+          LIMIT 10
+        `, [targetDeviceId, row.id]);
+        deviceRepairHistory = histRows;
+      } else if (targetSerial) {
+        const [histRows] = await connection.query(`
+          SELECT sr.id, sr.ticket_number, sr.created_at, sr.status, sr.priority, 
+                 sr.problem_type, sr.problem_description, sr.repair_cost, sr.payment_status,
+                 tech.name as technician_name
+          FROM service_requests sr
+          LEFT JOIN users tech ON sr.assigned_technician_id = tech.id
+          WHERE (sr.serial_number = ? OR sr.device_id IN (SELECT id FROM company_devices WHERE serial_number = ?))
+            AND sr.id != ?
+          ORDER BY sr.created_at DESC
+          LIMIT 10
+        `, [targetSerial, targetSerial, row.id]);
+        deviceRepairHistory = histRows;
+      }
+    } catch (e) {
+      console.error('Error loading device repair history in getRepairRequestById:', e);
+    }
+
     const request = {
+      ...row,
       id: row.id,
+      ticket_number: row.ticket_number,
       ticketNumber: row.ticket_number,
+      user_id: row.user_id,
       userId: row.user_id,
-      deviceId: row.device_id || null,
-      customerName: row.customer_name,
-      mobile: row.mobile,
-      email: row.email,
-      address: row.address,
-      city: row.city,
+      company_id: row.company_id || null,
+      companyId: row.company_id || null,
+      company_name: row.company_name || null,
+      companyName: row.company_name || null,
+      company_email: row.company_email || null,
+      companyEmail: row.company_email || null,
+      company_phone: row.company_phone || null,
+      companyPhone: row.company_phone || null,
+      company_address: row.company_address || null,
+      companyAddress: row.company_address || null,
+      company_contact_person: row.company_contact_person || null,
+      companyContactPerson: row.company_contact_person || null,
+      company_logo: row.company_logo || null,
+      companyLogo: row.company_logo || null,
+      company_gst: row.company_gst || null,
+      companyGst: row.company_gst || null,
+      company_amc_status: !!row.is_amc ? 'Active AMC' : 'Standard Warranty',
+      companyAmcStatus: !!row.is_amc ? 'Active AMC' : 'Standard Warranty',
+      device_id: row.device_id || row.fleet_device_id || null,
+      deviceId: row.device_id || row.fleet_device_id || null,
+      employee_id: row.employee_id || null,
+      employeeId: row.employee_id || null,
+      employee_name: row.employee_name || null,
+      employeeName: row.employee_name || null,
+      employee_email: row.employee_email || null,
+      employeeEmail: row.employee_email || null,
+      employee_phone: row.employee_phone || null,
+      employeePhone: row.employee_phone || null,
+      employee_department: row.employee_department || null,
+      employeeDepartment: row.employee_department || null,
+      branch_name: row.branch_name || null,
+      branchName: row.branch_name || null,
+      asset_id: row.asset_id || null,
+      assetId: row.asset_id || null,
+      is_amc: !!row.is_amc,
+      isAmc: !!row.is_amc,
+      amc_tag: row.amc_tag || null,
+      amcTag: row.amc_tag || null,
+      invoice_id: row.invoice_id || null,
+      invoiceId: row.invoice_id || null,
+      invoice_amount: row.invoice_amount ? parseFloat(row.invoice_amount) : null,
+      invoiceAmount: row.invoice_amount ? parseFloat(row.invoice_amount) : null,
+      invoice_date: row.invoice_date || null,
+      invoiceDate: row.invoice_date || null,
+      invoice_status: row.invoice_status || null,
+      invoiceStatus: row.invoice_status || null,
+      deviceRepairHistory,
+      repairHistory: deviceRepairHistory,
+      repeatCount: deviceRepairHistory.length + 1,
+      customer_name: row.customer_name || row.employee_name || row.company_name || 'Customer',
+      customerName: row.customer_name || row.employee_name || row.company_name || 'Customer',
+      mobile: row.mobile || row.employee_phone || row.company_phone || '',
+      email: row.email || row.employee_email || row.company_email || null,
+      address: row.address || row.company_address || null,
+      city: row.city || row.branch_name || '',
       state: row.state,
+      zip_code: row.zip_code,
       zipCode: row.zip_code,
-      deviceCategory: row.device_category,
-      brand: row.brand,
-      customBrand: row.custom_brand,
-      modelNumber: row.model_number,
-      serialNumber: row.serial_number,
-      deviceConfiguration: row.device_configuration,
+      device_category: row.linked_device_category || row.device_category,
+      deviceCategory: row.linked_device_category || row.device_category,
+      customDeviceCategory: row.custom_device_category || null,
+      brand: row.linked_brand || row.brand,
+      customBrand: row.custom_brand || null,
+      model_number: row.linked_model || row.model_number,
+      modelNumber: row.linked_model || row.model_number,
+      serial_number: row.linked_serial || row.serial_number,
+      serialNumber: row.linked_serial || row.serial_number,
+      deviceConfiguration: row.device_configuration || row.linked_device_notes || null,
+      problem_type: row.problem_type,
       problemType: row.problem_type,
+      customProblemType: row.custom_problem_type || null,
+      problem_description: row.problem_description,
       problemDescription: row.problem_description,
+      service_type: row.service_type,
       serviceType: row.service_type,
+      customServiceType: row.custom_service_type || null,
       priority: row.priority,
       preferredContactMethod: row.preferred_contact_method,
       imagePath: row.image_path,
       screenshotPath: row.screenshot_path,
       assignedTechnicianId: row.assigned_technician_id,
+      technician_name: row.technician_name || null,
+      technicianName: row.technician_name || null,
+      technician_email: row.technician_email || null,
+      technicianEmail: row.technician_email || null,
+      technician_phone: row.technician_phone || null,
       status: row.status,
       customerRepairDescription: row.customer_repair_description,
+      slaDeadline: row.sla_deadline,
+      repairCost: parseFloat(row.repair_cost || 0),
+      repair_cost: parseFloat(row.repair_cost || 0),
+      paymentStatus: row.payment_status || 'unpaid',
+      payment_status: row.payment_status || 'unpaid',
+      collectionStatus: row.collection_status || 'not_applicable',
+      collection_status: row.collection_status || 'not_applicable',
+      paymentId: row.payment_id || null,
+      payment_id: row.payment_id || null,
+      paymentMethod: row.payment_method || null,
+      payment_method: row.payment_method || null,
+      paidAt: row.paid_at || null,
+      paid_at: row.paid_at || null,
+      repairNotes: row.repair_notes,
       feedbackRating: row.feedback_rating,
       feedbackComment: row.feedback_comment,
       feedbackDate: row.feedback_date,
+      // Diagnosis & Estimation Fields
+      diagnosis: row.diagnosis || null,
+      identifiedIssues: row.identified_issues || null,
+      requiredWork: row.required_work || null,
+      estimatedCost: row.estimated_cost !== null && row.estimated_cost !== undefined && Number(row.estimated_cost) > 0 ? parseFloat(row.estimated_cost) : (row.repair_cost ? parseFloat(row.repair_cost) : 0),
+      additionalCharges: row.additional_charges ? parseFloat(row.additional_charges) : 0,
+      totalEstimatedCost: (row.estimated_cost !== null && row.estimated_cost !== undefined && Number(row.estimated_cost) > 0)
+        ? (parseFloat(row.estimated_cost) + (row.additional_charges ? parseFloat(row.additional_charges) : 0))
+        : (row.repair_cost ? parseFloat(row.repair_cost) : 0),
+      inspectionNotes: row.inspection_notes || null,
+      deviceCondition: row.device_condition || null,
+      inspectedAt: row.inspected_at || null,
+      estimateSubmittedAt: row.estimate_submitted_at || null,
+      // Customer Approval & Hold Fields
+      customerApprovalStatus: row.customer_approval_status || 'none',
+      approvedAt: row.approved_at || null,
+      approvedBy: row.approved_by || null,
+      approvalNotes: row.approval_notes || null,
+      rejectedAt: row.rejected_at || null,
+      rejectionReason: row.rejection_reason || null,
+      holdStartDate: row.hold_start_date || null,
+      holdEndDate: row.hold_end_date || null,
+      holdReason: row.hold_reason || null,
+      holdNotes: row.hold_notes || null,
+      reapprovalRequestedAt: row.reapproval_requested_at || null,
+      reapprovalNotes: row.reapproval_notes || null,
+      cancellationReason: row.cancellation_reason || null,
+      cancelledAt: row.cancelled_at || null,
+      cancelledBy: row.cancelled_by || null,
+      amountUpdatedByAdmin: Boolean(row.amount_updated_by_admin),
+      adminUpdatedAmount: row.admin_updated_amount ? parseFloat(row.admin_updated_amount) : null,
+      amountUpdatedAt: row.amount_updated_at || null,
       isRead: row.is_read !== undefined ? row.is_read : 0,
+      created_at: row.created_at,
       createdAt: row.created_at,
-      updatedAt: row.updated_at
+      updated_at: row.updated_at,
+      updatedAt: row.updated_at,
+      workLogs,
+      work_logs: workLogs
     };
 
     return res.status(200).json(formatResponse(true, 'Repair request fetched successfully.', request));
@@ -797,6 +2030,70 @@ const deleteRepairRequest = async (req, res, next) => {
 };
 
 /**
+ * Bulk Soft-Delete / Deactivate repair requests (Admin only)
+ * POST /api/repair-request/bulk-delete
+ */
+const bulkDeleteRepairRequests = async (req, res, next) => {
+  let connection;
+  try {
+    const { ticketIds, reason } = req.body;
+    if (!Array.isArray(ticketIds) || ticketIds.length === 0) {
+      return res.status(400).json(formatResponse(false, 'ticketIds must be a non-empty array of numbers.'));
+    }
+
+    const numericIds = ticketIds.map(id => Number(id)).filter(id => !isNaN(id) && id > 0);
+    if (numericIds.length === 0) {
+      return res.status(400).json(formatResponse(false, 'No valid ticket IDs provided.'));
+    }
+
+    connection = await pool.getConnection();
+
+    // Fetch existing records for audit logging and verification
+    const [existing] = await connection.query(
+      'SELECT id, ticket_number FROM service_requests WHERE id IN (?)',
+      [numericIds]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json(formatResponse(false, 'No matching repair tickets found.'));
+    }
+
+    const foundIds = existing.map(r => r.id);
+    const deactivationReason = reason && String(reason).trim() ? String(reason).trim() : 'Bulk cancelled / deactivated by admin';
+
+    // Soft-deactivate and mark status as cancelled
+    await connection.query(
+      'UPDATE service_requests SET is_active = FALSE, status = "cancelled", deactivated_at = NOW(), deactivated_by = ?, deactivation_reason = ? WHERE id IN (?)',
+      [req.user ? req.user.id : null, deactivationReason, foundIds]
+    );
+
+    logger.info(`Bulk deleted/deactivated ${foundIds.length} repair tickets by admin ID ${req.user ? req.user.id : 'unknown'}.`);
+
+    // Audit logs for each deactivated ticket
+    for (const ticket of existing) {
+      await logActivity(
+        req.user ? req.user.id : null,
+        'repair',
+        'bulk_deactivate_repair_request',
+        'service_requests',
+        ticket.id,
+        { ticketNumber: ticket.ticket_number, reason: deactivationReason },
+        req.ip
+      );
+    }
+
+    return res.status(200).json(formatResponse(true, `Successfully deleted ${foundIds.length} repair ticket(s).`, {
+      deletedCount: foundIds.length,
+      deletedIds: foundIds
+    }));
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
  * Reactivate a deactivated/cancelled repair request (Admin only)
  * PUT /api/repair-request/:id/reactivate
  */
@@ -833,7 +2130,24 @@ const reactivateRepairRequest = async (req, res, next) => {
 };
 
 /**
- * Public route to track a repair request by ID
+ * Helper to mask customer name for unauthenticated public tracking responses
+ */
+const maskCustomerName = (name) => {
+  if (!name || typeof name !== 'string') return 'Customer';
+  const trimmed = name.trim();
+  if (!trimmed) return 'Customer';
+  return trimmed
+    .split(/\s+/)
+    .map(part => {
+      if (part.length <= 1) return part;
+      if (part.length === 2) return part[0] + '*';
+      return part[0] + '*'.repeat(Math.min(part.length - 1, 3));
+    })
+    .join(' ');
+};
+
+/**
+ * Public route to track a repair request by ticketNumber
  * GET /api/repair-request/track/:id
  */
 const trackRequest = async (req, res, next) => {
@@ -842,32 +2156,95 @@ const trackRequest = async (req, res, next) => {
     connection = await pool.getConnection();
     let { id } = req.params;
 
-    if (id.toUpperCase().startsWith('TD-') && isNaN(parseInt(id.substring(3)))) {
-      // It might be a fully valid string, but if they enter TD-24 instead of ID 24 we can test
-    }
-
-    const [rows] = await connection.query(
-      'SELECT id, ticket_number, customer_name, device_category, brand, model_number, serial_number, device_configuration, problem_type, status, customer_repair_description, created_at, updated_at, image_path, screenshot_path FROM service_requests WHERE id = ? OR ticket_number = ? LIMIT 1',
-      [id, id]
-    );
+    const [rows] = await connection.query(`
+      SELECT sr.*, tu.name as technician_name
+      FROM service_requests sr
+      LEFT JOIN users tu ON sr.assigned_technician_id = tu.id
+      WHERE sr.ticket_number = ?
+      LIMIT 1
+    `, [id]);
 
     if (rows.length === 0) {
       return res.status(404).json(formatResponse(false, 'Repair request not found with that ID.'));
     }
 
     const row = rows[0];
+
+    const [invRows] = await connection.query(
+      'SELECT id, status, is_active FROM invoices WHERE ticket_id = ? AND is_active = TRUE ORDER BY id DESC LIMIT 1',
+      [row.id]
+    );
+    const linkedInvoice = invRows.length > 0 ? invRows[0] : null;
+    const isInvoiceFinal = Boolean(linkedInvoice && (linkedInvoice.status === 'Final' || linkedInvoice.status === 'Paid'));
+    const isInvoiceDraft = Boolean(linkedInvoice && linkedInvoice.status === 'Draft');
+
     const trackingData = {
       id: row.id,
       ticketNumber: row.ticket_number,
-      customerName: row.customer_name,
+      invoiceId: linkedInvoice ? linkedInvoice.id : null,
+      invoiceStatus: linkedInvoice ? linkedInvoice.status : null,
+      isInvoiceFinal,
+      isInvoiceDraft,
+      customerName: maskCustomerName(row.customer_name),
       deviceCategory: row.device_category,
+      customDeviceCategory: row.custom_device_category || null,
       brand: row.brand,
+      customBrand: row.custom_brand || null,
       modelNumber: row.model_number,
       serialNumber: row.serial_number,
       deviceConfiguration: row.device_configuration,
       problemType: row.problem_type,
+      customProblemType: row.custom_problem_type || null,
+      serviceType: row.service_type,
+      customServiceType: row.custom_service_type || null,
       status: row.status,
+      assignedTechnicianId: row.assigned_technician_id,
+      technicianName: row.technician_name || null,
+      repairCost: parseFloat(row.repair_cost || 0),
+      repair_cost: parseFloat(row.repair_cost || 0),
+      paymentStatus: row.payment_status || 'unpaid',
+      payment_status: row.payment_status || 'unpaid',
+      collectionStatus: row.collection_status || 'not_applicable',
+      collection_status: row.collection_status || 'not_applicable',
+      paymentId: row.payment_id || null,
+      payment_id: row.payment_id || null,
+      paymentMethod: row.payment_method || null,
+      payment_method: row.payment_method || null,
+      paidAt: row.paid_at || null,
+      paid_at: row.paid_at || null,
       customerRepairDescription: row.customer_repair_description,
+      // Diagnosis & Estimation Fields
+      diagnosis: row.diagnosis || null,
+      identifiedIssues: row.identified_issues || null,
+      requiredWork: row.required_work || null,
+      estimatedCost: row.estimated_cost !== null && row.estimated_cost !== undefined && Number(row.estimated_cost) > 0 ? parseFloat(row.estimated_cost) : (row.repair_cost ? parseFloat(row.repair_cost) : 0),
+      additionalCharges: row.additional_charges ? parseFloat(row.additional_charges) : 0,
+      totalEstimatedCost: (row.estimated_cost !== null && row.estimated_cost !== undefined && Number(row.estimated_cost) > 0)
+        ? (parseFloat(row.estimated_cost) + (row.additional_charges ? parseFloat(row.additional_charges) : 0))
+        : (row.repair_cost ? parseFloat(row.repair_cost) : 0),
+      inspectionNotes: row.inspection_notes || null,
+      deviceCondition: row.device_condition || null,
+      inspectedAt: row.inspected_at || null,
+      estimateSubmittedAt: row.estimate_submitted_at || null,
+      // Customer Approval & Hold Fields
+      customerApprovalStatus: row.customer_approval_status || 'none',
+      approvedAt: row.approved_at || null,
+      approvedBy: row.approved_by || null,
+      approvalNotes: row.approval_notes || null,
+      rejectedAt: row.rejected_at || null,
+      rejectionReason: row.rejection_reason || null,
+      holdStartDate: row.hold_start_date || null,
+      holdEndDate: row.hold_end_date || null,
+      holdReason: row.hold_reason || null,
+      holdNotes: row.hold_notes || null,
+      reapprovalRequestedAt: row.reapproval_requested_at || null,
+      reapprovalNotes: row.reapproval_notes || null,
+      cancellationReason: row.cancellation_reason || null,
+      cancelledAt: row.cancelled_at || null,
+      cancelledBy: row.cancelled_by || null,
+      amountUpdatedByAdmin: Boolean(row.amount_updated_by_admin),
+      adminUpdatedAmount: row.admin_updated_amount ? parseFloat(row.admin_updated_amount) : null,
+      amountUpdatedAt: row.amount_updated_at || null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       imagePath: row.image_path,
@@ -910,20 +2287,23 @@ const notifyCustomer = async (req, res, next) => {
       );
     }
 
-    if (request.status !== 'completed') {
-      return res.status(400).json(formatResponse(false, 'Notification failed: Status must be completed to send ready notification.'));
+    if (request.status !== 'completed' && request.status !== 'delivered') {
+      return res.status(400).json(formatResponse(false, 'Notification failed: Status must be completed or delivered to send notification.'));
     }
 
     if (!request.email) {
       return res.status(400).json(formatResponse(false, 'Customer did not provide an email address.'));
     }
 
+    const isDelivered = request.status === 'delivered';
     // Dispatch email
-    const subject = `Your Repair is Ready - TekDoctor [ID: TD-${request.id}]`;
+    const subject = isDelivered
+      ? `Your Device Service Summary - TekDoctor [ID: ${request.ticket_number || ('TD-' + request.id)}]`
+      : `Your Repair is Ready - TekDoctor [ID: TD-${request.id}]`;
     const html = `
       <h2>Good news, ${request.customer_name}!</h2>
-      <p>Your repair for the <strong>${request.brand} ${request.model_number ? request.model_number : ''} (${request.device_category})</strong> has been successfully completed.</p>
-      <p>Your device is now fully tested and ready for pickup.</p>
+      <p>Your repair for the <strong>${request.brand} ${request.model_number ? request.model_number : ''} (${request.device_category})</strong> ${isDelivered ? 'has been delivered.' : 'has been successfully completed.'}</p>
+      <p>${isDelivered ? 'Your service is fulfilled. Thank you for choosing TekDoctor!' : 'Your device is now fully tested and ready for pickup.'}</p>
       <p><strong>Job Ticket ID:</strong> ${request.ticket_number || ('TD-' + request.id)}</p>
       <br/>
       <p>Thank you for trusting TekDoctor!</p>
@@ -934,17 +2314,212 @@ const notifyCustomer = async (req, res, next) => {
     if (emailSent) {
       // Create Database Notification
       if (request.user_id) {
+        const notifTitle = isDelivered ? 'Device Delivered' : 'Repair Ready for Pickup';
+        const notifMsg = isDelivered
+          ? `Your ${request.brand} device repair has been completed and delivered.`
+          : `Your ${request.brand} device is fully repaired and ready.`;
         await connection.query(
           'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
-          [request.user_id, 'Repair Ready for Pickup', `Your ${request.brand} device is fully repaired and ready.`, request.id, req.user.id]
+          [request.user_id, notifTitle, notifMsg, request.id, req.user.id]
         );
       }
 
-      logger.info(`Customer notified for completed repair ID: ${request.id}`);
+      logger.info(`Customer notified for ${request.status} repair ID: ${request.id}`);
       return res.status(200).json(formatResponse(true, 'Customer has been successfully notified via email!'));
     } else {
       return res.status(500).json(formatResponse(false, 'Failed to send the email notification.'));
     }
+
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
+ * Set or update repair charges / payable amount (Admin only)
+ * PUT /api/repair-request/:id/charges
+ */
+const setRepairCharges = async (req, res, next) => {
+  let connection;
+  try {
+    const { id } = req.params;
+    const { repairCost, notifyCustomer, notes } = req.body;
+
+    if (repairCost === undefined || repairCost === null || isNaN(Number(repairCost)) || Number(repairCost) < 0) {
+      return res.status(400).json(formatResponse(false, 'Please provide a valid non-negative repair charge amount.'));
+    }
+
+    const finalAmount = parseFloat(repairCost);
+
+    connection = await pool.getConnection();
+
+    // Check ticket exists
+    const [existing] = await connection.query(
+      'SELECT id, ticket_number, customer_name, email, mobile, user_id, company_id, brand, model_number, status, repair_cost, payment_status, estimated_cost, additional_charges, customer_approval_status, assigned_technician_id, diagnosis FROM service_requests WHERE id = ? LIMIT 1',
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json(formatResponse(false, 'Repair request not found.'));
+    }
+
+    const request = existing[0];
+
+    // Immutability rule: Never modify charges if already paid
+    if (request.payment_status === 'paid') {
+      return res.status(400).json(formatResponse(false, 'Cannot modify repair charges for an already settled/paid ticket.'));
+    }
+
+    const oldCost = request.repair_cost ? parseFloat(request.repair_cost) : (request.estimated_cost ? parseFloat(request.estimated_cost) : 0);
+    const previousApprovalStatus = request.customer_approval_status || 'none';
+    const amountChanged = Math.abs(oldCost - finalAmount) > 0.001;
+
+    // Estimate re-approval handling:
+    // If the estimate was already approved and the admin changes the amount, mark as awaiting re-approval
+    const isRevised = (previousApprovalStatus === 'approved' && amountChanged);
+    const newApprovalStatus = isRevised ? 'pending_approval' : (previousApprovalStatus === 'none' && request.diagnosis ? 'pending_approval' : previousApprovalStatus);
+    const revisionNote = isRevised
+      ? `Estimate revised from ₹${oldCost.toFixed(2)} to ₹${finalAmount.toFixed(2)} by Admin (${req.user.email}). Awaiting customer re-approval.`
+      : (notes || null);
+
+    // Update repair_cost and synchronize estimated_cost in service_requests
+    await connection.query(
+      `UPDATE service_requests
+       SET repair_cost = ?,
+           estimated_cost = ?,
+           additional_charges = 0,
+           amount_updated_by_admin = TRUE,
+           admin_updated_amount = ?,
+           amount_updated_at = NOW(),
+           customer_approval_status = ?,
+           approval_notes = COALESCE(?, approval_notes),
+           updated_at = NOW()
+       WHERE id = ?`,
+      [finalAmount, finalAmount, finalAmount, newApprovalStatus, revisionNote, id]
+    );
+
+    // Sync technician estimate on any existing draft invoice (never overwrite Final or Paid commercial invoice)
+    await connection.query(
+      "UPDATE invoices SET original_estimate = ?, updated_at = NOW() WHERE ticket_id = ? AND status = 'Draft'",
+      [finalAmount, id]
+    );
+
+    const ticketNum = request.ticket_number || `#${request.id}`;
+    const deviceName = `${request.brand} ${request.model_number || ''}`.trim();
+    logger.info(`Repair charges for ticket ID ${id} (${ticketNum}) set to ₹${finalAmount} by Admin ${req.user.email} (was ₹${oldCost})`);
+
+    // Technician Work Log entry
+    try {
+      await connection.query(
+        `INSERT INTO technician_work_logs (repair_request_id, technician_id, repair_stage, action_performed, notes)
+         VALUES (?, ?, 'Admin Cost Update', ?, ?)`,
+        [
+          id,
+          request.assigned_technician_id || (req.user ? req.user.id : 1),
+          `Admin updated repair amount from ₹${oldCost.toFixed(2)} to ₹${finalAmount.toFixed(2)}. ${isRevised ? 'Estimate marked for customer re-approval.' : ''}`,
+          notes || `Amount finalized by Admin (${req.user.email})`
+        ]
+      );
+    } catch (wlErr) {
+      logger.warn('Failed to insert work log on admin cost update: ' + wlErr.message);
+    }
+
+    // Audit log
+    await logActivity(
+      req.user ? req.user.id : null,
+      'repair',
+      'set_repair_charges',
+      'service_requests',
+      id,
+      {
+        oldCost,
+        newCost: finalAmount,
+        previousApprovalStatus,
+        newApprovalStatus,
+        isRevised,
+        notes: notes || null
+      },
+      req.ip
+    );
+
+    // 1. In-app notification to customer or corporate user
+    const recipientUserId = request.user_id || request.company_id;
+    if (notifyCustomer !== false && recipientUserId) {
+      try {
+        const notifTitle = isRevised
+          ? `Estimate Revised: ₹${finalAmount.toFixed(2)} [${ticketNum}]`
+          : `Repair Charges Finalized: ₹${finalAmount.toFixed(2)} [${ticketNum}]`;
+        const notifMessage = isRevised
+          ? `Admin has updated the repair estimate for your ${deviceName} to ₹${finalAmount.toFixed(2)} (was ₹${oldCost.toFixed(2)}). Please review and approve the revised estimate so repair work can proceed.`
+          : `Admin has finalized the repair charges (₹${finalAmount.toFixed(2)}) for your ${deviceName}. You can now review and proceed with online payment.`;
+        await connection.query(
+          'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
+          [recipientUserId, notifTitle, notifMessage, id, req.user.id]
+        );
+      } catch (notifErr) {
+        logger.warn('Failed to send payment request notification: ' + notifErr.message);
+      }
+    }
+
+    // 2. Customer email notification if email exists
+    if (notifyCustomer !== false && request.email) {
+      try {
+        const emailSubject = isRevised
+          ? `TekDoctor - Revised Repair Estimate [${ticketNum}]`
+          : `TekDoctor - Repair Charges Finalized [${ticketNum}]`;
+        const emailHtml = `
+          <div style="font-family: sans-serif; max-width: 600px; color: #333;">
+            <h3 style="color: #00f0ff;">${isRevised ? 'Revised Repair Estimate' : 'Repair Charges Finalized'}</h3>
+            <p>Dear ${request.customer_name},</p>
+            <p>The repair charges for your device <strong>${deviceName}</strong> (Ticket: <strong>${ticketNum}</strong>) have been updated by Admin.</p>
+            <div style="background: #f4f4f5; padding: 15px; border-radius: 8px; margin: 15px 0;">
+              ${oldCost > 0 ? `<p style="margin: 0 0 8px 0; color: #71717a;"><strong>Previous Amount:</strong> ₹${oldCost.toFixed(2)}</p>` : ''}
+              <p style="margin: 0; font-size: 18px; font-weight: bold; color: #0284c7;"><strong>Authoritative Amount:</strong> ₹${finalAmount.toFixed(2)}</p>
+              ${notes ? `<p style="margin: 8px 0 0 0; font-size: 13px; color: #52525b;"><strong>Note:</strong> ${notes}</p>` : ''}
+            </div>
+            <p>${isRevised ? 'Please log in to your account to review and approve the revised estimate so our technician can proceed.' : 'You may now proceed to complete the payment online at your convenience.'}</p>
+            <p>Best regards,<br/>The TekDoctor Team</p>
+          </div>
+        `;
+        sendCustomerNotification(request.email, emailSubject, emailHtml).catch(e => logger.warn(`Customer charge update email error: ${e.message}`));
+      } catch (emailErr) { }
+    }
+
+    // 3. In-app notification to assigned technician
+    if (request.assigned_technician_id) {
+      try {
+        await connection.query(
+          'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
+          [
+            request.assigned_technician_id,
+            `Repair Charges Updated by Admin [${ticketNum}]`,
+            `Admin has updated the repair charges for Ticket ${ticketNum} (${request.customer_name}) to ₹${finalAmount.toFixed(2)} (was ₹${oldCost.toFixed(2)}). ${isRevised ? 'Estimate awaiting customer re-approval.' : ''}`,
+            id,
+            req.user.id
+          ]
+        );
+      } catch (techNotifErr) {
+        logger.warn('Failed to send technician charge update notification: ' + techNotifErr.message);
+      }
+    }
+
+    return res.status(200).json(formatResponse(true, `Repair charges updated to ₹${finalAmount.toFixed(2)}.`, {
+      id: Number(id),
+      ticketNumber: request.ticket_number,
+      repairCost: finalAmount,
+      repair_cost: finalAmount,
+      estimatedCost: finalAmount,
+      estimated_cost: finalAmount,
+      additionalCharges: 0,
+      additional_charges: 0,
+      customerApprovalStatus: newApprovalStatus,
+      paymentStatus: request.payment_status || 'unpaid',
+      amountUpdatedByAdmin: true,
+      adminUpdatedAmount: finalAmount,
+      amountUpdatedAt: new Date().toISOString()
+    }));
 
   } catch (error) {
     next(error);
@@ -961,8 +2536,11 @@ const updateRepairRequest = async (req, res, next) => {
   try {
     const { id } = req.params;
     const {
-      customerName, mobile, email, address, city, state, zipCode, deviceCategory, brand,
-      modelNumber, serialNumber, deviceConfiguration, problemType, problemDescription, priority
+      customerName, mobile, email, address, city, state, zipCode,
+      deviceCategory, customDeviceCategory, brand, customBrand,
+      modelNumber, serialNumber, deviceConfiguration,
+      problemType, customProblemType, problemDescription,
+      serviceType, customServiceType, priority
     } = req.body;
 
     connection = await pool.getConnection();
@@ -985,22 +2563,49 @@ const updateRepairRequest = async (req, res, next) => {
       }
     }
 
+    const finalDeviceCategory = deviceCategory !== undefined ? (deviceCategory ? deviceCategory.trim() : '') : existing[0].device_category;
+    const finalCustomDeviceCategory = (finalDeviceCategory && finalDeviceCategory.toLowerCase() === 'other' && customDeviceCategory)
+      ? customDeviceCategory.trim()
+      : null;
+
     await connection.query(`
       UPDATE service_requests SET
         customer_name = ?, mobile = ?, email = ?, address = ?, city = ?, state = ?, zip_code = ?,
-        device_category = ?, brand = ?, model_number = ?, 
+        device_category = ?, custom_device_category = ?, brand = ?, custom_brand = ?, model_number = ?, 
         serial_number = ?, device_configuration = ?, 
-        problem_type = ?, problem_description = ?, priority = ?,
+        problem_type = ?, custom_problem_type = ?, problem_description = ?,
+        service_type = ?, custom_service_type = ?, priority = ?,
         image_path = ?, screenshot_path = ?
       WHERE id = ?
     `, [
       customerName, mobile, email || null, address || null, city, state || null, zipCode || null,
-      deviceCategory, brand, modelNumber || null,
+      finalDeviceCategory, finalCustomDeviceCategory, brand, customBrand || null, modelNumber || null,
       serialNumber || null, deviceConfiguration || null,
-      problemType, problemDescription || null, priority || 'Standard',
+      problemType, customProblemType || null, problemDescription || null,
+      serviceType || 'Bring to Service Center', customServiceType || null, priority || 'Standard',
       deviceImagePath, screenshotPath,
       id
     ]);
+
+    const repairCostVal = req.body.repairCost !== undefined ? req.body.repairCost : req.body.repair_cost;
+    if (repairCostVal !== undefined && !isNaN(Number(repairCostVal)) && Number(repairCostVal) >= 0) {
+      const parsedCost = parseFloat(repairCostVal);
+      await connection.query(
+        `UPDATE service_requests
+         SET repair_cost = ?,
+             estimated_cost = ?,
+             additional_charges = 0,
+             amount_updated_by_admin = TRUE,
+             admin_updated_amount = ?,
+             amount_updated_at = NOW()
+         WHERE id = ? AND (payment_status IS NULL OR payment_status != "paid")`,
+        [parsedCost, parsedCost, parsedCost, id]
+      );
+      await connection.query(
+        "UPDATE invoices SET original_estimate = ?, updated_at = NOW() WHERE ticket_id = ? AND status = 'Draft'",
+        [parsedCost, id]
+      );
+    }
 
     logger.info(`Repair request ${id} updated by Admin ${req.user.email}`);
 
@@ -1022,6 +2627,26 @@ const getWorkLogs = async (req, res, next) => {
   let connection;
   try {
     connection = await pool.getConnection();
+
+    // Verify request existence
+    const [request] = await connection.query(
+      'SELECT id, assigned_technician_id, pending_technician_id, user_id FROM service_requests WHERE id = ? LIMIT 1',
+      [id]
+    );
+    if (request.length === 0) {
+      return res.status(404).json(formatResponse(false, 'Repair request not found.'));
+    }
+
+    // Role-based authorization for technicians:
+    if (req.user && req.user.role === 'technician') {
+      const canAccess = await canTechnicianAccessTicket(req.user.id, request[0], connection);
+      if (!canAccess) {
+        return res.status(403).json(
+          formatResponse(false, 'Unauthorized: You can only view work logs for your authorized repair tickets.')
+        );
+      }
+    }
+
     const [rows] = await connection.query(
       `SELECT wl.*, u.name as technician_name, u.email as technician_email 
        FROM technician_work_logs wl 
@@ -1105,7 +2730,10 @@ const createWorkLog = async (req, res, next) => {
 // PUT /api/repair-request/:id/customer-description (Admin / Technician)
 const updateCustomerDescription = async (req, res, next) => {
   const { id } = req.params;
-  const { customerRepairDescription } = req.body;
+  const rawNote = req.body.customerRepairDescription !== undefined
+    ? req.body.customerRepairDescription
+    : (req.body.notes !== undefined ? req.body.notes : (req.body.description !== undefined ? req.body.description : req.body.problemDescription));
+  const customerRepairDescription = typeof rawNote === 'string' ? rawNote.trim() : (rawNote || null);
   let connection;
   try {
     connection = await pool.getConnection();
@@ -1128,13 +2756,13 @@ const updateCustomerDescription = async (req, res, next) => {
 
     await connection.query(
       'UPDATE service_requests SET customer_repair_description = ? WHERE id = ?',
-      [customerRepairDescription || null, id]
+      [customerRepairDescription, id]
     );
 
     // Track activity log
     await logActivity(
       req.user.id,
-      'technician',
+      req.user.role || 'technician',
       'update_customer_description',
       'service_requests',
       id,
@@ -1319,9 +2947,23 @@ const cancelRepairRequest = async (req, res, next) => {
 
     const request = rows[0];
 
-    // Verify ownership
-    if (req.user.role !== 'admin' && request.user_id !== req.user.id) {
-      return res.status(403).json(formatResponse(false, 'Unauthorized to cancel this request.'));
+    // Verify role and ownership
+    if (req.user.role === 'admin') {
+      // Admin allowed according to existing rules
+    } else if (req.user.role === 'customer') {
+      if (!request.user_id || Number(request.user_id) !== Number(req.user.id)) {
+        return res.status(403).json(formatResponse(false, 'Unauthorized to cancel this repair request.'));
+      }
+    } else if (req.user.role === 'company') {
+      const rowCompId = request.company_id ? Number(request.company_id) : null;
+      const rowUserId = request.user_id ? Number(request.user_id) : null;
+      const reqUserId = Number(req.user.id);
+      if (rowCompId !== reqUserId && rowUserId !== reqUserId) {
+        return res.status(403).json(formatResponse(false, 'Unauthorized to cancel this corporate repair request.'));
+      }
+    } else {
+      // Technicians and unauthorized roles are denied
+      return res.status(403).json(formatResponse(false, 'Unauthorized to cancel this repair request.'));
     }
 
     if (request.status !== 'pending' && request.status !== 'submitted') {
@@ -1543,8 +3185,8 @@ const transferTicket = async (req, res, next) => {
     const [rows] = await connection.query('SELECT assigned_technician_id, ticket_number, status FROM service_requests WHERE id = ?', [id]);
     if (rows.length === 0) return res.status(404).json(formatResponse(false, 'Request not found.'));
 
-    if (['completed', 'cancelled'].includes(rows[0].status)) {
-      return res.status(400).json(formatResponse(false, 'Cannot transfer a completed or cancelled ticket.'));
+    if (['completed', 'delivered', 'cancelled'].includes(rows[0].status)) {
+      return res.status(400).json(formatResponse(false, 'Cannot transfer a completed, delivered, or cancelled ticket.'));
     }
 
     if (req.user.role === 'technician' && rows[0].assigned_technician_id !== req.user.id) {
@@ -1603,13 +3245,7 @@ const getTicketTransfers = async (req, res, next) => {
     if (req.user.role === 'technician') {
       const isAssigned = tickets[0].assigned_technician_id === req.user.id || tickets[0].pending_technician_id === req.user.id;
       if (!isAssigned) {
-        const [transfersCount] = await connection.query(
-          'SELECT id FROM task_transfers WHERE repair_request_id = ? AND (from_technician_id = ? OR to_technician_id = ?) LIMIT 1',
-          [id, req.user.id, req.user.id]
-        );
-        if (transfersCount.length === 0) {
-          return res.status(403).json(formatResponse(false, 'You do not have permission to view this transfer history.'));
-        }
+        return res.status(403).json(formatResponse(false, 'You do not have permission to view this transfer history.'));
       }
     }
 
@@ -1787,11 +3423,14 @@ const submitFeedback = async (req, res, next) => {
     if (!rating || rating < 1 || rating > 5) {
       return res.status(400).json(formatResponse(false, 'Valid rating (1-5) is required.'));
     }
+    if (comment && typeof comment === 'string' && comment.trim().length > 500) {
+      return res.status(400).json(formatResponse(false, 'Feedback comment cannot exceed 500 characters.'));
+    }
 
     connection = await pool.getConnection();
 
     const [existing] = await connection.query(
-      'SELECT status, feedback_rating, user_id FROM service_requests WHERE id = ? LIMIT 1',
+      'SELECT status, feedback_rating, user_id, assigned_technician_id, ticket_number FROM service_requests WHERE id = ? LIMIT 1',
       [id]
     );
 
@@ -1801,8 +3440,8 @@ const submitFeedback = async (req, res, next) => {
 
     const request = existing[0];
 
-    if (request.status !== 'completed') {
-      return res.status(400).json(formatResponse(false, 'Feedback can only be submitted for completed requests.'));
+    if (request.status !== 'completed' && request.status !== 'delivered') {
+      return res.status(400).json(formatResponse(false, 'Feedback can only be submitted for completed or delivered requests.'));
     }
 
     if (request.feedback_rating !== null) {
@@ -1825,8 +3464,9 @@ const submitFeedback = async (req, res, next) => {
     await logActivity(req.user.id, 'repair', 'submit_feedback', 'service_requests', id, { rating, comment }, req.ip);
 
     try {
+      const ticketRef = request.ticket_number || id;
       const [admins] = await connection.query("SELECT id FROM users WHERE role = 'admin'");
-      const notificationTitle = `New Service Feedback [Ticket ${id}]`;
+      const notificationTitle = `New Service Feedback [Ticket ${ticketRef}]`;
       const notificationMessage = `A customer submitted a ${rating}-star review for their repair.`;
 
       for (const admin of admins) {
@@ -1835,9 +3475,1009 @@ const submitFeedback = async (req, res, next) => {
           [admin.id, notificationTitle, notificationMessage, id, req.user.id]
         );
       }
+
+      // Also notify assigned technician
+      if (request.assigned_technician_id) {
+        const techNotificationTitle = `Customer Feedback Received [Ticket ${ticketRef}]`;
+        const techNotificationMessage = `Customer rated your completed service ${rating} star${rating > 1 ? 's' : ''}${comment ? `: "${comment}"` : '.'}`;
+        await connection.query(
+          'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
+          [request.assigned_technician_id, techNotificationTitle, techNotificationMessage, id, req.user.id]
+        );
+      }
     } catch (notifErr) { }
 
     return res.status(200).json(formatResponse(true, 'Feedback submitted successfully.'));
+
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
+ * Submit Technician Device Diagnosis & Cost Estimate
+ * POST /api/repair-request/:id/diagnosis
+ */
+const submitDiagnosis = async (req, res, next) => {
+  const { id } = req.params;
+  const {
+    diagnosis,
+    identifiedIssues,
+    requiredWork,
+    requiredParts,
+    estimatedCost,
+    additionalCharges,
+    estimatedCompletionDate,
+    inspectionNotes,
+    deviceCondition
+  } = req.body;
+  let connection;
+
+  try {
+    if (!diagnosis || diagnosis.trim() === '') {
+      return res.status(400).json(formatResponse(false, 'Diagnosis / identified problem is required.'));
+    }
+
+    const rawEstCost = req.body.estimatedCost !== undefined ? req.body.estimatedCost : req.body.estimated_cost;
+    const rawAddCharges = req.body.additionalCharges !== undefined ? req.body.additionalCharges : req.body.additional_charges;
+
+    if (rawEstCost === undefined || rawEstCost === null || String(rawEstCost).trim() === '' || isNaN(Number(rawEstCost)) || Number(rawEstCost) < 0) {
+      return res.status(400).json(formatResponse(false, 'Valid non-negative estimated repair cost is required.'));
+    }
+
+    const estCostNum = parseFloat(rawEstCost);
+    if (!isFinite(estCostNum) || estCostNum > 10000000) {
+      return res.status(400).json(formatResponse(false, 'Estimated repair cost cannot exceed ₹10,000,000.'));
+    }
+    const costParts = String(rawEstCost).split('.');
+    if (costParts.length === 2 && costParts[1].length > 2) {
+      return res.status(400).json(formatResponse(false, 'Estimated repair cost cannot exceed 2 decimal places.'));
+    }
+
+    const addChargesNum = (rawAddCharges !== undefined && rawAddCharges !== null && String(rawAddCharges).trim() !== '')
+      ? parseFloat(rawAddCharges)
+      : 0;
+
+    if (isNaN(addChargesNum) || !isFinite(addChargesNum) || addChargesNum < 0 || addChargesNum > 10000000) {
+      return res.status(400).json(formatResponse(false, 'Valid non-negative additional charges amount (up to ₹10,000,000) is required.'));
+    }
+    const addParts = String(rawAddCharges).split('.');
+    if (addParts.length === 2 && addParts[1].length > 2) {
+      return res.status(400).json(formatResponse(false, 'Additional charges cannot exceed 2 decimal places.'));
+    }
+
+    const totalEstimated = Math.round((estCostNum + addChargesNum) * 100) / 100;
+
+    connection = await pool.getConnection();
+
+    const [existing] = await connection.query(
+      'SELECT * FROM service_requests WHERE id = ? LIMIT 1',
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json(formatResponse(false, 'Repair request not found.'));
+    }
+
+    const request = existing[0];
+
+    // Role verification: check ownership first to prevent 400 leaks and return 403 Forbidden
+    if (req.user && req.user.role === 'technician') {
+      if (Number(request.assigned_technician_id) !== Number(req.user.id)) {
+        return res.status(403).json(
+          formatResponse(false, "Unauthorized: You can only submit diagnosis for your own assigned tasks.")
+        );
+      }
+
+      // If customer has already approved the estimate, technician cannot overwrite it
+      if (request.customer_approval_status === 'approved') {
+        return res.status(400).json(
+          formatResponse(false, 'Estimate has already been approved by the customer and is locked. Contact an Administrator if a revision is required.')
+        );
+      }
+    }
+
+    if (request.status === 'cancelled') {
+      return res.status(400).json(formatResponse(false, 'Cannot submit diagnosis for a cancelled repair request.'));
+    }
+
+    if (request.payment_status === 'paid') {
+      return res.status(400).json(formatResponse(false, 'Cannot modify estimate for an already paid and settled repair ticket.'));
+    }
+
+    if (request.status === 'completed' || request.status === 'delivered') {
+      return res.status(400).json(formatResponse(false, 'Cannot submit estimate for an already completed repair request.'));
+    }
+
+    // Update service request
+    await connection.query(`
+      UPDATE service_requests
+      SET diagnosis = ?,
+          identified_issues = ?,
+          required_work = ?,
+          required_parts = ?,
+          estimated_cost = ?,
+          additional_charges = ?,
+          repair_cost = ?,
+          inspection_notes = ?,
+          device_condition = ?,
+          inspected_at = NOW(),
+          estimate_submitted_at = NOW(),
+          customer_approval_status = 'pending_approval',
+          hold_start_date = NULL,
+          hold_end_date = NULL,
+          hold_reason = NULL,
+          hold_notes = NULL,
+          estimated_completion_date = ?
+      WHERE id = ?
+    `, [
+      diagnosis.trim(),
+      identifiedIssues ? identifiedIssues.trim() : null,
+      requiredWork ? requiredWork.trim() : null,
+      requiredParts ? requiredParts.trim() : null,
+      estCostNum,
+      addChargesNum,
+      totalEstimated,
+      inspectionNotes ? inspectionNotes.trim() : null,
+      deviceCondition ? deviceCondition.trim() : null,
+      estimatedCompletionDate || null,
+      id
+    ]);
+
+    const ticketNum = request.ticket_number || `#${request.id}`;
+    const deviceName = `${request.brand} ${request.model_number || ''}`.trim();
+    const formattedCostStr = `₹${totalEstimated.toFixed(2)}`;
+
+    // Create a direct message in messages table
+    const estimateMessageText = `Sir, your device has the following issues: ${diagnosis.trim()}.${requiredWork ? ` Required Work: ${requiredWork.trim()}.` : ''} The estimated repair cost is ${formattedCostStr}. Please review the estimate and approve it if it is within your budget.`;
+    
+    // Create direct messages and notifications for customer/company recipients
+    const recipientUserIds = new Set();
+    if (request.company_id) recipientUserIds.add(request.company_id);
+    if (request.user_id) recipientUserIds.add(request.user_id);
+
+    for (const recipientId of recipientUserIds) {
+      try {
+        await connection.query(`
+          INSERT INTO messages (repair_request_id, sender_id, receiver_id, message)
+          VALUES (?, ?, ?, ?)
+        `, [
+          id,
+          req.user ? req.user.id : request.assigned_technician_id || 1,
+          recipientId,
+          estimateMessageText
+        ]);
+      } catch (msgErr) {
+        logger.warn(`Failed to insert diagnosis message: ${msgErr.message}`);
+      }
+
+      // In-app notification
+      try {
+        await connection.query(`
+          INSERT INTO notifications (user_id, title, message, ticket_id, sender_id)
+          VALUES (?, ?, ?, ?, ?)
+        `, [
+          recipientId,
+          `A repair budget is ready for your approval [${ticketNum}]`,
+          `Diagnosis completed for ${deviceName}. Estimated repair cost: ${formattedCostStr}. Please review and approve your estimate.`,
+          id,
+          req.user ? req.user.id : null
+        ]);
+      } catch (notifErr) {
+        logger.warn(`Failed to create estimate notification: ${notifErr.message}`);
+      }
+    }
+
+    // Customer email notification
+    if (request.email) {
+      try {
+        const config = require('../config/app.config');
+        const frontendBaseUrl = config.frontend?.url || config.server?.publicOrigin || '';
+
+        const approvalToken = generateEstimateActionToken({
+          ticketId: id,
+          ticketNumber: ticketNum,
+          action: 'approve_estimate',
+          email: request.email
+        });
+        const rejectionToken = generateEstimateActionToken({
+          ticketId: id,
+          ticketNumber: ticketNum,
+          action: 'reject_estimate',
+          email: request.email
+        });
+
+        const approveUrl = `${frontendBaseUrl}/repair/status?id=${encodeURIComponent(ticketNum)}&action=approve&token=${encodeURIComponent(approvalToken)}`;
+        const rejectUrl = `${frontendBaseUrl}/repair/status?id=${encodeURIComponent(ticketNum)}&action=reject&token=${encodeURIComponent(rejectionToken)}`;
+        const trackingUrl = `${frontendBaseUrl}/repair/status?id=${encodeURIComponent(ticketNum)}`;
+
+        const emailSubject = `TekDoctor - Repair Diagnosis & Estimate Ready [${ticketNum}]`;
+        const emailHtml = `
+          <div style="font-family: sans-serif; max-width: 600px; color: #333; line-height: 1.5;">
+            <div style="background: #09090b; padding: 20px; border-radius: 8px 8px 0 0; text-align: center;">
+              <h2 style="color: #00f0ff; margin: 0; font-family: monospace; letter-spacing: 2px;">TEKDOCTOR SERVICE</h2>
+            </div>
+            <div style="background: #ffffff; padding: 24px; border: 1px solid #e4e4e7; border-radius: 0 0 8px 8px;">
+              <h3 style="color: #09090b; margin-top: 0;">Repair Diagnosis & Cost Estimate</h3>
+              <p>Dear ${request.customer_name},</p>
+              <p>Our technician has inspected your device <strong>${deviceName}</strong> (Ticket: <strong>${ticketNum}</strong>).</p>
+              <div style="background: #f4f4f5; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #00f0ff;">
+                <p style="margin: 0 0 8px 0;"><strong>Diagnosis:</strong> ${diagnosis.trim()}</p>
+                ${identifiedIssues ? `<p style="margin: 0 0 8px 0;"><strong>Identified Issues:</strong> ${identifiedIssues.trim()}</p>` : ''}
+                ${requiredWork ? `<p style="margin: 0 0 8px 0;"><strong>Required Work:</strong> ${requiredWork.trim()}</p>` : ''}
+                ${requiredParts ? `<p style="margin: 0 0 8px 0;"><strong>Parts Required:</strong> ${requiredParts.trim()}</p>` : ''}
+                <p style="margin: 0 0 8px 0;"><strong>Estimated Repair Cost:</strong> ₹${estCostNum.toFixed(2)}</p>
+                ${addChargesNum > 0 ? `<p style="margin: 0 0 8px 0;"><strong>Additional Charges:</strong> ₹${addChargesNum.toFixed(2)}</p>` : ''}
+                <p style="margin: 0; font-size: 16px; font-weight: bold; color: #0284c7;"><strong>Total Estimate:</strong> ${formattedCostStr}</p>
+              </div>
+
+              <div style="margin: 24px 0; text-align: center;">
+                <a href="${approveUrl}" style="background: #10b981; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: bold; display: inline-block; margin-right: 12px; margin-bottom: 8px;">
+                  Approve Estimate (${formattedCostStr})
+                </a>
+                <a href="${rejectUrl}" style="background: #ef4444; color: #ffffff; text-decoration: none; padding: 12px 20px; border-radius: 6px; font-weight: bold; display: inline-block; margin-bottom: 8px;">
+                  Decline Estimate
+                </a>
+              </div>
+
+              <p style="font-size: 13px; color: #71717a;">
+                You can also track real-time progress or sign in to your customer dashboard at: <br/>
+                <a href="${trackingUrl}" style="color: #0284c7;">${trackingUrl}</a>
+              </p>
+              <p style="font-size: 12px; color: #a1a1aa; margin-top: 24px;">
+                Note: This estimate authorization link is valid for 7 days. If you did not request this service, please ignore this email.
+              </p>
+              <p style="margin-top: 20px;">Best regards,<br/><strong>The TekDoctor Service Team</strong></p>
+            </div>
+          </div>
+        `;
+        sendCustomerNotification(request.email, emailSubject, emailHtml).catch(e => logger.warn(`Customer estimate email error: ${e.message}`));
+      } catch (emailErr) { }
+    }
+
+    // Admin in-app notification
+    try {
+      const [admins] = await connection.query("SELECT id FROM users WHERE role = 'admin'");
+      for (const admin of admins) {
+        if (!req.user || req.user.id !== admin.id) {
+          await connection.query(`
+            INSERT INTO notifications (user_id, title, message, ticket_id, sender_id)
+            VALUES (?, ?, ?, ?, ?)
+          `, [
+            admin.id,
+            `Diagnosis & Estimate Submitted [${ticketNum}]`,
+            `Technician submitted estimate of ${formattedCostStr} for ticket ${ticketNum} (${request.customer_name}). Awaiting customer approval.`,
+            id,
+            req.user ? req.user.id : null
+          ]);
+        }
+      }
+    } catch (adminNotifErr) { }
+
+    // Work log
+    try {
+      const isRevision = request.customer_approval_status === 'rejected' ||
+                         request.customer_approval_status === 'reapproval_requested' ||
+                         (request.estimated_cost && Number(request.estimated_cost) > 0);
+      const stageName = isRevision ? 'Estimate Revised' : 'Diagnosis & Estimation';
+      const actionText = isRevision
+        ? `Submitted revised estimate: ${formattedCostStr}. Diagnosis: "${diagnosis.substring(0, 100)}".`
+        : `Submitted diagnosis: "${diagnosis.substring(0, 100)}". Estimate: ${formattedCostStr}.`;
+
+      await connection.query(`
+        INSERT INTO technician_work_logs (repair_request_id, technician_id, repair_stage, action_performed, parts_replaced, notes)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [
+        id,
+        req.user ? req.user.id : request.assigned_technician_id,
+        stageName,
+        actionText,
+        requiredParts || null,
+        inspectionNotes || null
+      ]);
+    } catch (wlErr) { }
+
+    // Activity log
+    await logActivity(
+      req.user ? req.user.id : null,
+      'repair',
+      'submit_diagnosis_estimate',
+      'service_requests',
+      id,
+      {
+        ticketNumber: ticketNum,
+        estimatedCost: estCostNum,
+        additionalCharges: addChargesNum,
+        total: totalEstimated,
+        diagnosis
+      },
+      req.ip
+    );
+
+    return res.status(200).json(formatResponse(true, 'Diagnosis and estimate submitted successfully.', {
+      id: Number(id),
+      diagnosis,
+      identifiedIssues,
+      requiredWork,
+      requiredParts,
+      estimatedCost: estCostNum,
+      additionalCharges: addChargesNum,
+      repairCost: totalEstimated,
+      repair_cost: totalEstimated,
+      totalEstimatedCost: totalEstimated,
+      totalEstimated,
+      customerApprovalStatus: 'pending_approval'
+    }));
+
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
+ * Customer / Company approves technician estimate
+ * POST /api/repair-request/:id/approve-estimate
+ */
+const approveEstimate = async (req, res, next) => {
+  const { id } = req.params;
+  const { notes } = req.body || {};
+  let connection;
+
+  try {
+    connection = await pool.getConnection();
+
+    const [existing] = await connection.query(
+      'SELECT * FROM service_requests WHERE id = ? LIMIT 1',
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json(formatResponse(false, 'Repair request not found.'));
+    }
+
+    const request = existing[0];
+
+    // 1. Authoritative Ownership & Role Authorization Check
+    const authResult = verifyEstimateAuthorization(req, request, 'approve_estimate');
+    if (!authResult.authorized) {
+      return res.status(authResult.statusCode || 403).json(formatResponse(false, authResult.error || 'Unauthorized'));
+    }
+
+    // 2. State Eligibility Guards
+    if (request.status === 'cancelled') {
+      return res.status(400).json(formatResponse(false, 'Cannot approve estimate for a cancelled repair request.'));
+    }
+
+    if (request.payment_status === 'paid') {
+      return res.status(400).json(formatResponse(false, 'This repair ticket has already been paid and settled.'));
+    }
+
+    if (request.status === 'completed' || request.status === 'delivered') {
+      return res.status(400).json(formatResponse(false, 'Cannot approve estimate for an already completed repair request.'));
+    }
+
+    // Check if estimate exists
+    if (!request.diagnosis && (!request.estimated_cost || Number(request.estimated_cost) <= 0)) {
+      return res.status(400).json(formatResponse(false, 'No estimate has been submitted for this ticket yet.'));
+    }
+
+    // Prevent duplicate approval / replay
+    if (request.customer_approval_status === 'approved') {
+      return res.status(400).json(formatResponse(false, 'Estimate is already approved.'));
+    }
+
+    const allowedApprovalStatuses = ['pending_approval', 'on_hold', 'reapproval_requested', 'none'];
+    if (!allowedApprovalStatuses.includes(request.customer_approval_status)) {
+      return res.status(400).json(formatResponse(false, `Ticket cannot be approved from current approval status: ${request.customer_approval_status}.`));
+    }
+
+    // Update approval status, exit hold if applicable, and move status to in_progress
+    const approverUserId = req.user ? req.user.id : (authResult.userId || request.user_id || null);
+    await connection.query(`
+      UPDATE service_requests
+      SET customer_approval_status = 'approved',
+          approved_at = NOW(),
+          approved_by = ?,
+          approval_notes = ?,
+          status = CASE WHEN status = 'pending' THEN 'in_progress' ELSE status END,
+          hold_start_date = NULL,
+          hold_end_date = NULL,
+          hold_reason = NULL,
+          hold_notes = NULL
+      WHERE id = ?
+    `, [approverUserId, notes || null, id]);
+
+    const ticketNum = request.ticket_number || `#${request.id}`;
+    const totalCostStr = `₹${(parseFloat(request.repair_cost || request.estimated_cost || 0)).toFixed(2)}`;
+
+    // 1. Notify Assigned Technician
+    if (request.assigned_technician_id) {
+      try {
+        await connection.query(`
+          INSERT INTO notifications (user_id, title, message, ticket_id, sender_id)
+          VALUES (?, ?, ?, ?, ?)
+        `, [
+          request.assigned_technician_id,
+          `Estimate Approved [${ticketNum}]`,
+          `Customer ${request.customer_name} has APPROVED the repair estimate of ${totalCostStr}. You may now proceed with the repair.`,
+          id,
+          req.user ? req.user.id : null
+        ]);
+      } catch (notifErr) { }
+    }
+
+    // 2. Notify Admins
+    try {
+      const [admins] = await connection.query("SELECT id FROM users WHERE role = 'admin'");
+      for (const admin of admins) {
+        await connection.query(`
+          INSERT INTO notifications (user_id, title, message, ticket_id, sender_id)
+          VALUES (?, ?, ?, ?, ?)
+        `, [
+          admin.id,
+          `Estimate Approved [${ticketNum}]`,
+          `Estimate of ${totalCostStr} for ticket ${ticketNum} (${request.customer_name}) was approved by the customer.`,
+          id,
+          req.user ? req.user.id : null
+        ]);
+      }
+    } catch (notifErr) { }
+
+    // 3. Work Log
+    try {
+      await connection.query(`
+        INSERT INTO technician_work_logs (repair_request_id, technician_id, repair_stage, action_performed, notes)
+        VALUES (?, ?, 'Estimate Approved', 'Customer approved estimated repair cost. Authorized to proceed with repair.', ?)
+      `, [
+        id,
+        request.assigned_technician_id || (req.user ? req.user.id : 1),
+        notes || null
+      ]);
+    } catch (wlErr) { }
+
+    // 4. Activity Log
+    await logActivity(
+      req.user ? req.user.id : null,
+      'repair',
+      'approve_estimate',
+      'service_requests',
+      id,
+      {
+        ticketNumber: ticketNum,
+        customerName: request.customer_name,
+        amount: request.repair_cost || request.estimated_cost,
+        notes
+      },
+      req.ip
+    );
+
+    return res.status(200).json(formatResponse(true, 'Estimate approved successfully. Technician has been authorized to proceed with repair.'));
+
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
+ * Customer / Company rejects technician estimate
+ * POST /api/repair-request/:id/reject-estimate
+ */
+const rejectEstimate = async (req, res, next) => {
+  const { id } = req.params;
+  const { reason } = req.body || {};
+  let connection;
+
+  try {
+    connection = await pool.getConnection();
+
+    const [existing] = await connection.query(
+      'SELECT * FROM service_requests WHERE id = ? LIMIT 1',
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json(formatResponse(false, 'Repair request not found.'));
+    }
+
+    const request = existing[0];
+
+    // 1. Authoritative Ownership & Role Authorization Check
+    const authResult = verifyEstimateAuthorization(req, request, 'reject_estimate');
+    if (!authResult.authorized) {
+      return res.status(authResult.statusCode || 403).json(formatResponse(false, authResult.error || 'Unauthorized'));
+    }
+
+    // 2. Validate Rejection Reason
+    let cleanReason = (reason && typeof reason === 'string') ? reason.trim() : '';
+    if (cleanReason.length > 500) {
+      return res.status(400).json(formatResponse(false, 'Rejection reason cannot exceed 500 characters.'));
+    }
+    if (!cleanReason) {
+      cleanReason = 'Estimate declined by customer';
+    }
+
+    // 3. State Eligibility Guards
+    if (request.status === 'cancelled') {
+      return res.status(400).json(formatResponse(false, 'Cannot reject estimate for a cancelled repair request.'));
+    }
+
+    if (request.payment_status === 'paid') {
+      return res.status(400).json(formatResponse(false, 'Cannot reject estimate for a paid repair request. This repair ticket has already been paid and settled.'));
+    }
+
+    if (request.status === 'completed' || request.status === 'delivered') {
+      return res.status(400).json(formatResponse(false, 'Cannot reject estimate for an already completed repair request.'));
+    }
+
+    // Prevent duplicate rejection / replay
+    if (request.customer_approval_status === 'rejected') {
+      return res.status(400).json(formatResponse(false, 'Estimate has already been rejected.'));
+    }
+
+    if (request.customer_approval_status === 'approved') {
+      return res.status(400).json(formatResponse(false, 'Cannot reject an already approved estimate. Please contact customer support.'));
+    }
+
+    // Check if estimate exists
+    if (!request.diagnosis && (!request.estimated_cost || Number(request.estimated_cost) <= 0)) {
+      return res.status(400).json(formatResponse(false, 'No estimate has been submitted for this ticket to decline.'));
+    }
+
+    // Update rejection status with 3-day hold period for reconsideration
+    await connection.query(`
+      UPDATE service_requests
+      SET customer_approval_status = 'rejected',
+          rejected_at = NOW(),
+          rejection_reason = ?,
+          hold_start_date = NOW(),
+          hold_end_date = DATE_ADD(NOW(), INTERVAL 3 DAY),
+          hold_reason = ?
+      WHERE id = ?
+    `, [
+      cleanReason,
+      `Estimate declined by customer: ${cleanReason}`,
+      id
+    ]);
+
+    // Record rejection in work logs
+    try {
+      await connection.query(`
+        INSERT INTO technician_work_logs (repair_request_id, technician_id, repair_stage, action_performed, notes)
+        VALUES (?, ?, 'Estimate Rejected', 'Customer declined repair quotation. Ticket placed on hold for reconsideration.', ?)
+      `, [
+        id,
+        request.assigned_technician_id || (req.user ? req.user.id : 1),
+        reason || 'No specific reason provided'
+      ]);
+    } catch (wlErr) { }
+
+    const ticketNum = request.ticket_number || `#${request.id}`;
+
+    // 1. Notify Assigned Technician
+    if (request.assigned_technician_id) {
+      try {
+        await connection.query(`
+          INSERT INTO notifications (user_id, title, message, ticket_id, sender_id)
+          VALUES (?, ?, ?, ?, ?)
+        `, [
+          request.assigned_technician_id,
+          `Estimate Rejected [${ticketNum}]`,
+          `Customer ${request.customer_name} has REJECTED the repair estimate. Reason: ${reason || 'Not specified'}. Repair cannot proceed without customer authorization.`,
+          id,
+          req.user ? req.user.id : null
+        ]);
+      } catch (notifErr) { }
+    }
+
+    // 2. Notify Admins
+    try {
+      const [admins] = await connection.query("SELECT id FROM users WHERE role = 'admin'");
+      for (const admin of admins) {
+        await connection.query(`
+          INSERT INTO notifications (user_id, title, message, ticket_id, sender_id)
+          VALUES (?, ?, ?, ?, ?)
+        `, [
+          admin.id,
+          `Estimate Rejected [${ticketNum}]`,
+          `Customer ${request.customer_name} rejected the estimate for ticket ${ticketNum}. Reason: ${reason || 'Not specified'}.`,
+          id,
+          req.user ? req.user.id : null
+        ]);
+      }
+    } catch (notifErr) { }
+
+    // 3. Activity Log
+    await logActivity(
+      req.user ? req.user.id : null,
+      'repair',
+      'reject_estimate',
+      'service_requests',
+      id,
+      {
+        ticketNumber: ticketNum,
+        customerName: request.customer_name,
+        reason
+      },
+      req.ip
+    );
+
+    return res.status(200).json(formatResponse(true, 'Estimate rejected. Admin and technician have been notified.'));
+
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
+ * Admin places ticket on hold for 2 to 5 days
+ * POST /api/repair-request/:id/hold
+ */
+const placeTicketOnHold = async (req, res, next) => {
+  const { id } = req.params;
+  const { holdDays = 3, holdReason, holdNotes } = req.body;
+  let connection;
+
+  try {
+    const days = parseInt(holdDays, 10);
+    if (isNaN(days) || days < 2 || days > 5) {
+      return res.status(400).json(formatResponse(false, 'Hold duration must be between 2 and 5 days.'));
+    }
+
+    connection = await pool.getConnection();
+
+    const [existing] = await connection.query(
+      'SELECT * FROM service_requests WHERE id = ? LIMIT 1',
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json(formatResponse(false, 'Repair request not found.'));
+    }
+
+    const request = existing[0];
+
+    if (['completed', 'delivered', 'cancelled'].includes(request.status)) {
+      return res.status(400).json(formatResponse(false, 'Cannot place a completed, delivered, or cancelled ticket on hold.'));
+    }
+
+    if (request.payment_status === 'paid') {
+      return res.status(400).json(formatResponse(false, 'Cannot place a paid repair ticket on hold. This repair ticket has already been paid and settled.'));
+    }
+
+    // Set hold deadline: NOW() + INTERVAL ? DAY
+    await connection.query(`
+      UPDATE service_requests
+      SET customer_approval_status = 'on_hold',
+          hold_start_date = NOW(),
+          hold_end_date = DATE_ADD(NOW(), INTERVAL ? DAY),
+          hold_reason = ?,
+          hold_notes = ?
+      WHERE id = ?
+    `, [
+      days,
+      holdReason || 'Awaiting customer approval on repair estimate',
+      holdNotes || null,
+      id
+    ]);
+
+    // Fetch updated hold_end_date for exact response
+    const [[updated]] = await connection.query('SELECT hold_end_date FROM service_requests WHERE id = ?', [id]);
+    const deadlineStr = new Date(updated.hold_end_date).toLocaleString();
+    const ticketNum = request.ticket_number || `#${request.id}`;
+
+    // 1. In-App Notification to Customer
+    if (request.user_id) {
+      try {
+        await connection.query(`
+          INSERT INTO notifications (user_id, title, message, ticket_id, sender_id)
+          VALUES (?, ?, ?, ?, ?)
+        `, [
+          request.user_id,
+          `Repair On Hold [${ticketNum}]`,
+          `Your repair request is on hold until ${deadlineStr} awaiting your estimate approval. Please approve your estimate before the deadline to avoid ticket cancellation.`,
+          id,
+          req.user ? req.user.id : null
+        ]);
+      } catch (notifErr) { }
+    }
+
+    // 2. Email Notification to Customer
+    if (request.email) {
+      try {
+        const emailSubject = `TekDoctor - Action Required: Repair Ticket On Hold [${ticketNum}]`;
+        const emailHtml = `
+          <div style="font-family: sans-serif; max-width: 600px; color: #333;">
+            <h3 style="color: #f59e0b;">Repair On Hold — Approval Needed</h3>
+            <p>Dear ${request.customer_name},</p>
+            <p>Your repair service ticket <strong>${ticketNum}</strong> for <strong>${request.brand} ${request.model_number || ''}</strong> has been placed on hold.</p>
+            <div style="background: #fffbeb; border: 1px solid #fde68a; padding: 15px; border-radius: 8px; margin: 15px 0;">
+              <p style="margin: 0 0 5px 0;"><strong>Hold Reason:</strong> ${holdReason || 'Awaiting estimate approval'}</p>
+              <p style="margin: 0; font-weight: bold; color: #b45309;"><strong>Approval Deadline:</strong> ${deadlineStr} (${days} days)</p>
+            </div>
+            <p>Please log in to review and approve the repair estimate before the deadline. If not approved within this period, the ticket will be automatically cancelled.</p>
+            <p>Best regards,<br/>The TekDoctor Service Team</p>
+          </div>
+        `;
+        sendCustomerNotification(request.email, emailSubject, emailHtml).catch(e => logger.warn(`Customer hold email error: ${e.message}`));
+      } catch (emailErr) { }
+    }
+
+    // 3. In-App Notification to Assigned Technician
+    if (request.assigned_technician_id) {
+      try {
+        await connection.query(`
+          INSERT INTO notifications (user_id, title, message, ticket_id, sender_id)
+          VALUES (?, ?, ?, ?, ?)
+        `, [
+          request.assigned_technician_id,
+          `Ticket Placed On Hold [${ticketNum}]`,
+          `Ticket ${ticketNum} (${request.customer_name}) has been placed on hold for ${days} days until ${deadlineStr}.`,
+          id,
+          req.user ? req.user.id : null
+        ]);
+      } catch (notifErr) { }
+    }
+
+    // 4. Activity Log
+    await logActivity(
+      req.user ? req.user.id : null,
+      'repair',
+      'place_ticket_on_hold',
+      'service_requests',
+      id,
+      {
+        ticketNumber: ticketNum,
+        holdDays: days,
+        holdEndDate: updated.hold_end_date,
+        holdReason,
+        holdNotes
+      },
+      req.ip
+    );
+
+    return res.status(200).json(formatResponse(true, `Ticket placed on hold for ${days} days until ${deadlineStr}.`, {
+      id: Number(id),
+      holdDays: days,
+      holdStartDate: new Date().toISOString(),
+      holdEndDate: updated.hold_end_date,
+      customerApprovalStatus: 'on_hold'
+    }));
+
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
+ * Admin cancels hold on ticket
+ * POST /api/repair-request/:id/cancel-hold
+ */
+const cancelHold = async (req, res, next) => {
+  const { id } = req.params;
+  let connection;
+
+  try {
+    connection = await pool.getConnection();
+
+    const [existing] = await connection.query(
+      'SELECT * FROM service_requests WHERE id = ? LIMIT 1',
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json(formatResponse(false, 'Repair request not found.'));
+    }
+
+    const request = existing[0];
+
+    await connection.query(`
+      UPDATE service_requests
+      SET customer_approval_status = CASE WHEN customer_approval_status = 'on_hold' THEN 'pending_approval' ELSE customer_approval_status END,
+          hold_start_date = NULL,
+          hold_end_date = NULL,
+          hold_reason = NULL,
+          hold_notes = NULL
+      WHERE id = ?
+    `, [id]);
+
+    await logActivity(
+      req.user ? req.user.id : null,
+      'repair',
+      'cancel_ticket_hold',
+      'service_requests',
+      id,
+      { ticketNumber: request.ticket_number },
+      req.ip
+    );
+
+    return res.status(200).json(formatResponse(true, 'Hold on ticket has been cancelled. Ticket returned to active pending status.', {
+      id: Number(id),
+      customerApprovalStatus: 'pending_approval'
+    }));
+
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
+ * Customer / Company requests repair again after previous estimate rejection or on-hold status
+ * POST /api/repair-request/:id/request-repair-again
+ */
+const requestRepairAgain = async (req, res, next) => {
+  const { id } = req.params;
+  const { comment } = req.body || {};
+  let connection;
+
+  try {
+    connection = await pool.getConnection();
+
+    const [existing] = await connection.query(
+      'SELECT * FROM service_requests WHERE id = ? LIMIT 1',
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json(formatResponse(false, 'Repair request not found.'));
+    }
+
+    const request = existing[0];
+
+    // Ownership / Authorization Check
+    const authResult = verifyEstimateAuthorization(req, request, 'reject_estimate');
+    if (!authResult.authorized) {
+      // Also allow if caller holds an approve_estimate token
+      const authApprove = verifyEstimateAuthorization(req, request, 'approve_estimate');
+      if (!authApprove.authorized) {
+        return res.status(authResult.statusCode || 401).json(formatResponse(false, authResult.error || 'Authentication required to request re-evaluation.'));
+      }
+    }
+
+    // State Eligibility Guards
+    if (request.status === 'cancelled') {
+      return res.status(400).json(formatResponse(false, 'Cannot request repair again for a cancelled ticket. Please submit a new service request.'));
+    }
+
+    if (request.payment_status === 'paid') {
+      return res.status(400).json(formatResponse(false, 'This repair ticket has already been paid and settled.'));
+    }
+
+    if (request.status === 'completed' || request.status === 'delivered') {
+      return res.status(400).json(formatResponse(false, 'This repair ticket has already been completed.'));
+    }
+
+    if (request.customer_approval_status === 'reapproval_requested') {
+      return res.status(400).json(formatResponse(false, 'You have already requested to proceed with this repair. Our engineering team has been notified.'));
+    }
+
+    // Allowed states to request again: rejected, on_hold, pending_approval (or none if estimate existed)
+    const allowedPriorStates = ['rejected', 'on_hold', 'pending_approval', 'none'];
+    if (!allowedPriorStates.includes(request.customer_approval_status)) {
+      return res.status(400).json(formatResponse(false, `Ticket cannot be re-approved in current approval status: ${request.customer_approval_status}.`));
+    }
+
+    if (comment && typeof comment === 'string' && comment.trim().length > 500) {
+      return res.status(400).json(formatResponse(false, 'Revision request note cannot exceed 500 characters.'));
+    }
+
+    const userComment = (comment && typeof comment === 'string') ? comment.trim() : '';
+    const previousStatus = request.customer_approval_status || 'none';
+
+    // Update approval state, clear hold, and record re-approval request
+    await connection.query(`
+      UPDATE service_requests
+      SET customer_approval_status = 'reapproval_requested',
+          reapproval_requested_at = NOW(),
+          reapproval_notes = ?,
+          hold_start_date = NULL,
+          hold_end_date = NULL,
+          hold_reason = NULL,
+          hold_notes = NULL
+      WHERE id = ?
+    `, [userComment || 'Customer requested to proceed with repair', id]);
+
+    const ticketNum = request.ticket_number || `#${request.id}`;
+
+    // 1. Notify Assigned Technician
+    if (request.assigned_technician_id) {
+      try {
+        const notifTitle = previousStatus === 'pending_approval'
+          ? `Estimate Revision Requested [${ticketNum}]`
+          : `Repair Re-Approval Requested [${ticketNum}]`;
+        const notifMsg = previousStatus === 'pending_approval'
+          ? `Customer ${request.customer_name} has requested an estimate revision for ticket ${ticketNum}. Note: ${userComment || 'None provided'}.`
+          : `Customer ${request.customer_name} has requested to proceed with repair for ticket ${ticketNum} (previous decision: ${previousStatus}). Note: ${userComment || 'None provided'}.`;
+
+        await connection.query(`
+          INSERT INTO notifications (user_id, title, message, ticket_id, sender_id)
+          VALUES (?, ?, ?, ?, ?)
+        `, [
+          request.assigned_technician_id,
+          notifTitle,
+          notifMsg,
+          id,
+          req.user ? req.user.id : null
+        ]);
+      } catch (notifErr) { }
+    }
+
+    // 2. Notify Admins
+    try {
+      const [admins] = await connection.query("SELECT id FROM users WHERE role = 'admin'");
+      const adminTitle = previousStatus === 'pending_approval'
+        ? `Customer Requested Estimate Revision [${ticketNum}]`
+        : `Customer Requested Repair Again [${ticketNum}]`;
+      const adminMsg = previousStatus === 'pending_approval'
+        ? `Customer ${request.customer_name} requested estimate revision for ticket ${ticketNum}. Note: ${userComment || 'None provided'}.`
+        : `Customer ${request.customer_name} requested repair again for ticket ${ticketNum}. Previous decision: ${previousStatus}. Note: ${userComment || 'None provided'}.`;
+
+      for (const admin of admins) {
+        await connection.query(`
+          INSERT INTO notifications (user_id, title, message, ticket_id, sender_id)
+          VALUES (?, ?, ?, ?, ?)
+        `, [
+          admin.id,
+          adminTitle,
+          adminMsg,
+          id,
+          req.user ? req.user.id : null
+        ]);
+      }
+    } catch (notifErr) { }
+
+    // 3. Work Log
+    try {
+      const stage = previousStatus === 'pending_approval' ? 'Revision Requested' : 'Re-Approval Requested';
+      const action = previousStatus === 'pending_approval'
+        ? 'Customer Requested Estimate Revision'
+        : 'Customer Requested Repair Re-Approval (proceed with repair after rejection/hold)';
+
+      await connection.query(`
+        INSERT INTO technician_work_logs (repair_request_id, technician_id, repair_stage, action_performed, notes)
+        VALUES (?, ?, ?, ?, ?)
+      `, [
+        id,
+        request.assigned_technician_id || (req.user ? req.user.id : 1),
+        stage,
+        action,
+        userComment ? `Customer note: ${userComment}` : 'Customer requested revision/re-evaluation'
+      ]);
+    } catch (wlErr) { }
+
+    // 4. Activity Log
+    await logActivity(
+      req.user ? req.user.id : null,
+      'repair',
+      'request_repair_again',
+      'service_requests',
+      id,
+      {
+        ticketNumber: ticketNum,
+        customerName: request.customer_name,
+        previousStatus,
+        notes: userComment
+      },
+      req.ip
+    );
+
+    return res.status(200).json(formatResponse(true, 'Your request to proceed with the repair has been submitted. Our engineering team has been notified.', {
+      id: Number(id),
+      customerApprovalStatus: 'reapproval_requested',
+      reapprovalRequestedAt: new Date().toISOString(),
+      reapprovalNotes: userComment || 'Customer requested to proceed with repair'
+    }));
 
   } catch (error) {
     next(error);
@@ -1852,6 +4492,8 @@ module.exports = {
   getMyTasks,
   updateRequestStatus,
   deleteRepairRequest,
+  bulkDeleteRepairRequests,
+  setRepairCharges,
   reactivateRepairRequest,
   getCustomerHistory,
   trackRequest,
@@ -1870,5 +4512,11 @@ module.exports = {
   transferTicket,
   getTicketTransfers,
   getMyTransferHistory,
-  submitFeedback
+  submitFeedback,
+  submitDiagnosis,
+  approveEstimate,
+  rejectEstimate,
+  placeTicketOnHold,
+  cancelHold,
+  requestRepairAgain
 };

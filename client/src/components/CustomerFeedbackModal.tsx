@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { MessageSquare, Star, X, Send, Loader2, CheckCircle } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { repairApi } from '@/services/api';
+import { MESSAGE_MAX_LENGTH } from '@/config/constants';
 
 interface CustomerFeedbackModalProps {
     isOpen: boolean;
@@ -29,6 +30,11 @@ export default function CustomerFeedbackModal({ isOpen, onClose, ticketId, ticke
 
         if (rating === 0) {
             setMsg({ type: 'error', text: 'Please select a rating (1-5 stars).' });
+            return;
+        }
+
+        if (comment.length > MESSAGE_MAX_LENGTH) {
+            setMsg({ type: 'error', text: `Comment cannot exceed ${MESSAGE_MAX_LENGTH} characters.` });
             return;
         }
 
@@ -84,9 +90,9 @@ export default function CustomerFeedbackModal({ isOpen, onClose, ticketId, ticke
                         <div className="w-10 h-10 rounded-xl bg-neon-cyan/10 border border-neon-cyan/20 flex items-center justify-center">
                             <Star size={18} className="text-neon-cyan fill-neon-cyan/20" />
                         </div>
-                        <div>
+                        <div className="min-w-0 flex-1">
                             <h3 className="font-bold text-white font-outfit uppercase tracking-wider">Leave Feedback</h3>
-                            <p className="text-[10px] text-zinc-500 font-mono tracking-widest mt-0.5">TICKET {ticketNumber}</p>
+                            <p className="text-[10px] text-zinc-500 font-mono tracking-widest mt-0.5 break-all">TICKET {ticketNumber}</p>
                         </div>
                     </div>
                     <button
@@ -146,12 +152,18 @@ export default function CustomerFeedbackModal({ isOpen, onClose, ticketId, ticke
                         </div>
 
                         <div>
-                            <label htmlFor="comments" className="block text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">
-                                Comments (Optional)
-                            </label>
+                            <div className="flex items-center justify-between mb-2">
+                                <label htmlFor="comments" className="block text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
+                                    Comments (Optional)
+                                </label>
+                                <span className={`text-[10px] font-mono ${comment.length > MESSAGE_MAX_LENGTH ? 'text-red-400 font-bold' : 'text-zinc-500'}`}>
+                                    {comment.length} / {MESSAGE_MAX_LENGTH}
+                                </span>
+                            </div>
                             <textarea
                                 id="comments"
                                 rows={4}
+                                maxLength={MESSAGE_MAX_LENGTH}
                                 value={comment}
                                 onChange={(e) => setComment(e.target.value)}
                                 placeholder="What went well? Any areas for improvement?"

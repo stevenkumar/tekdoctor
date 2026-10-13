@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "db:init": "node scripts/initialize-db.js",
+    "test": "node tests/run-all-tests.js"
   },
   "keywords": [
     "tekdoctor",
@@ -23,16 +25,17 @@
     "express": "^4.21.1",
     "express-rate-limit": "^7.4.1",
     "express-validator": "^7.2.0",
+    "google-auth-library": "^11.0.2",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "multer": "^1.4.5-lts.1",
     "mysql2": "^3.11.4",
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^10.0.13",
     "uuid": "^14.0.1",
     "winston": "^3.17.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.7"
+    "nodemon": "^1.14.10"
   }
 }

@@ -10,12 +10,15 @@ import {
 import { Link, useNavigate } from 'react-router-dom';
 import { ROUTES } from '@/config/routes';
 import { AnimatePresence, motion } from 'framer-motion';
+import { formatActivity } from '@/utils/activityFormatter';
+import { subscribeToPaymentUpdates } from '@/utils/paymentSync';
 
 export default function DashboardOverview() {
     const { token } = useAuth();
     const navigate = useNavigate();
     const [stats, setStats] = useState<any | null>(null);
     const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+    const [serverUnreadCount, setServerUnreadCount] = useState<number | null>(null);
     const [activeModalNotif, setActiveModalNotif] = useState<NotificationItem | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -32,7 +35,7 @@ export default function DashboardOverview() {
             if (isInitial) setLoading(true);
             const [statsRes, notifsRes] = await Promise.all([
                 adminApi.getDashboardStats(token),
-                notificationApi.getAll(token)
+                notificationApi.getAll(token, 20)
             ]);
 
             if (isMounted) {
@@ -44,17 +47,45 @@ export default function DashboardOverview() {
 
                 if (notifsRes.ok && notifsRes.data) {
                     setNotifications(notifsRes.data.data);
+                    if (typeof notifsRes.data.unreadCount === 'number') {
+                        setServerUnreadCount(notifsRes.data.unreadCount);
+                    }
                 }
                 if (isInitial) setLoading(false);
             }
         };
 
         fetchData(true);
-        const interval = setInterval(() => fetchData(false), 10000);
+
+        const doSilentRefresh = () => {
+            if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+            fetchData(false);
+        };
+
+        const interval = setInterval(doSilentRefresh, 30000); // 30-second refresh for admin overview
+
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') {
+                doSilentRefresh();
+            }
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        const unsubscribe = subscribeToPaymentUpdates(() => {
+            doSilentRefresh();
+        });
+
+        const handleNotifsEvent = () => {
+            doSilentRefresh();
+        };
+        window.addEventListener('tekdoctor:notifications_updated', handleNotifsEvent);
 
         return () => {
             isMounted = false;
             clearInterval(interval);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+            window.removeEventListener('tekdoctor:notifications_updated', handleNotifsEvent);
+            unsubscribe();
         };
     }, [token]);
 
@@ -79,12 +110,14 @@ export default function DashboardOverview() {
     const handleMarkRead = async (id: number) => {
         if (!token) return;
         setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+        setServerUnreadCount(prev => prev !== null ? Math.max(0, prev - 1) : null);
         await notificationApi.markAsRead(token, id);
     };
 
     const handleMarkAllRead = async () => {
         if (!token) return;
         setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+        setServerUnreadCount(0);
         await notificationApi.markAsRead(token, 'all');
     };
 
@@ -98,10 +131,11 @@ export default function DashboardOverview() {
     const handleClearAll = async () => {
         if (!token) return;
         setNotifications([]);
+        setServerUnreadCount(0);
         await notificationApi.clearAll(token);
     };
 
-    const unreadCount = notifications.filter(n => !n.is_read).length;
+    const unreadCount = serverUnreadCount ?? notifications.filter(n => !n.is_read).length;
 
     if (loading) {
         return (
@@ -132,7 +166,7 @@ export default function DashboardOverview() {
     const statusCards = [
         { label: 'Pending', value: stats.statusCounts.pending, icon: Hourglass, color: 'text-amber-400', bg: 'bg-amber-500/5', border: 'border-amber-500/15', link: `${ROUTES.ADMIN_TICKETS}?status=pending` },
         { label: 'In Progress', value: stats.statusCounts.inProgress, icon: Hammer, color: 'text-neon-cyan', bg: 'bg-neon-cyan/5', border: 'border-neon-cyan/15', link: `${ROUTES.ADMIN_TICKETS}?status=in_progress` },
-        { label: 'Completed', value: stats.statusCounts.completed, icon: CheckCircle2, color: 'text-emerald-400', bg: 'bg-emerald-500/5', border: 'border-emerald-500/15', link: `${ROUTES.ADMIN_TICKETS}?status=completed` },
+        { label: 'Completed', value: (stats.statusCounts.completed || 0) + ((stats.statusCounts as any).delivered || 0), icon: CheckCircle2, color: 'text-emerald-400', bg: 'bg-emerald-500/5', border: 'border-emerald-500/15', link: `${ROUTES.ADMIN_TICKETS}?status=completed` },
         { label: 'Cancelled', value: stats.statusCounts.cancelled, icon: XCircle, color: 'text-red-400', bg: 'bg-red-500/5', border: 'border-red-500/15', link: `${ROUTES.ADMIN_TICKETS}?status=cancelled` },
     ];
 
@@ -141,6 +175,7 @@ export default function DashboardOverview() {
             pending: { cls: 'bg-amber-500/10 text-amber-400 border-amber-500/20', label: 'PENDING' },
             in_progress: { cls: 'bg-neon-cyan/10 text-neon-cyan border-neon-cyan/20', label: 'IN PROGRESS' },
             completed: { cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', label: 'COMPLETED' },
+            delivered: { cls: 'bg-blue-500/10 text-blue-400 border-blue-500/20', label: 'DELIVERED' },
             cancelled: { cls: 'bg-red-500/10 text-red-500 border-red-500/20', label: 'CANCELLED' },
         };
         const s = map[status.toLowerCase()] || { cls: 'bg-zinc-800 text-zinc-400 border-zinc-700', label: status };
@@ -155,21 +190,21 @@ export default function DashboardOverview() {
                     <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-neon-cyan">Operations Center</span>
                     <div className="w-1.5 h-1.5 bg-neon-cyan rounded-full animate-ping" />
                 </div>
-                <h1 className="text-3xl font-extrabold text-white tracking-tight">System Monitor & Dispatch Dashboard</h1>
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">System Monitor & Dispatch Dashboard</h1>
             </div>
 
             {/* Main Stats */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-4">
                 {statCards.map(s => {
                     const Icon = s.icon;
                     return (
-                        <Link to={s.link} key={s.label} className={`${s.bg} border ${s.border} rounded-2xl p-5 flex items-center gap-4 hover:-translate-y-1 hover:shadow-lg transition-all cursor-pointer`}>
-                            <div className={`w-12 h-12 rounded-xl bg-zinc-950 flex items-center justify-center border border-zinc-900`}>
-                                <Icon size={20} className={s.color} />
+                        <Link to={s.link} key={s.label} className={`${s.bg} border ${s.border} rounded-2xl p-3.5 sm:p-5 flex items-center gap-2.5 sm:gap-4 hover:-translate-y-1 hover:shadow-lg transition-all cursor-pointer`}>
+                            <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-zinc-950 flex items-center justify-center border border-zinc-900 shrink-0`}>
+                                <Icon size={18} className={`${s.color} sm:w-5 sm:h-5`} />
                             </div>
-                            <div>
-                                <div className="text-2xl font-extrabold text-white">{s.value}</div>
-                                <div className="text-xs text-zinc-550 font-semibold">{s.label}</div>
+                            <div className="min-w-0">
+                                <div className="text-xl sm:text-2xl font-extrabold text-white truncate">{s.value}</div>
+                                <div className="text-[11px] sm:text-xs text-zinc-400 font-semibold truncate">{s.label}</div>
                             </div>
                         </Link>
                     );
@@ -181,7 +216,7 @@ export default function DashboardOverview() {
                 <h2 className="text-xs font-bold font-mono uppercase text-zinc-400 mb-3 tracking-wider flex items-center gap-2">
                     Active Repair Backlog
                 </h2>
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
                     {statusCards.map(s => {
                         const Icon = s.icon;
                         let statusVal = s.label.toLowerCase();
@@ -189,11 +224,11 @@ export default function DashboardOverview() {
                         const isActive = activeFilterStatus === statusVal;
 
                         return (
-                            <button onClick={() => handleStatusClick(s.label)} key={s.label} className={`border ${isActive ? `ring-2 ring-offset-2 ring-offset-[#0a0a0a] ring-white ${s.border}` : s.border} rounded-xl p-4 ${s.bg} flex items-center gap-3 hover:-translate-y-1 hover:shadow-md transition-all cursor-pointer text-left`}>
-                                <Icon size={16} className={s.color} />
-                                <div>
-                                    <div className="text-lg font-bold text-white leading-none mb-1">{s.value}</div>
-                                    <div className={`text-[9px] uppercase tracking-wider font-mono ${isActive ? 'text-white font-bold' : 'text-zinc-500'}`}>{s.label}</div>
+                            <button onClick={() => handleStatusClick(s.label)} key={s.label} className={`border ${isActive ? `ring-2 ring-offset-2 ring-offset-[#0a0a0a] ring-white ${s.border}` : s.border} rounded-xl p-3 sm:p-4 ${s.bg} flex items-center gap-2.5 sm:gap-3 hover:-translate-y-1 hover:shadow-md transition-all cursor-pointer text-left`}>
+                                <Icon size={16} className={`${s.color} shrink-0`} />
+                                <div className="min-w-0">
+                                    <div className="text-base sm:text-lg font-bold text-white leading-none mb-1">{s.value}</div>
+                                    <div className={`text-[9px] uppercase tracking-wider font-mono truncate ${isActive ? 'text-white font-bold' : 'text-zinc-500'}`}>{s.label}</div>
                                 </div>
                             </button>
                         );
@@ -220,7 +255,7 @@ export default function DashboardOverview() {
                         </div>
 
                         <div className="overflow-x-auto">
-                            <table className="w-full text-left border-collapse">
+                            <table className="w-full min-w-[680px] text-left border-collapse">
                                 <thead>
                                     <tr className="border-b border-zinc-900/60 pb-2 text-[9px] font-mono uppercase text-zinc-500">
                                         <th className="py-2 pr-2">Ticket</th>
@@ -278,7 +313,7 @@ export default function DashboardOverview() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
                 {/* System Alerts Console */}
-                <div className="bg-zinc-950/20 border border-zinc-900 rounded-2xl p-5 space-y-4">
+                <div className="bg-zinc-950/20 border border-zinc-900 rounded-2xl p-4 sm:p-5 space-y-4">
                     <h3 className="text-sm font-bold text-white flex items-center gap-2 uppercase tracking-wider font-mono relative w-fit">
                         <ShieldAlert size={16} className="text-neon-cyan" /> System Alerts
                         {unreadCount > 0 && (
@@ -409,7 +444,7 @@ export default function DashboardOverview() {
                 </div>
 
                 {/* Today's Activity Console */}
-                <div className="bg-zinc-950/20 border border-zinc-900 rounded-2xl p-5 space-y-4">
+                <div className="bg-zinc-950/20 border border-zinc-900 rounded-2xl p-4 sm:p-5 space-y-4">
                     <div className="flex justify-between items-center">
                         <h3 className="text-sm font-bold text-white flex items-center gap-2 uppercase tracking-wider font-mono">
                             <Activity size={16} className="text-neon-cyan" /> Operator Activity Feed
@@ -426,37 +461,43 @@ export default function DashboardOverview() {
                         {stats.todaysActivities?.length === 0 ? (
                             <p className="text-center py-6 text-zinc-600 text-xs font-mono">No operational logs today yet.</p>
                         ) : (
-                            stats.todaysActivities?.map((log: any) => (
-                                <div key={log.id} className="relative pl-3.5 border-l border-zinc-850 space-y-1 text-[11px] leading-relaxed">
-                                    <div className="absolute -left-[5.5px] top-1.5 w-2.5 h-2.5 rounded-full border border-indigo-500 bg-zinc-950" />
-                                    <div className="text-white font-semibold">
-                                        {log.actorName || 'System'}
+                            stats.todaysActivities?.map((log: any) => {
+                                const formatted = formatActivity(log);
+                                return (
+                                    <div key={log.id} className="relative pl-3.5 border-l border-zinc-800 space-y-1 text-[11px] leading-relaxed">
+                                        <div className="absolute -left-[5.5px] top-1.5 w-2.5 h-2.5 rounded-full border border-neon-cyan/50 bg-zinc-950" />
+                                        <div className="flex items-center justify-between gap-2">
+                                            <span className="text-white font-semibold">{formatted.headline}</span>
+                                            <span className="text-[9px] text-zinc-500 font-mono shrink-0">{formatted.formattedTime}</span>
+                                        </div>
+                                        <p className="text-zinc-400 font-normal text-[11px]">
+                                            {formatted.description}
+                                        </p>
+                                        {formatted.parameters.length > 0 && (
+                                            <div className="flex flex-wrap gap-1 mt-1">
+                                                {formatted.parameters.slice(0, 3).map((param, pIdx) => (
+                                                    <span key={pIdx} className="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-400">
+                                                        <span className="text-zinc-500">{param.label}:</span>
+                                                        <span className="text-zinc-300 font-semibold">{param.value}</span>
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
-                                    <div className="text-zinc-[450] font-medium font-sans">
-                                        <span className="font-semibold text-indigo-400 font-mono text-[9px] uppercase mr-1">
-                                            [{log.action?.replaceAll('_', ' ')}]
-                                        </span>
-                                        {log.details ? (
-                                            typeof log.details === 'object' ? JSON.stringify(log.details) : log.details
-                                        ) : 'Changed system parameter'}
-                                    </div>
-                                    <div className="text-[9px] text-zinc-600 font-mono mt-0.5">
-                                        {new Date(log.createdAt).toLocaleTimeString()}
-                                    </div>
-                                </div>
-                            ))
+                                );
+                            })
                         )}
                     </div>
                 </div>
             </div>
 
             {/* Row 2: Ticket Operations Console (Full Width tabbed View) */}
-            <div className="bg-zinc-950/20 border border-zinc-900 rounded-2xl p-6 space-y-6">
+            <div className="bg-zinc-950/20 border border-zinc-900 rounded-2xl p-3.5 sm:p-6 space-y-4 sm:space-y-6">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-zinc-900/60 pb-4">
                     <div className="flex flex-wrap gap-2">
                         <button
                             onClick={() => { setActiveTab('recent'); setActiveFilterStatus(null); }}
-                            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all relative uppercase tracking-wider font-mono cursor-pointer ${activeTab === 'recent'
+                            className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all relative uppercase tracking-wider font-mono cursor-pointer ${activeTab === 'recent'
                                 ? 'bg-neon-cyan/10 text-neon-cyan border border-neon-cyan/20'
                                 : 'bg-zinc-900/30 text-zinc-400 border border-zinc-900 hover:border-zinc-800 hover:text-white'
                                 }`}
@@ -469,7 +510,7 @@ export default function DashboardOverview() {
 
                         <button
                             onClick={() => { setActiveTab('urgent'); setActiveFilterStatus(null); }}
-                            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all relative uppercase tracking-wider font-mono cursor-pointer ${activeTab === 'urgent'
+                            className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all relative uppercase tracking-wider font-mono cursor-pointer ${activeTab === 'urgent'
                                 ? 'bg-red-500/10 text-red-500 border border-red-550/20'
                                 : 'bg-zinc-900/30 text-zinc-400 border border-zinc-900 hover:border-zinc-800 hover:text-white'
                                 }`}
@@ -487,7 +528,7 @@ export default function DashboardOverview() {
 
                         <button
                             onClick={() => { setActiveTab('unassigned'); setActiveFilterStatus(null); }}
-                            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all relative uppercase tracking-wider font-mono cursor-pointer ${activeTab === 'unassigned'
+                            className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all relative uppercase tracking-wider font-mono cursor-pointer ${activeTab === 'unassigned'
                                 ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
                                 : 'bg-zinc-900/30 text-zinc-400 border border-zinc-900 hover:border-zinc-800 hover:text-white'
                                 }`}
@@ -513,7 +554,7 @@ export default function DashboardOverview() {
                     {activeTab === 'recent' && (
                         <div className="space-y-4">
                             <div className="overflow-x-auto">
-                                <table className="w-full text-left border-collapse">
+                                <table className="w-full min-w-[680px] text-left border-collapse">
                                     <thead>
                                         <tr className="border-b border-zinc-900/60 pb-2 text-[9px] font-mono uppercase text-zinc-500">
                                             <th className="py-2 pr-2">Ticket</th>
@@ -565,7 +606,7 @@ export default function DashboardOverview() {
                     {activeTab === 'urgent' && (
                         <div className="space-y-4">
                             <div className="overflow-x-auto">
-                                <table className="w-full text-left border-collapse">
+                                <table className="w-full min-w-[680px] text-left border-collapse">
                                     <thead>
                                         <tr className="border-b border-zinc-900/60 pb-2 text-[9px] font-mono uppercase text-zinc-500">
                                             <th className="py-2 pr-2">Ticket</th>
@@ -611,7 +652,7 @@ export default function DashboardOverview() {
                     {activeTab === 'unassigned' && (
                         <div className="space-y-4">
                             <div className="overflow-x-auto">
-                                <table className="w-full text-left border-collapse">
+                                <table className="w-full min-w-[680px] text-left border-collapse">
                                     <thead>
                                         <tr className="border-b border-zinc-900/60 pb-2 text-[9px] font-mono uppercase text-zinc-500">
                                             <th className="py-2 pr-2">Ticket</th>
@@ -679,7 +720,7 @@ export default function DashboardOverview() {
                                 <h3 className="text-xs font-bold text-white uppercase tracking-widest font-mono">Notification Details</h3>
                                 <button
                                     onClick={() => setActiveModalNotif(null)}
-                                    className="p-1 rounded-lg hover:bg-zinc-850 text-zinc-400 hover:text-white transition-colors cursor-pointer text-xs font-bold font-mono py-1 px-2 border border-zinc-850"
+                                    className="p-1 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors cursor-pointer text-xs font-bold font-mono py-1 px-2 border border-zinc-800/60"
                                 >
                                     Close
                                 </button>

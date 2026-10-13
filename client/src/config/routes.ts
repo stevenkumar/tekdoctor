@@ -15,12 +15,15 @@ export const ROUTES = {
   SHOP_V2: '/shop/v2',
   PROTOCOL: '/protocol',
   PROFILE: '/profile',
+  NOTIFICATIONS: '/notifications',
 
   // Auth
   SIGN_IN: '/auth/signin',
   SIGN_UP: '/auth/signup',
   SIGNIN: '/auth/signin',
   SIGNUP: '/auth/signup',
+  FORGOT_PASSWORD: '/auth/forgot-password',
+  RESET_PASSWORD: '/auth/reset-password',
 
   // Billing
   BILLING: '/billing',
@@ -33,6 +36,7 @@ export const ROUTES = {
   ADMIN_TRANSFERS: '/admin/transfers',
   ADMIN_TECHNICIANS: '/admin/technicians',
   ADMIN_CUSTOMERS: '/admin/customers',
+  ADMIN_COMPANIES: '/admin/companies',
   ADMIN_NOTIFICATIONS: '/admin/notifications',
   ADMIN_CONTACTS: '/admin/contacts',
   ADMIN_WEBSITE_SETTINGS: '/admin/website-settings',
@@ -44,6 +48,14 @@ export const ROUTES = {
 
   // Technician
   TECHNICIAN_DASHBOARD: '/technician/dashboard',
+  TECHNICIAN_ASSIGNED_TICKETS: '/technician/assigned-tickets',
+  TECHNICIAN_TRANSFERS: '/technician/transfers',
+  TECHNICIAN_DIAGNOSIS: '/technician/diagnosis',
+  TECHNICIAN_IN_PROGRESS: '/technician/in-progress',
+  TECHNICIAN_COMPLETED: '/technician/completed',
+  TECHNICIAN_DELIVERED: '/technician/delivered',
+  TECHNICIAN_NOTIFICATIONS: '/technician/notifications',
+  TECHNICIAN_PROFILE: '/technician/profile',
 
   // Company
   COMPANY_DASHBOARD: '/company/dashboard',

@@ -1,4 +1,4 @@
-import { Navigate, Outlet } from 'react-router-dom';
+import { Navigate, Outlet, Link, useLocation } from 'react-router-dom';
 import Navbar from '../component/Navbar';
 import Footer from '../component/Footer';
 import { useAuth } from '../context/AuthContext';
@@ -17,16 +17,26 @@ import { Wrench } from 'lucide-react';
 export default function PublicLayout() {
   const { isAuthenticated, hasRole } = useAuth();
   const { flattenedSettings } = useSiteContext();
+  const location = useLocation();
 
   // Admin and Technician should never see the public website while logged in
   if (isAuthenticated) {
+    const searchParams = new URLSearchParams(location.search);
+    const ticketParam = searchParams.get('id') || searchParams.get('ticket') || searchParams.get('ticketId');
+
     if (hasRole('admin')) {
+      if (ticketParam) {
+        return <Navigate to={`${ROUTES.ADMIN_TICKETS}?search=${encodeURIComponent(ticketParam)}`} replace />;
+      }
       return <Navigate to={ROUTES.ADMIN_DASHBOARD} replace />;
     }
     if (hasRole('technician')) {
       return <Navigate to={ROUTES.TECHNICIAN_DASHBOARD} replace />;
     }
     if (hasRole('company')) {
+      if (ticketParam) {
+        return <Navigate to={`${ROUTES.COMPANY_REPAIRS}?id=${encodeURIComponent(ticketParam)}`} replace />;
+      }
       return <Navigate to={ROUTES.COMPANY_DASHBOARD} replace />;
     }
   }
@@ -49,12 +59,12 @@ export default function PublicLayout() {
             {flattenedSettings.company_name || 'TekDoctor'} is currently undergoing scheduled maintenance to improve our services. We will be back online shortly. Thank you for your patience!
           </p>
 
-          <div className="text-[11px] text-zinc-600 font-mono tracking-wide uppercase border-t border-zinc-900 pt-4">
+          {/* <div className="text-[11px] text-zinc-600 font-mono tracking-wide uppercase border-t border-zinc-900 pt-4">
             System Administrators?{" "}
-            <a href={ROUTES.SIGN_IN} className="text-neon-cyan hover:underline transition-all hover:text-white">
+            <Link to={ROUTES.SIGN_IN} className="text-neon-cyan hover:underline transition-all hover:text-white">
               Log In Here
-            </a>
-          </div>
+            </Link>
+          </div> */}
         </div>
       </div>
     );

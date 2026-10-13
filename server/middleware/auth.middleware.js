@@ -31,7 +31,15 @@ const authenticate = async (req, res, next) => {
       return res.status(403).json(formatResponse(false, 'Your account has been deactivated. Please contact support.'));
     }
 
-    if (userDb.token_version !== undefined && decoded.token_version !== undefined && userDb.token_version !== decoded.token_version) {
+    const dbTokenVersion = (userDb.token_version != null && userDb.token_version !== '')
+      ? Number(userDb.token_version)
+      : 1;
+    const rawJwtVersion = decoded.token_version ?? decoded.tokenVersion;
+    const jwtTokenVersion = (rawJwtVersion != null && rawJwtVersion !== '')
+      ? Number(rawJwtVersion)
+      : 1;
+
+    if (dbTokenVersion !== jwtTokenVersion) {
       return res.status(401).json(formatResponse(false, 'Session invalidated due to password change. Please log in again.'));
     }
 
@@ -45,16 +53,38 @@ const authenticate = async (req, res, next) => {
 
 /**
  * Middleware to optionally authenticate requests.
- * Extracts user if token is present, but doesn't block request if missing or invalid.
+ * Extracts user if token is present AND valid (including DB checks), but doesn't block request if missing or invalid.
+ * Matches the security checks of `authenticate` — verifies is_active and token_version.
  */
-const optionalAuth = (req, res, next) => {
+const optionalAuth = async (req, res, next) => {
   const authHeader = req.headers.authorization;
 
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
     try {
       const decoded = jwt.verify(token, config.jwt.secret);
-      req.user = decoded;
+
+      // Verify user is still active and token version matches (same as authenticate)
+      const { pool } = require('../config/db.config');
+      const [rows] = await pool.query('SELECT is_active, token_version FROM users WHERE id = ? LIMIT 1', [decoded.id]);
+
+      if (rows.length > 0 && rows[0].is_active) {
+        const dbTokenVersion = (rows[0].token_version != null && rows[0].token_version !== '')
+          ? Number(rows[0].token_version)
+          : 1;
+        const rawJwtVersion = decoded.token_version ?? decoded.tokenVersion;
+        const jwtTokenVersion = (rawJwtVersion != null && rawJwtVersion !== '')
+          ? Number(rawJwtVersion)
+          : 1;
+
+        if (dbTokenVersion !== jwtTokenVersion) {
+          logger.debug(`Optional auth: token version mismatch for user ${decoded.id}`);
+        } else {
+          req.user = decoded;
+        }
+      } else {
+        logger.debug(`Optional auth: user ${decoded.id} not found or deactivated`);
+      }
     } catch (error) {
       // Just log and continue as guest
       logger.debug(`Optional auth failed verification: ${error.message}`);

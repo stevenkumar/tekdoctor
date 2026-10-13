@@ -1,0 +1,5 @@
+# Netlify / Cloudflare Pages / Static Hosting SPA Redirects
+/api/*     /api/:splat       200
+/uploads/* /uploads/:splat   200
+/health    /health           200
+/*         /index.html       200
