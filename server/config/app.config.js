@@ -133,6 +133,10 @@ const config = {
     expiresIn: process.env.JWT_EXPIRES_IN || '7d'
   },
 
+  security: {
+    settingsEncryptionKey: (process.env.SETTINGS_ENCRYPTION_KEY || '').trim()
+  },
+
   razorpay: {
     keyId: process.env.RAZORPAY_KEY_ID || '',
     keySecret: process.env.RAZORPAY_KEY_SECRET || '',

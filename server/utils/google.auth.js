@@ -1,28 +1,113 @@
 const { OAuth2Client } = require('google-auth-library');
 const config = require('../config/app.config');
+const { pool } = require('../config/db.config');
+const { decryptSecret } = require('./crypto.utils');
 const logger = require('./logger');
 
-let oauthClientInstance = null;
+// Dynamic configuration cache (60 seconds TTL)
+let cachedGoogleConfig = null;
+let googleConfigCacheTimestamp = 0;
+const GOOGLE_CACHE_TTL_MS = 60 * 1000;
 
 /**
- * Get or initialize the OAuth2Client instance
- * @returns {OAuth2Client}
+ * Invalidates the cached Google OAuth runtime settings.
+ * Called immediately upon settings updates in Admin controller.
  */
-const getOAuthClient = () => {
-  if (!oauthClientInstance) {
-    if (!config.google.clientId) {
-      throw new Error('Google Client ID is not configured on the server. Set GOOGLE_CLIENT_ID in environment variables.');
-    }
-    oauthClientInstance = new OAuth2Client(
-      config.google.clientId,
-      config.google.clientSecret || undefined
-    );
-  }
-  return oauthClientInstance;
+const invalidateGoogleConfigCache = () => {
+  cachedGoogleConfig = null;
+  googleConfigCacheTimestamp = 0;
 };
 
 /**
- * Verify a Google ID token or exchange an authorization code
+ * Dynamically resolves Google OAuth settings from:
+ * 1. Database (`site_settings` table: `google_login_enabled`, `google_client_id`, `google_client_secret`)
+ * 2. Environment variables (`config.google` / `process.env`) as safe fallback
+ *
+ * @returns {Promise<{ enabled: boolean, clientId: string, clientSecret: string }>}
+ */
+const getGoogleConfig = async () => {
+  const now = Date.now();
+  if (process.env.NODE_ENV !== 'test' && cachedGoogleConfig && (now - googleConfigCacheTimestamp < GOOGLE_CACHE_TTL_MS)) {
+    return cachedGoogleConfig;
+  }
+
+  const dbSettings = {};
+  try {
+    const [rows] = await pool.query(
+      "SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN ('google_login_enabled', 'google_client_id', 'google_client_secret')"
+    );
+    rows.forEach(r => {
+      if (r.setting_value !== null && r.setting_value !== undefined) {
+        dbSettings[r.setting_key] = String(r.setting_value).trim();
+      }
+    });
+  } catch (err) {
+    logger.debug(`Could not read Google settings from DB: ${err.message}`);
+  }
+
+  // Determine enabled status:
+  // If explicitly 'false' in DB, disabled.
+  // If explicitly 'true' in DB, enabled.
+  // If absent or unconfigured in DB, fall back to environment config:
+  let enabled;
+  if (dbSettings.google_login_enabled !== undefined && dbSettings.google_login_enabled !== '') {
+    enabled = dbSettings.google_login_enabled === 'true';
+  } else {
+    enabled = process.env.GOOGLE_LOGIN_ENABLED !== 'false' && Boolean(config.google?.clientId);
+  }
+
+  // Determine clientId:
+  const hasDbClientId = Boolean(dbSettings.google_client_id && dbSettings.google_client_id.trim());
+  const clientId = hasDbClientId
+    ? dbSettings.google_client_id.trim()
+    : (config.google?.clientId || '').trim();
+
+  // Determine clientSecret:
+  // Cryptographic Pairing Invariant:
+  // If the database defines an authoritative custom clientId, use the database's matching clientSecret.
+  // If the database does not define a custom clientId, use the environment's matching clientSecret.
+  let clientSecret = '';
+  if (hasDbClientId && dbSettings.google_client_secret) {
+    try {
+      clientSecret = decryptSecret(dbSettings.google_client_secret);
+    } catch (decErr) {
+      logger.error(`[GoogleAuth] Failed to decrypt stored Google Client Secret: ${decErr.message}`);
+      clientSecret = '';
+    }
+  } else if (!hasDbClientId) {
+    clientSecret = (config.google?.clientSecret || '').trim();
+  }
+
+  cachedGoogleConfig = {
+    enabled,
+    clientId,
+    clientSecret
+  };
+  googleConfigCacheTimestamp = now;
+  return cachedGoogleConfig;
+};
+
+/**
+ * Initializes an OAuth2Client instance using dynamic configuration
+ * @param {Object} [googleConfig]
+ * @returns {OAuth2Client}
+ */
+const getOAuthClient = (googleConfig) => {
+  const activeClientId = googleConfig?.clientId || config.google?.clientId;
+  const activeClientSecret = googleConfig?.clientSecret || config.google?.clientSecret;
+
+  if (!activeClientId) {
+    throw new Error('Google Client ID is not configured on the server.');
+  }
+
+  return new OAuth2Client(
+    activeClientId,
+    activeClientSecret || undefined
+  );
+};
+
+/**
+ * Verify a Google ID token or exchange an authorization code using dynamic runtime configuration
  *
  * @param {Object} params
  * @param {string} [params.credential] - Raw Google ID token (JWT) from Google Identity Services
@@ -30,12 +115,22 @@ const getOAuthClient = () => {
  * @returns {Promise<{ googleId: string, email: string, name: string, avatarUrl: string|null, emailVerified: boolean }>}
  */
 const verifyGoogleIdentity = async ({ credential, code }) => {
-  const client = getOAuthClient();
+  const googleConfig = await getGoogleConfig();
+
+  if (!googleConfig.enabled) {
+    throw new Error('Google Sign-In is currently disabled.');
+  }
+
+  if (!googleConfig.clientId) {
+    throw new Error('Google Client ID is not configured on the server.');
+  }
+
+  const client = getOAuthClient(googleConfig);
   let idToken = credential;
 
   // If authorization code provided, exchange for tokens first
   if (code && !idToken) {
-    if (!config.google.clientSecret) {
+    if (!googleConfig.clientSecret) {
       throw new Error('Google Client Secret is required on the server to exchange authorization codes.');
     }
     try {
@@ -58,7 +153,7 @@ const verifyGoogleIdentity = async ({ credential, code }) => {
   try {
     const ticket = await client.verifyIdToken({
       idToken,
-      audience: config.google.clientId
+      audience: googleConfig.clientId
     });
     payload = ticket.getPayload();
   } catch (verifyError) {
@@ -76,8 +171,8 @@ const verifyGoogleIdentity = async ({ credential, code }) => {
     throw new Error(`Invalid token issuer: ${payload.iss}`);
   }
 
-  // Verify Audience
-  if (payload.aud !== config.google.clientId) {
+  // Verify Audience against dynamic Client ID
+  if (payload.aud !== googleConfig.clientId) {
     throw new Error('Token audience mismatch.');
   }
 
@@ -100,6 +195,8 @@ const verifyGoogleIdentity = async ({ credential, code }) => {
 };
 
 module.exports = {
+  getGoogleConfig,
+  invalidateGoogleConfigCache,
   verifyGoogleIdentity,
   getOAuthClient
 };

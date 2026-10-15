@@ -2,6 +2,7 @@ const nodemailer = require('nodemailer');
 const { pool } = require('../config/db.config');
 const config = require('../config/app.config');
 const logger = require('./logger');
+const { decryptSecret } = require('./crypto.utils');
 
 /**
  * Redact sensitive credentials or tokens from error messages before logging
@@ -70,27 +71,39 @@ const getEmailConfig = async () => {
         });
 
         if (settings.smtp_host && settings.smtp_port && settings.smtp_user && settings.smtp_password) {
-            const port = parseInt(settings.smtp_port, 10);
-            const isSecure = port === 465;
+            let decryptedPass = settings.smtp_password;
+            try {
+                decryptedPass = decryptSecret(settings.smtp_password);
+            } catch (decErr) {
+                logger.error('[EmailConfig] Failed to decrypt stored SMTP password: ' + decErr.message);
+                decryptedPass = '';
+            }
 
-            const transporter = nodemailer.createTransport({
-                host: settings.smtp_host,
-                port: port,
-                secure: isSecure,
-                auth: {
-                    user: settings.smtp_user,
-                    pass: settings.smtp_password
-                },
-                connectionTimeout: 10000,
-                greetingTimeout: 10000,
-                socketTimeout: 15000,
-                tls: resolveTlsConfig(settings.smtp_host)
-            });
+            if (!decryptedPass) {
+                logger.warn('[EmailConfig] SMTP password could not be decrypted or is empty. Falling back to environment configuration.');
+            } else {
+                const port = parseInt(settings.smtp_port, 10);
+                const isSecure = port === 465;
 
-            const fromHeader = `"${settings.from_name || 'TekDoctor'}" <${settings.from_email || settings.smtp_user}>`;
-            const adminEmail = settings.admin_email || config.email.adminEmail || settings.from_email || settings.smtp_user;
+                const transporter = nodemailer.createTransport({
+                    host: settings.smtp_host,
+                    port: port,
+                    secure: isSecure,
+                    auth: {
+                        user: settings.smtp_user,
+                        pass: decryptedPass
+                    },
+                    connectionTimeout: 10000,
+                    greetingTimeout: 10000,
+                    socketTimeout: 15000,
+                    tls: resolveTlsConfig(settings.smtp_host)
+                });
 
-            return { transporter, fromHeader, adminEmail, isConfigured: true, source: 'database_smtp' };
+                const fromHeader = `"${settings.from_name || 'TekDoctor'}" <${settings.from_email || settings.smtp_user}>`;
+                const adminEmail = settings.admin_email || config.email.adminEmail || settings.from_email || settings.smtp_user;
+
+                return { transporter, fromHeader, adminEmail, isConfigured: true, source: 'database_smtp' };
+            }
         }
     } catch (dbErr) {
         logger.debug(`Could not read SMTP settings from DB: ${dbErr.message}`);

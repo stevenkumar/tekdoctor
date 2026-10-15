@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { useAuth } from '@/context/AuthContext';
+import { useSiteContext } from '@/context/SiteContext';
 import { authApi } from '@/services/api';
 import { appConfig } from '@/config/appConfig';
 import { getRecaptchaToken } from '@/utils/recaptcha';
@@ -62,14 +63,24 @@ export default function GoogleSignInButton({
 }: GoogleSignInButtonProps) {
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const { login } = useAuth();
+  const { flattenedSettings } = useSiteContext();
+
+  // Hide button completely when Google Login is disabled by administrator
+  const isGoogleDisabled = flattenedSettings.google_login_enabled === 'false';
+  if (isGoogleDisabled) {
+    return null;
+  }
 
   const handleGoogleClick = async () => {
     if (disabled || isAuthenticating) return;
 
-    const clientId = appConfig.googleClientId;
+    // Dynamically resolve client ID from site settings with fallback to environment config
+    const clientId = (flattenedSettings.google_client_id && flattenedSettings.google_client_id.trim())
+      ? flattenedSettings.google_client_id.trim()
+      : appConfig.googleClientId;
 
     if (!clientId || clientId.trim() === '') {
-      const msg = 'Google Sign-In is not configured yet. Please configure VITE_GOOGLE_CLIENT_ID in your environment.';
+      const msg = 'Google Sign-In is not configured yet. Please configure Google Client ID in Admin -> Website Settings.';
       onError?.(msg);
       toast.error('Google Sign-In is not configured.');
       return;

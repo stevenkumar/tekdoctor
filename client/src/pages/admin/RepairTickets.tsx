@@ -12,12 +12,15 @@ import {
     Laptop, Smartphone, SlidersHorizontal, Check, ShieldCheck, ShieldOff,
     ArrowRightLeft, Layers, Wrench, Clock, CreditCard, ShieldAlert, AlertTriangle, Lock,
     Users,
-    Eye
+    Eye, Printer, Receipt, Download
 } from 'lucide-react';
 import { appConfig } from '@/config/appConfig';
 import ImagePreviewModal from '@/components/ImagePreviewModal';
 import SideDrawer from '@/components/SideDrawer';
-import AdminTicketWorkspace from '@/components/AdminTicketWorkspace';
+import RepairTicketWorkspace from '@/components/RepairTicketWorkspace';
+import DeviceRepairHistoryModal from '@/components/DeviceRepairHistoryModal';
+import { PaymentReceiptModal } from '@/components/PaymentReceiptModal';
+import { downloadPaymentBillPdf, printPaymentBill } from '@/utils/billGenerator';
 import ConfirmModal from '@/components/ConfirmModal';
 import { subscribeToPaymentUpdates } from '@/utils/paymentSync';
 
@@ -62,7 +65,20 @@ export default function RepairTickets() {
     const [showDatePicker, setShowDatePicker] = useState(false);
     const [tempStartDate, setTempStartDate] = useState('');
     const [tempEndDate, setTempEndDate] = useState('');
+    const [popoverAlign, setPopoverAlign] = useState<'left' | 'right'>('left');
     const datePickerRef = useRef<HTMLDivElement>(null);
+
+    const updatePopoverAlignment = useCallback(() => {
+        if (datePickerRef.current) {
+            const rect = datePickerRef.current.getBoundingClientRect();
+            const spaceOnRight = window.innerWidth - rect.left;
+            if (spaceOnRight < 400 && rect.right >= 380) {
+                setPopoverAlign('right');
+            } else {
+                setPopoverAlign('left');
+            }
+        }
+    }, []);
 
     // Pagination & Status counts
     const [page, setPage] = useState(1);
@@ -126,6 +142,71 @@ export default function RepairTickets() {
     const [overrideReason, setOverrideReason] = useState('');
     const [isOverriding, setIsOverriding] = useState(false);
 
+    // Invoice Bill & Receipt State
+    const [viewReceiptModalOpen, setViewReceiptModalOpen] = useState(false);
+    const [selectedReceiptData, setSelectedReceiptData] = useState<any>(null);
+    const [selectedReceiptTicketId, setSelectedReceiptTicketId] = useState<number | undefined>(undefined);
+    const [isActionLoading, setIsActionLoading] = useState(false);
+    const [downloadingId, setDownloadingId] = useState<number | null>(null);
+    const [historyModalDeviceId, setHistoryModalDeviceId] = useState<number | null>(null);
+
+    const handleDownloadTicketReceipt = async (ticketId: number) => {
+        if (!token) return;
+        setDownloadingId(ticketId);
+        try {
+            const res = await billingApi.getPaymentReceiptByTicket(ticketId, token);
+            const receiptData = res.data?.data || res.data?.receipt || (res.data?.receiptNumber ? res.data : null);
+            if (res.ok && receiptData) {
+                await downloadPaymentBillPdf(receiptData);
+                toast.success('Official GST Tax Invoice downloaded.');
+            } else {
+                toast.error(res.error || 'Failed to download GST invoice.');
+            }
+        } catch {
+            toast.error('Could not generate PDF bill.');
+        } finally {
+            setDownloadingId(null);
+        }
+    };
+
+    const handleViewTicketReceipt = async (ticketId: number) => {
+        if (!token) return;
+        setIsActionLoading(true);
+        try {
+            const res = await billingApi.getPaymentReceiptByTicket(ticketId, token);
+            const receiptData = res.data?.data || res.data?.receipt || (res.data?.receiptNumber ? res.data : null);
+            if (receiptData) {
+                setSelectedReceiptData(receiptData);
+                setSelectedReceiptTicketId(ticketId);
+                setViewReceiptModalOpen(true);
+            } else {
+                toast.error(res.error || 'Failed to retrieve invoice for ticket.');
+            }
+        } catch {
+            toast.error('Could not load bill receipt details.');
+        } finally {
+            setIsActionLoading(false);
+        }
+    };
+
+    const handlePrintTicketReceipt = async (ticketId: number) => {
+        if (!token) return;
+        setIsActionLoading(true);
+        try {
+            const res = await billingApi.getPaymentReceiptByTicket(ticketId, token);
+            const receiptData = res.data?.data || res.data?.receipt || (res.data?.receiptNumber ? res.data : null);
+            if (receiptData) {
+                await printPaymentBill(receiptData);
+            } else {
+                toast.error(res.error || 'Failed to retrieve invoice for printing.');
+            }
+        } catch {
+            toast.error('Could not print receipt.');
+        } finally {
+            setIsActionLoading(false);
+        }
+    };
+
     // Debounce search query
     useEffect(() => {
         const timer = setTimeout(() => {
@@ -134,20 +215,29 @@ export default function RepairTickets() {
         return () => clearTimeout(timer);
     }, [searchQuery]);
 
-    // Close date picker on click outside
+    // Close date picker on click outside or escape key
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
             if (datePickerRef.current && !datePickerRef.current.contains(event.target as Node)) {
                 setShowDatePicker(false);
             }
         };
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setShowDatePicker(false);
+            }
+        };
         if (showDatePicker) {
             document.addEventListener('mousedown', handleClickOutside);
+            document.addEventListener('keydown', handleKeyDown);
+            window.addEventListener('resize', updatePopoverAlignment);
         }
         return () => {
             document.removeEventListener('mousedown', handleClickOutside);
+            document.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('resize', updatePopoverAlignment);
         };
-    }, [showDatePicker]);
+    }, [showDatePicker, updatePopoverAlignment]);
 
     // Sync status from URL search params if present on initial load
     useEffect(() => {
@@ -173,7 +263,7 @@ export default function RepairTickets() {
         if (!isSilent) setLoading(true);
         try {
             const filters: RepairFilters = {
-                status: activeFilter !== 'all' ? activeFilter : undefined,
+                status: (activeFilter !== 'all' && activeFilter !== 'approval_budget' && activeFilter !== 'pending_approval') ? activeFilter : undefined,
                 paymentStatus: paymentFilter !== 'all' ? paymentFilter : undefined,
                 priority: priorityFilter !== 'all' ? priorityFilter : undefined,
                 technicianId: technicianFilter !== 'all' ? technicianFilter : undefined,
@@ -453,7 +543,16 @@ export default function RepairTickets() {
 
     // Client-side fallback filter to guarantee consistency
     const filteredRequests = requests.filter(r => {
-        const matchFilter = activeFilter === 'all' || (r.status && r.status.toLowerCase() === activeFilter.toLowerCase());
+        let matchFilter = true;
+        if (activeFilter === 'approval_budget' || activeFilter === 'pending_approval') {
+            const isPendingApproval = (r.customerApprovalStatus === 'pending_approval' || (r as any).customer_approval_status === 'pending_approval') &&
+                (Number(r.estimatedCost || (r as any).estimated_cost || 0) > 0 || Number(r.repairCost || (r as any).repair_cost || 0) > 0) &&
+                !['completed', 'cancelled', 'delivered'].includes(r.status?.toLowerCase() || '');
+            if (!isPendingApproval) return false;
+        } else if (activeFilter !== 'all') {
+            matchFilter = Boolean(r.status && r.status.toLowerCase() === activeFilter.toLowerCase());
+        }
+        if (!matchFilter) return false;
         const matchPriority = priorityFilter === 'all' || (r.priority && r.priority.toLowerCase() === priorityFilter.toLowerCase());
         
         let matchPayment = true;
@@ -918,8 +1017,20 @@ export default function RepairTickets() {
         }
     };
 
+    const pendingApprovalCount = requests.filter(rep =>
+        (rep.customerApprovalStatus === 'pending_approval' || (rep as any).customer_approval_status === 'pending_approval') &&
+        (Number(rep.estimatedCost || (rep as any).estimated_cost || 0) > 0 || Number(rep.repairCost || (rep as any).repair_cost || 0) > 0) &&
+        !['completed', 'cancelled', 'delivered'].includes(rep.status?.toLowerCase() || '')
+    ).length;
+
     const tabs = [
         { id: 'all', label: 'All', count: statusCounts.all },
+        {
+            id: 'approval_budget',
+            label: `Approval Budget${pendingApprovalCount > 0 ? ` (${pendingApprovalCount})` : ''}`,
+            count: pendingApprovalCount,
+            highlight: pendingApprovalCount > 0
+        },
         { id: 'pending', label: 'Pending', count: statusCounts.pending },
         { id: 'in_progress', label: 'In Progress', count: statusCounts.in_progress },
         { id: 'completed', label: 'Completed', count: statusCounts.completed },
@@ -976,14 +1087,24 @@ export default function RepairTickets() {
             </div>
 
             {selectedRequest ? (
-                <AdminTicketWorkspace
-                    request={selectedRequest}
+                <RepairTicketWorkspace
+                    ticket={selectedRequest}
+                    role="admin"
                     technicians={technicians}
-                    token={token}
                     onBack={() => {
                         setSelectedRequest(null);
                         searchParams.delete('id');
                         setSearchParams(searchParams, { replace: true });
+                    }}
+                    onRefresh={() => {
+                        fetchData(page, true);
+                        if (selectedRequest?.id && token) {
+                            repairApi.getRequestById(token, selectedRequest.id).then(res => {
+                                if (res.ok && res.data?.data) {
+                                    setSelectedRequest(res.data.data as ServiceRequest);
+                                }
+                            });
+                        }
                     }}
                     onRequestUpdated={(updated: any) => {
                         setRequests(prev => prev.map(r => r.id === updated.id ? { ...r, ...updated } : r));
@@ -994,777 +1115,812 @@ export default function RepairTickets() {
                 />
             ) : (
                 <>
-                {/* Status Tabs Bar */}
-            <div className="overflow-x-auto pb-1">
-                <div className="flex items-center gap-1.5 bg-zinc-900/60 p-1.5 rounded-2xl border border-zinc-800/40 w-fit min-w-full sm:min-w-0">
-                    {tabs.map(tab => {
-                        const isActive = activeFilter === tab.id;
-                        return (
+                    {/* Status Tabs Bar */}
+                    <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-xl p-1 overflow-x-auto">
+                        {tabs.map(st => (
                             <button
-                                key={tab.id}
-                                onClick={() => { setActiveFilter(tab.id); setPage(1); }}
-                                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold tracking-wide transition-all cursor-pointer whitespace-nowrap ${isActive
-                                    ? 'bg-neon-cyan text-black font-bold shadow-sm'
-                                    : 'text-zinc-400 hover:text-white hover:bg-zinc-800/50'
+                                key={st.id}
+                                onClick={() => { setActiveFilter(st.id); setPage(1); }}
+                                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${activeFilter === st.id
+                                    ? 'bg-zinc-800 text-white font-semibold shadow-sm'
+                                    : st.highlight
+                                        ? 'text-amber-400 hover:text-amber-300 font-semibold'
+                                        : 'text-zinc-400 hover:text-zinc-200'
                                     }`}
                             >
-                                <span>{tab.label}</span>
-                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${isActive
-                                    ? 'bg-black/20 text-black'
-                                    : 'bg-zinc-800 text-zinc-400'
-                                    }`}>
-                                    {tab.count ?? 0}
-                                </span>
-                            </button>
-                        );
-                    })}
-                </div>
-            </div>
-
-            {/* Filter Controls Bar */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 bg-zinc-950/40 p-3 rounded-2xl border border-zinc-900">                {/* Search Bar (3 cols on lg) */}
-                <div className="relative sm:col-span-2 lg:col-span-3">
-                    <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-                    <input
-                        ref={searchInputRef}
-                        id="admin-search-input"
-                        type="text"
-                        placeholder="Search ticket #, customer, phone, device..."
-                        value={searchQuery}
-                        onChange={e => setSearchQuery(e.target.value)}
-                        className="w-full bg-zinc-900/80 border border-zinc-800 rounded-xl pl-10 pr-9 py-2.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-neon-cyan transition-all"
-                    />
-                    {searchQuery && (
-                        <button
-                            onClick={() => setSearchQuery('')}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white p-0.5 rounded transition-colors"
-                            title="Clear search"
-                        >
-                            <X size={14} />
-                        </button>
-                    )}
-                </div>
-
-                {/* Date Filter Trigger & Popover (2 cols on lg) */}
-                <div className="relative sm:col-span-1 lg:col-span-2" ref={datePickerRef}>
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setTempStartDate(startDate);
-                            setTempEndDate(endDate);
-                            setShowDatePicker(!showDatePicker);
-                        }}
-                        className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl border text-xs transition-all cursor-pointer ${startDate || endDate
-                            ? 'bg-neon-cyan/10 border-neon-cyan/40 text-neon-cyan font-medium'
-                            : 'bg-zinc-900/80 border-zinc-800 text-zinc-300 hover:border-zinc-700'
-                            }`}
-                    >
-                        <div className="flex items-center gap-2 truncate">
-                            <Calendar size={14} className={startDate || endDate ? 'text-neon-cyan shrink-0' : 'text-zinc-500 shrink-0'} />
-                            <span className="truncate">{getDateTriggerText()}</span>
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                            {(startDate || endDate) && (
-                                <button
-                                    type="button"
-                                    onClick={handleClearDateFilter}
-                                    className="p-1 text-neon-cyan hover:bg-neon-cyan/20 rounded transition-colors"
-                                    title="Clear date filter"
-                                >
-                                    <X size={12} />
-                                </button>
-                            )}
-                            <ChevronDown size={14} className={`text-zinc-500 transition-transform ${showDatePicker ? 'rotate-180' : ''}`} />
-                        </div>
-                    </button>
-
-                    {/* Date Picker Popover Panel */}
-                    {showDatePicker && (
-                        <div className="absolute left-0 sm:left-auto sm:right-0 top-full mt-2 w-[calc(100vw-2.5rem)] max-w-sm sm:w-96 bg-[#0e0e10] border border-zinc-800/60 rounded-2xl p-4 shadow-2xl z-50 space-y-4">
-                            <div className="flex items-center justify-between pb-3 border-b border-zinc-800/40">
-                                <div className="flex items-center gap-2">
-                                    <Calendar size={14} className="text-neon-cyan" />
-                                    <span className="text-xs font-bold text-white uppercase font-mono tracking-wider">Date Range Filter</span>
-                                </div>
-                                <button
-                                    onClick={() => setShowDatePicker(false)}
-                                    className="p-1 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
-                                >
-                                    <X size={14} />
-                                </button>
-                            </div>
-
-                            {/* Quick Presets */}
-                            <div>
-                                <label className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 block mb-2">Quick Presets</label>
-                                <div className="grid grid-cols-3 gap-1.5">
-                                    {[
-                                        { id: 'today', label: 'Today' },
-                                        { id: 'yesterday', label: 'Yesterday' },
-                                        { id: 'last7', label: 'Last 7 Days' },
-                                        { id: 'last30', label: 'Last 30 Days' },
-                                        { id: 'thisMonth', label: 'This Month' },
-                                        { id: 'all', label: 'All Time' }
-                                    ].map(preset => (
-                                        <button
-                                            key={preset.id}
-                                            type="button"
-                                            onClick={() => applyDatePreset(preset.id as any)}
-                                            className="px-2 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800/50 hover:border-neon-cyan/30 hover:bg-zinc-800 text-[11px] font-medium text-zinc-300 hover:text-white transition-all text-center"
-                                        >
-                                            {preset.label}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-
-                            {/* Custom Date Pickers */}
-                            <div className="space-y-2 pt-2 border-t border-zinc-800/40">
-                                <label className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 block">Custom Date Range</label>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <div>
-                                        <label className="text-[10px] text-zinc-400 block mb-1">From (Start Date)</label>
-                                        <input
-                                            type="date"
-                                            value={tempStartDate}
-                                            max={tempEndDate || undefined}
-                                            onChange={e => setTempStartDate(e.target.value)}
-                                            className="w-full bg-zinc-900 border border-zinc-800/50 hover:border-zinc-700/50 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-neon-cyan/60"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="text-[10px] text-zinc-400 block mb-1">To (End Date)</label>
-                                        <input
-                                            type="date"
-                                            value={tempEndDate}
-                                            min={tempStartDate || undefined}
-                                            onChange={e => setTempEndDate(e.target.value)}
-                                            className="w-full bg-zinc-900 border border-zinc-800/50 hover:border-zinc-700/50 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-neon-cyan/60"
-                                        />
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* Actions */}
-                            <div className="flex items-center justify-between pt-3 border-t border-zinc-800/40">
-                                <button
-                                    type="button"
-                                    onClick={handleClearDateFilter}
-                                    className="text-xs font-semibold text-zinc-400 hover:text-rose-400 transition-colors"
-                                >
-                                    Reset Date
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={handleApplyCustomDate}
-                                    className="flex items-center gap-1.5 bg-neon-cyan hover:bg-neon-cyan text-black px-4 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
-                                >
-                                    <Check size={14} />
-                                    <span>Apply</span>
-                                </button>
-                            </div>
-                        </div>
-                    )}
-                </div>
-
-                {/* Priority Filter (2 cols on lg) */}
-                <div className="relative sm:col-span-1 lg:col-span-2">
-                    <Filter className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
-                    <select
-                        value={priorityFilter}
-                        onChange={e => setPriorityFilter(e.target.value)}
-                        className={`w-full border rounded-xl pl-9 pr-8 py-2.5 text-xs focus:outline-none focus:border-neon-cyan transition-all appearance-none cursor-pointer ${priorityFilter !== 'all'
-                            ? 'bg-neon-cyan/10 border-neon-cyan/40 text-neon-cyan font-medium'
-                            : 'bg-zinc-900/80 border-zinc-800 text-zinc-300'
-                            }`}
-                    >
-                        <option value="all" className="bg-zinc-900 text-zinc-300">All Priorities</option>
-                        <option value="standard" className="bg-zinc-900 text-zinc-300">Standard</option>
-                        <option value="priority" className="bg-zinc-900 text-zinc-300">Priority</option>
-                        <option value="express" className="bg-zinc-900 text-zinc-300">Express (Same Day)</option>
-                        <option value="urgent" className="bg-zinc-900 text-zinc-300">Urgent (Within 2 Hours)</option>
-                    </select>
-                    <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
-                </div>
-
-                {/* Payment Status Filter (2 cols on lg) */}
-                <div className="relative sm:col-span-1 lg:col-span-2">
-                    <CreditCard className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
-                    <select
-                        value={paymentFilter}
-                        onChange={e => setPaymentFilter(e.target.value)}
-                        className={`w-full border rounded-xl pl-9 pr-8 py-2.5 text-xs focus:outline-none focus:border-neon-cyan transition-all appearance-none cursor-pointer ${paymentFilter !== 'all'
-                            ? 'bg-neon-cyan/10 border-neon-cyan/40 text-neon-cyan font-medium'
-                            : 'bg-zinc-900/80 border-zinc-800 text-zinc-300'
-                            }`}
-                    >
-                        <option value="all" className="bg-zinc-900 text-zinc-300">All Payments</option>
-                        <option value="paid" className="bg-zinc-900 text-zinc-300">Paid / Verified</option>
-                        <option value="pending_verification" className="bg-zinc-900 text-zinc-300">Pending Verification</option>
-                        <option value="unpaid" className="bg-zinc-900 text-zinc-300">Payment Due / Unpaid</option>
-                        <option value="rejected" className="bg-zinc-900 text-zinc-300">Payment Rejected</option>
-                        <option value="failed" className="bg-zinc-900 text-zinc-300">Payment Failed</option>
-                    </select>
-                    <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
-                </div>
-
-                {/* Technician Filter (2 cols on lg) */}
-                <div className="relative sm:col-span-1 lg:col-span-2">
-                    <UserCog className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
-                    <select
-                        value={technicianFilter}
-                        onChange={e => setTechnicianFilter(e.target.value)}
-                        className={`w-full border rounded-xl pl-9 pr-8 py-2.5 text-xs focus:outline-none focus:border-neon-cyan transition-all appearance-none cursor-pointer ${technicianFilter !== 'all'
-                            ? 'bg-neon-cyan/10 border-neon-cyan/40 text-neon-cyan font-medium'
-                            : 'bg-zinc-900/80 border-zinc-800 text-zinc-300'
-                            }`}
-                    >
-                        <option value="all" className="bg-zinc-900 text-zinc-300">All Technicians</option>
-                        <option value="unassigned" className="bg-zinc-900 text-zinc-300">Unassigned Only</option>
-                        {technicians.map(t => (
-                            <option key={t.id} value={t.id} className="bg-zinc-900 text-zinc-300">
-                                {t.name}
-                            </option>
-                        ))}
-                    </select>
-                    <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
-                </div>
-
-                {/* Customer Type Filter (Individual Customer vs B2B Customer) */}
-                <div className="relative sm:col-span-1 lg:col-span-1">
-                    <Users className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500 pointer-events-none" />
-                    <select
-                        value={customerTypeFilter}
-                        onChange={e => setCustomerTypeFilter(e.target.value as any)}
-                        className={`w-full border rounded-xl pl-8 pr-6 py-2.5 text-xs focus:outline-none focus:border-neon-cyan transition-all appearance-none cursor-pointer truncate ${customerTypeFilter !== 'all'
-                            ? 'bg-neon-cyan/10 border-neon-cyan/40 text-neon-cyan font-medium'
-                            : 'bg-zinc-900/80 border-zinc-800 text-zinc-300'
-                            }`}
-                    >
-                        <option value="all" className="bg-zinc-900 text-zinc-300">All Customers</option>
-                        <option value="individual" className="bg-zinc-900 text-zinc-300">Individual Customer</option>
-                        <option value="company" className="bg-zinc-900 text-zinc-300">B2B Customer</option>
-                    </select>
-                    <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
-                </div>
-            </div>
-
-            {/* Active Filter Badges Bar */}
-            {isAnyFilterActive && (
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 mr-1 flex items-center gap-1">
-                        <SlidersHorizontal size={11} /> Filters:
-                    </span>
-
-                    {activeFilter !== 'all' && (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-zinc-900/90 border border-zinc-800/50 text-zinc-300">
-                            <span className="text-zinc-500 text-[10px] font-mono">STATUS:</span> {activeFilter.replace('_', ' ')}
-                            <button onClick={() => setActiveFilter('all')} className="ml-1 text-zinc-500 hover:text-white"><X size={12} /></button>
-                        </span>
-                    )}
-
-                    {paymentFilter !== 'all' && (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-zinc-900/90 border border-zinc-800/50 text-zinc-300">
-                            <span className="text-zinc-500 text-[10px] font-mono">PAYMENT:</span> {paymentFilter.toUpperCase()}
-                            <button onClick={() => setPaymentFilter('all')} className="ml-1 text-zinc-500 hover:text-white"><X size={12} /></button>
-                        </span>
-                    )}
-
-                    {(startDate || endDate) && (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-neon-cyan/10 border border-neon-cyan/25 text-neon-cyan">
-                            <Calendar size={11} /> {getDateTriggerText()}
-                            <button onClick={handleClearDateFilter} className="ml-1 text-neon-cyan hover:text-white"><X size={12} /></button>
-                        </span>
-                    )}
-
-                    {searchQuery.trim() && (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-zinc-900/90 border border-zinc-800/50 text-zinc-300">
-                            <span className="text-zinc-500 text-[10px] font-mono">SEARCH:</span> "{searchQuery}"
-                            <button onClick={() => setSearchQuery('')} className="ml-1 text-zinc-500 hover:text-white"><X size={12} /></button>
-                        </span>
-                    )}
-
-                    {priorityFilter !== 'all' && (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-zinc-900/90 border border-zinc-800/50 text-zinc-300">
-                            <span className="text-zinc-500 text-[10px] font-mono">PRIORITY:</span> {priorityFilter}
-                            <button onClick={() => setPriorityFilter('all')} className="ml-1 text-zinc-500 hover:text-white"><X size={12} /></button>
-                        </span>
-                    )}
-
-                    {technicianFilter !== 'all' && (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-zinc-900/90 border border-zinc-800/50 text-zinc-300">
-                            <span className="text-zinc-500 text-[10px] font-mono">TECH:</span> {technicianFilter === 'unassigned' ? 'Unassigned' : (technicians.find(t => t.id === Number(technicianFilter))?.name || technicianFilter)}
-                            <button onClick={() => setTechnicianFilter('all')} className="ml-1 text-zinc-500 hover:text-white"><X size={12} /></button>
-                        </span>
-                    )}
-
-                    {customerTypeFilter !== 'all' && (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-zinc-900/90 border border-zinc-800/50 text-zinc-300">
-                            <span className="text-zinc-500 text-[10px] font-mono">TYPE:</span> {customerTypeFilter === 'company' ? 'B2B Customer' : 'Individual Customer'}
-                            <button onClick={() => setCustomerTypeFilter('all')} className="ml-1 text-zinc-500 hover:text-white"><X size={12} /></button>
-                        </span>
-                    )}
-
-                    <button
-                        onClick={handleClearAllFilters}
-                        className="text-[11px] text-zinc-500 hover:text-white underline ml-1 cursor-pointer transition-colors"
-                    >
-                        Clear all
-                    </button>
-                </div>
-            )}
-
-            {/* Content Area */}
-            {loading ? (
-                <div className="min-h-[40vh] flex flex-col items-center justify-center">
-                    <Loader2 className="w-8 h-8 text-neon-cyan animate-spin mb-3" />
-                    <p className="text-zinc-500 text-xs font-mono tracking-wider uppercase">Loading Repair Tickets...</p>
-                </div>
-            ) : filteredRequests.length === 0 ? (
-                /* No Records Found Empty State */
-                <div className="border border-zinc-800/40 bg-zinc-950/40 rounded-2xl p-12 text-center flex flex-col items-center justify-center max-w-lg mx-auto my-6 shadow-inner">
-                    <div className="w-16 h-16 rounded-2xl bg-zinc-900/80 border border-zinc-800/40 flex items-center justify-center text-zinc-500 mb-4 shadow-sm">
-                        <FilterX size={28} className="text-zinc-400" />
-                    </div>
-                    <h3 className="text-lg font-bold text-white font-outfit mb-1">No Records Found</h3>
-                    <p className="text-xs text-zinc-400 max-w-sm mb-6 leading-relaxed">
-                        {isAnyFilterActive
-                            ? 'No repair tickets matched your selected date range or filter criteria. Try adjusting or clearing your filters.'
-                            : 'There are currently no repair tickets registered in the system.'}
-                    </p>
-                    {isAnyFilterActive && (
-                        <button
-                            onClick={handleClearAllFilters}
-                            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-neon-cyan text-black text-xs font-bold hover:bg-neon-cyan transition-all cursor-pointer shadow-sm"
-                        >
-                            <RotateCcw size={14} />
-                            <span>Clear All Filters</span>
-                        </button>
-                    )}
-                </div>
-            ) : (
-                <div className="space-y-4">
-                    {/* Bulk Action Bar */}
-                    {selectedTicketIds.length > 0 && (
-                        <div className="bg-zinc-950 border border-neon-cyan/25 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-lg animate-in fade-in">
-                            <div className="flex items-center gap-2">
-                                <span className="text-xs font-mono text-neon-cyan font-bold uppercase">{selectedTicketIds.length} tickets selected</span>
-                                <button onClick={() => setSelectedTicketIds([])} className="text-[10px] text-zinc-400 hover:text-white underline cursor-pointer">Clear Selection</button>
-                            </div>
-                            <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-                                <select
-                                    value={bulkTechSelect}
-                                    onChange={e => setBulkTechSelect(e.target.value === '' ? '' : Number(e.target.value))}
-                                    className="bg-zinc-900 border border-zinc-800/50 hover:border-zinc-700/50 rounded-xl px-3 py-2 text-xs text-white focus:outline-none cursor-pointer w-full sm:w-auto"
-                                >
-                                    <option value="">Assign Technician...</option>
-                                    {technicians.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                                </select>
-                                <select
-                                    value={bulkStatusSelect}
-                                    onChange={e => setBulkStatusSelect(e.target.value)}
-                                    className="bg-zinc-900 border border-zinc-800/50 hover:border-zinc-700/50 rounded-xl px-3 py-2 text-xs text-white focus:outline-none cursor-pointer w-full sm:w-auto"
-                                >
-                                    <option value="">Update Status...</option>
-                                    <option value="pending">Pending</option>
-                                    <option value="in_progress">In Progress</option>
-                                    <option value="completed">Completed</option>
-                                    <option value="delivered">Delivered</option>
-                                    <option value="cancelled">Cancelled</option>
-                                </select>
-                                <button
-                                    onClick={handleBulkUpdate}
-                                    disabled={bulkAssigning || (!bulkTechSelect && !bulkStatusSelect)}
-                                    className="bg-neon-cyan hover:bg-neon-cyan text-black px-4 py-2 rounded-xl text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-sm w-full sm:w-auto text-center"
-                                >
-                                    {bulkAssigning ? 'Applying...' : 'Apply Bulk Actions'}
-                                </button>
-                                <button
-                                    onClick={() => {
-                                        setShowBulkDeleteModal(true);
-                                        setBulkDeleteReason('');
-                                    }}
-                                    className="bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 hover:text-red-300 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm w-full sm:w-auto"
-                                    title={`Delete ${selectedTicketIds.length} selected tickets`}
-                                >
-                                    <Trash2 size={13} />
-                                    <span>Delete Selected ({selectedTicketIds.length})</span>
-                                </button>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Tickets Table */}
-                    <div className="border border-zinc-800/40 bg-zinc-900/20 rounded-2xl overflow-hidden shadow-sm">
-                        <div className="overflow-x-auto">
-                            <table className="w-full min-w-[980px] border-collapse text-left">
-                                <thead>
-                                    <tr className="border-b border-zinc-800/40 bg-zinc-950/60 text-[10px] font-mono font-semibold uppercase tracking-wider text-zinc-400">
-                                        <th className="p-4 w-12 text-center">
-                                            <input
-                                                type="checkbox"
-                                                checked={filteredRequests.length > 0 && selectedTicketIds.length === filteredRequests.length}
-                                                onChange={e => {
-                                                    if (e.target.checked) {
-                                                        setSelectedTicketIds(filteredRequests.map(r => r.id));
-                                                    } else {
-                                                        setSelectedTicketIds([]);
-                                                    }
-                                                }}
-                                                className="rounded border-zinc-700/50 hover:border-zinc-600/60 bg-zinc-900 text-neon-cyan focus:ring-0 focus:ring-offset-0 cursor-pointer"
-                                            />
-                                        </th>
-                                        <th className="p-4">Ticket ID</th>
-                                        <th className="p-4">Customer</th>
-                                        <th className="p-4">Device Specification</th>
-                                        <th className="p-4">Status</th>
-                                        <th className="p-4">Estimate & Approval</th>
-                                        <th className="p-4">Assigned Tech</th>
-                                        <th className="p-4">Priority</th>
-                                        <th className="p-4">Date Logged</th>
-                                        <th className="p-4 text-right">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-zinc-800/30">
-                                    {filteredRequests.map(r => {
-                                        const tech = technicians.find(t => t.id === r.assignedTechnicianId);
-                                        const isSelected = selectedTicketIds.includes(r.id);
-                                        return (
-                                            <tr
-                                                key={r.id}
-                                                className={`hover:bg-zinc-900/40 transition-colors cursor-pointer group ${isSelected ? 'bg-neon-cyan/10' : ''}`}
-                                                onClick={() => openModal(r)}
-                                            >
-                                                <td className="p-4 text-center w-12" onClick={e => e.stopPropagation()}>
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={isSelected}
-                                                        onChange={e => {
-                                                            if (e.target.checked) {
-                                                                setSelectedTicketIds(prev => [...prev, r.id]);
-                                                            } else {
-                                                                setSelectedTicketIds(prev => prev.filter(id => id !== r.id));
-                                                            }
-                                                        }}
-                                                        className="rounded border-zinc-700/50 hover:border-zinc-600/60 bg-zinc-900 text-neon-cyan focus:ring-0 focus:ring-offset-0 cursor-pointer"
-                                                    />
-                                                </td>
-                                                <td className="p-4 text-xs font-mono text-neon-cyan font-bold whitespace-nowrap">
-                                                    {r.ticketNumber || `#${r.id}`}
-                                                </td>
-                                                <td className="p-4">
-                                                    <div className="flex items-center gap-2">
-                                                        <span className="text-sm text-white font-semibold">{r.customerName}</span>
-                                                        {(r as any).repeatCount > 1 && (
-                                                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest bg-rose-500/10 text-rose-400 border border-rose-500/20" title="This device has been sent for repair multiple times">
-                                                                Repeat ({(r as any).repeatCount})
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                    <div className="text-[10px] text-zinc-500 font-mono mt-0.5">{r.mobile}</div>
-                                                </td>
-                                                <td className="p-4 text-xs text-zinc-300">
-                                                    <div className="font-medium text-white">{r.brand} {r.modelNumber || ''}</div>
-                                                    <div className="text-[10px] text-zinc-500 font-mono mt-0.5">{r.deviceCategory} • {r.problemType}</div>
-                                                </td>
-                                                <td className="p-4 whitespace-nowrap">
-                                                    <div className="flex flex-col gap-1.5 items-start">
-                                                        {getStatusBadge(r.status)}
-                                                        {getPaymentBadge(r.paymentStatus || (r as any).payment_status, r.collectionStatus || (r as any).collection_status)}
-                                                    </div>
-                                                </td>
-                                                <td className="p-4 whitespace-nowrap">
-                                                    {(() => {
-                                                        const approxTotal = ((r.estimatedCost || 0) + (r.additionalCharges || 0)) || (r.repairCost || 0);
-                                                        if (approxTotal > 0) {
-                                                            return (
-                                                                <div>
-                                                                    <div className="text-xs font-mono font-bold text-white flex items-center gap-1">
-                                                                        ₹{approxTotal.toFixed(2)}
-                                                                        <span className="text-[9px] text-zinc-500 font-normal">(Approx)</span>
-                                                                    </div>
-                                                                    {r.additionalCharges && r.additionalCharges > 0 ? (
-                                                                        <div className="text-[10px] font-mono text-zinc-400">
-                                                                            Base: ₹{Number(r.estimatedCost || 0).toFixed(2)} + Extra: ₹{Number(r.additionalCharges).toFixed(2)}
-                                                                        </div>
-                                                                    ) : null}
-                                                                    <div className="mt-1">
-                                                                        {getApprovalStatusBadge(r.customerApprovalStatus)}
-                                                                    </div>
-                                                                </div>
-                                                            );
-                                                        }
-                                                        return (
-                                                            <div>
-                                                                <span className="text-xs text-zinc-500 italic">No Estimate</span>
-                                                                {r.customerApprovalStatus && r.customerApprovalStatus !== 'none' && (
-                                                                    <div className="mt-1">
-                                                                        {getApprovalStatusBadge(r.customerApprovalStatus)}
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                        );
-                                                    })()}
-                                                </td>
-                                                <td className="p-4 text-xs text-zinc-400 whitespace-nowrap">
-                                                    {r.pendingTechnicianId ? (
-                                                        <span className="text-amber-400 font-mono text-[10px] uppercase border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 rounded-md">
-                                                            Pending: {technicians.find(t => t.id === r.pendingTechnicianId)?.name}
-                                                        </span>
-                                                    ) : tech ? (
-                                                        <span className="text-zinc-200 font-medium">{tech.name}</span>
-                                                    ) : (
-                                                        <span className="text-zinc-600 italic">Unassigned</span>
-                                                    )}
-                                                </td>
-                                                <td className="p-4 whitespace-nowrap">
-                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${['urgent', 'express'].includes(r.priority?.toLowerCase())
-                                                        ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                                                        : r.priority?.toLowerCase() === 'priority'
-                                                            ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                                                            : 'bg-zinc-800/70 text-zinc-400 border-zinc-700/40'
-                                                        }`}>
-                                                        {r.priority}
-                                                    </span>
-                                                </td>
-                                                <td className="p-4 text-xs text-zinc-400 font-mono whitespace-nowrap">
-                                                    {r.createdAt ? new Date(r.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A'}
-                                                </td>
-                                                <td className="p-4 text-right" onClick={e => e.stopPropagation()}>
-                                                    <div className="flex justify-end gap-1.5">
-                                                        <button
-                                                            type="button"
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                setDrawerRequest(r);
-                                                            }}
-                                                            className="p-1.5 bg-zinc-900 border border-zinc-800 rounded-lg hover:border-neon-cyan/60 hover:bg-zinc-800 text-zinc-400 hover:text-white transition-all cursor-pointer inline-flex items-center text-xs"
-                                                            title="Quick preview in side drawer"
-                                                        >
-                                                            <Eye size={12} />
-                                                        </button>
-                                                        <button
-                                                            onClick={() => handleNotifyCustomer(r.id)}
-                                                            disabled={notifyLoading === r.id || !['completed', 'delivered'].includes(r.status?.toLowerCase())}
-                                                            className={`p-1.5 rounded-lg border transition-all cursor-pointer inline-flex items-center text-xs ${['completed', 'delivered'].includes(r.status?.toLowerCase())
-                                                                ? 'bg-emerald-500/10 border-emerald-500/20 hover:bg-emerald-500/20 text-emerald-400 hover:text-emerald-300'
-                                                                : 'bg-zinc-900 border-zinc-800 text-zinc-600 cursor-not-allowed opacity-40'
-                                                                }`}
-                                                            title={['completed', 'delivered'].includes(r.status?.toLowerCase()) ? "Notify Customer" : "Only completed or delivered tickets can notify customer"}
-                                                        >
-                                                            {notifyLoading === r.id ? <Loader2 size={12} className="animate-spin" /> : <Mail size={12} />}
-                                                        </button>
-                                                        <button
-                                                            onClick={() => {
-                                                                setAssigningTicket(r);
-                                                                setQuickTechSelect(r.pendingTechnicianId || r.assignedTechnicianId || '');
-                                                            }}
-                                                            className="p-1.5 bg-zinc-900 border border-zinc-800 rounded-lg hover:border-neon-cyan text-zinc-400 hover:text-white transition-all cursor-pointer inline-flex items-center text-xs"
-                                                            title="Assign Technician"
-                                                        >
-                                                            <UserCog size={12} />
-                                                        </button>
-                                                        {r.status?.toLowerCase() === 'cancelled' || (r as any).is_active === false ? (
-                                                            <button
-                                                                onClick={() => handleReactivateTicket(r.id, r.ticketNumber || `#${r.id}`)}
-                                                                disabled={deleteLoading === r.id}
-                                                                className="p-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg hover:bg-emerald-500/20 text-emerald-400 transition-all cursor-pointer inline-flex items-center gap-1 text-xs"
-                                                                title="Reactivate Ticket"
-                                                            >
-                                                                {deleteLoading === r.id ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
-                                                            </button>
-                                                        ) : (
-                                                            <button
-                                                                onClick={() => handleDeactivateTicket(r.id, r.ticketNumber || `#${r.id}`)}
-                                                                disabled={isDeletingTicket && ticketToDelete?.id === r.id}
-                                                                className="p-1.5 bg-red-500/10 border border-red-500/20 rounded-lg hover:bg-red-500/20 text-red-400 transition-all cursor-pointer inline-flex items-center gap-1 text-xs"
-                                                                title="Delete Ticket"
-                                                            >
-                                                                <Trash2 size={12} />
-                                                            </button>
-                                                        )}
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    {/* Pagination Bar */}
-                    <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
-                        <div className="text-xs font-mono text-zinc-500">
-                            Showing <span className="text-zinc-300 font-bold">{filteredRequests.length}</span> of <span className="text-zinc-300 font-bold">{totalRecords}</span> tickets
-                        </div>
-                        {totalPages > 1 && (
-                            <div className="flex items-center gap-2">
-                                <button
-                                    onClick={() => setPage(p => Math.max(1, p - 1))}
-                                    disabled={page === 1}
-                                    className="p-2 rounded-xl border border-zinc-800/50 bg-zinc-900/60 text-zinc-400 hover:text-white hover:border-zinc-700/60 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
-                                >
-                                    <ChevronLeft size={16} />
-                                </button>
-                                <span className="text-xs font-mono text-zinc-400 px-2">
-                                    Page <span className="text-white font-bold">{page}</span> of <span className="text-white font-bold">{totalPages}</span>
-                                </span>
-                                <button
-                                    onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                                    disabled={page === totalPages}
-                                    className="p-2 rounded-xl border border-zinc-800/50 bg-zinc-900/60 text-zinc-400 hover:text-white hover:border-zinc-700/60 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
-                                >
-                                    <ChevronRight size={16} />
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            )}
-
-            </>
-            )}
-
-            {/* Quick Preview Side Drawer */}
-            <SideDrawer
-                isOpen={Boolean(drawerRequest)}
-                onClose={() => setDrawerRequest(null)}
-                title={drawerRequest?.ticketNumber || 'Ticket Preview'}
-                size="lg"
-                badge={drawerRequest ? getStatusBadge(drawerRequest.status) : undefined}
-            >
-                {drawerRequest && (
-                    <div className="space-y-6">
-                        <div className="bg-zinc-950/60 border border-zinc-800/60 rounded-2xl p-4 space-y-3">
-                            <div className="flex items-start justify-between">
-                                <div>
-                                    <div className="text-xs font-mono font-bold text-neon-cyan">{drawerRequest.ticketNumber}</div>
-                                    <h4 className="text-base font-bold text-white font-outfit mt-0.5">{drawerRequest.customerName}</h4>
-                                    <div className="text-xs text-zinc-400 mt-0.5">{drawerRequest.brand} {drawerRequest.modelNumber || ''} · {drawerRequest.deviceCategory}</div>
-                                </div>
-                                <div className="flex flex-col items-end gap-1">
-                                    <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-zinc-800 text-zinc-300 border border-zinc-700">
-                                        {drawerRequest.priority}
-                                    </span>
-                                    {getPaymentBadge(drawerRequest.paymentStatus || (drawerRequest as any).payment_status)}
-                                </div>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-zinc-900 text-xs text-zinc-400">
-                                <div className="flex items-center gap-1.5"><Phone size={12} className="text-neon-cyan" /> {drawerRequest.mobile}</div>
-                                <div className="flex items-center gap-1.5"><MapPin size={12} className="text-neon-cyan" /> {drawerRequest.city}</div>
-                            </div>
-                        </div>
-
-                        <div className="bg-zinc-950/40 border border-zinc-800/60 rounded-2xl p-4 space-y-2">
-                            <div className="text-[10px] font-mono uppercase text-zinc-500 tracking-wider">Estimated Budget & Approvals</div>
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <span className="text-sm font-bold text-white font-mono">
-                                        {(() => {
-                                            const total = ((drawerRequest.estimatedCost || 0) + (drawerRequest.additionalCharges || 0)) || (drawerRequest.repairCost || 0);
-                                            return total > 0 ? `₹${total.toFixed(2)}` : 'Budget Not Quoted';
-                                        })()}
-                                    </span>
-                                    {drawerRequest.additionalCharges && drawerRequest.additionalCharges > 0 ? (
-                                        <div className="text-[11px] font-mono text-zinc-400 mt-0.5">
-                                            Base: ₹{Number(drawerRequest.estimatedCost || 0).toFixed(2)} + Add'l: ₹{Number(drawerRequest.additionalCharges).toFixed(2)}
-                                        </div>
-                                    ) : null}
-                                </div>
-                                {getApprovalStatusBadge(drawerRequest.customerApprovalStatus)}
-                            </div>
-                        </div>
-
-                        <div className="bg-zinc-950/40 border border-zinc-800/60 rounded-2xl p-4 space-y-2">
-                            <div className="text-[10px] font-mono uppercase text-zinc-500 tracking-wider">Problem Description</div>
-                            <div className="text-xs text-zinc-300"><span className="text-zinc-500">Type:</span> {drawerRequest.problemType}</div>
-                            {drawerRequest.problemDescription && (
-                                <div className="text-xs text-zinc-400 bg-zinc-900/60 p-3 rounded-xl border border-zinc-800/80 whitespace-pre-wrap">
-                                    {drawerRequest.problemDescription}
-                                </div>
-                            )}
-                        </div>
-
-                        <div className="bg-zinc-950/40 border border-zinc-800/60 rounded-2xl p-4 space-y-2">
-                            <div className="text-[10px] font-mono uppercase text-zinc-500 tracking-wider">Technician Assignment</div>
-                            <div className="text-xs text-zinc-300">
-                                {drawerRequest.assignedTechnicianId ? (
-                                    <span className="text-emerald-400 font-semibold">
-                                        {technicians.find(t => t.id === drawerRequest.assignedTechnicianId)?.name || `Technician #${drawerRequest.assignedTechnicianId}`}
-                                    </span>
-                                ) : drawerRequest.pendingTechnicianId ? (
-                                    <span className="text-amber-400 font-semibold">
-                                        {technicians.find(t => t.id === drawerRequest.pendingTechnicianId)?.name || `Technician #${drawerRequest.pendingTechnicianId}`} (Pending Acceptance)
-                                    </span>
-                                ) : (
-                                    <span className="text-zinc-500 italic">Unassigned</span>
+                                <span>{st.label}</span>
+                                {st.highlight && activeFilter !== st.id && (
+                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
                                 )}
-                            </div>
-                        </div>
-
-                        {/* Offline Payment Verification Action Panel */}
-                        {(drawerRequest.paymentStatus === 'pending_verification' || (drawerRequest as any).payment_status === 'pending_verification') && (
-                            <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 space-y-3">
-                                <div className="flex items-center justify-between">
-                                    <span className="text-xs font-mono uppercase text-amber-400 font-bold flex items-center gap-1.5">
-                                        <Clock size={14} />
-                                        Offline Payment Verification
+                                {st.count !== undefined && (
+                                    <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono ${activeFilter === st.id ? 'bg-zinc-700 text-zinc-200' : 'bg-zinc-900 text-zinc-500'}`}>
+                                        {st.count}
                                     </span>
-                                    {drawerRequest.collectionStatus === 'collected' && (
-                                        <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono font-bold">
-                                            Cash Collected
-                                        </span>
-                                    )}
-                                </div>
-                                <p className="text-xs text-zinc-300 font-mono">
-                                    An offline payment has been submitted for this repair. Verify payment receipt before final closure.
-                                </p>
-                                <div className="flex items-center gap-2 pt-1">
-                                    <button
-                                        type="button"
-                                        disabled={verifyingPaymentId !== null}
-                                        onClick={() => handleVerifyOfflinePayment(drawerRequest.id, 'verify')}
-                                        className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-mono text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 transition-colors"
-                                    >
-                                        {verifyingPaymentId === drawerRequest.id ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                                        Verify & Settle
-                                    </button>
-                                    <button
-                                        type="button"
-                                        disabled={verifyingPaymentId !== null}
-                                        onClick={() => setRejectionModalTicket({ id: drawerRequest.id, ticketNumber: drawerRequest.ticketNumber || `#${drawerRequest.id}` })}
-                                        className="flex-1 py-2 bg-red-600 hover:bg-red-500 text-white font-mono text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 transition-colors"
-                                    >
-                                        <XCircle size={14} />
-                                        Reject
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-
-                        <div className="pt-4 border-t border-zinc-800/60 flex items-center justify-end gap-3">
-                            <button
-                                type="button"
-                                onClick={() => setDrawerRequest(null)}
-                                className="px-4 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-mono text-zinc-400 hover:text-white transition-all cursor-pointer"
-                            >
-                                Close
+                                )}
                             </button>
+                        ))}
+                    </div>
+
+                    {/* Search Bar */}
+                    <div className="relative">
+                        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" size={16} />
+                        <input
+                            ref={searchInputRef}
+                            id="admin-search-input"
+                            type="text"
+                            placeholder="Search tickets by ticket number, brand, model, customer, phone, device..."
+                            value={searchQuery}
+                            onChange={e => setSearchQuery(e.target.value)}
+                            className="w-full bg-[#0c0c0c] border border-zinc-900 focus:border-indigo-500/60 rounded-xl pl-10 pr-10 py-2.5 text-sm text-white focus:outline-none transition-colors"
+                        />
+                        {searchQuery && (
+                            <button
+                                onClick={() => setSearchQuery('')}
+                                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white p-1"
+                                title="Clear search"
+                            >
+                                <X size={14} />
+                            </button>
+                        )}
+                    </div>
+
+                    {/* Secondary Admin Filter Controls Bar */}
+                    <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 bg-zinc-950/40 p-3 rounded-2xl border border-zinc-900 relative ${showDatePicker ? 'z-30' : 'z-0'}`}>
+                        {/* Date Filter Trigger & Popover */}
+                        <div className={`relative ${showDatePicker ? 'z-50' : ''}`} ref={datePickerRef}>
                             <button
                                 type="button"
                                 onClick={() => {
-                                    const r = drawerRequest;
-                                    setDrawerRequest(null);
-                                    if (r) openModal(r);
+                                    updatePopoverAlignment();
+                                    setTempStartDate(startDate);
+                                    setTempEndDate(endDate);
+                                    setShowDatePicker(prev => !prev);
                                 }}
-                                className="px-4 py-2 rounded-xl bg-neon-cyan hover:bg-cyan-400 text-black font-semibold text-xs font-mono flex items-center gap-1.5 transition-all shadow-lg shadow-cyan-500/10 cursor-pointer"
+                                className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl border text-xs transition-all cursor-pointer ${startDate || endDate
+                                    ? 'bg-neon-cyan/10 border-neon-cyan/40 text-neon-cyan font-medium'
+                                    : 'bg-zinc-900/80 border-zinc-800 text-zinc-300 hover:border-zinc-700'
+                                    }`}
                             >
-                                Open Full Workspace
-                                <ExternalLink size={12} />
+                                <div className="flex items-center gap-2 truncate">
+                                    <Calendar size={14} className={startDate || endDate ? 'text-neon-cyan shrink-0' : 'text-zinc-500 shrink-0'} />
+                                    <span className="truncate">{getDateTriggerText()}</span>
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                    {(startDate || endDate) && (
+                                        <span
+                                            role="button"
+                                            tabIndex={0}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleClearDateFilter(e);
+                                            }}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') {
+                                                    e.stopPropagation();
+                                                    e.preventDefault();
+                                                    handleClearDateFilter();
+                                                }
+                                            }}
+                                            className="p-1 text-neon-cyan hover:bg-neon-cyan/20 rounded transition-colors cursor-pointer"
+                                            title="Clear date filter"
+                                            aria-label="Clear date filter"
+                                        >
+                                            <X size={12} />
+                                        </span>
+                                    )}
+                                    <ChevronDown size={14} className={`text-zinc-500 transition-transform ${showDatePicker ? 'rotate-180' : ''}`} />
+                                </div>
                             </button>
+
+                            {/* Date Picker Popover Panel */}
+                            {showDatePicker && (
+                                <div className={`absolute ${popoverAlign === 'right' ? 'right-0 left-auto' : 'left-0 right-auto'} top-full mt-2 w-[calc(100vw-2.5rem)] max-w-sm sm:w-96 bg-[#0e0e10] border border-zinc-800/80 rounded-2xl p-4 shadow-2xl z-50 space-y-4`}>
+                                    <div className="flex items-center justify-between pb-3 border-b border-zinc-800/40">
+                                        <div className="flex items-center gap-2">
+                                            <Calendar size={14} className="text-neon-cyan" />
+                                            <span className="text-xs font-bold text-white uppercase font-mono tracking-wider">Date Range Filter</span>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowDatePicker(false)}
+                                            className="p-1 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
+                                            aria-label="Close date picker"
+                                        >
+                                            <X size={14} />
+                                        </button>
+                                    </div>
+
+                                    {/* Quick Presets */}
+                                    <div>
+                                        <label className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 block mb-2">Quick Presets</label>
+                                        <div className="grid grid-cols-3 gap-1.5">
+                                            {[
+                                                { id: 'today', label: 'Today' },
+                                                { id: 'yesterday', label: 'Yesterday' },
+                                                { id: 'last7', label: 'Last 7 Days' },
+                                                { id: 'last30', label: 'Last 30 Days' },
+                                                { id: 'thisMonth', label: 'This Month' },
+                                                { id: 'all', label: 'All Time' }
+                                            ].map(preset => (
+                                                <button
+                                                    key={preset.id}
+                                                    type="button"
+                                                    onClick={() => applyDatePreset(preset.id as any)}
+                                                    className="px-2 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800/50 hover:border-neon-cyan/30 hover:bg-zinc-800 text-[11px] font-medium text-zinc-300 hover:text-white transition-all text-center cursor-pointer"
+                                                >
+                                                    {preset.label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {/* Custom Date Pickers */}
+                                    <div className="space-y-2 pt-2 border-t border-zinc-800/40">
+                                        <label className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 block">Custom Date Range</label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div>
+                                                <label className="text-[10px] text-zinc-400 block mb-1">From (Start Date)</label>
+                                                <input
+                                                    type="date"
+                                                    value={tempStartDate}
+                                                    max={tempEndDate || undefined}
+                                                    onChange={e => setTempStartDate(e.target.value)}
+                                                    style={{ colorScheme: 'dark' }}
+                                                    className="w-full bg-zinc-900 border border-zinc-800/50 hover:border-zinc-700/50 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-neon-cyan/60"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] text-zinc-400 block mb-1">To (End Date)</label>
+                                                <input
+                                                    type="date"
+                                                    value={tempEndDate}
+                                                    min={tempStartDate || undefined}
+                                                    onChange={e => setTempEndDate(e.target.value)}
+                                                    style={{ colorScheme: 'dark' }}
+                                                    className="w-full bg-zinc-900 border border-zinc-800/50 hover:border-zinc-700/50 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-neon-cyan/60"
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Actions */}
+                                    <div className="flex items-center justify-between pt-3 border-t border-zinc-800/40">
+                                        <button
+                                            type="button"
+                                            onClick={handleClearDateFilter}
+                                            className="text-xs font-semibold text-zinc-400 hover:text-rose-400 transition-colors cursor-pointer"
+                                        >
+                                            Reset Date
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={handleApplyCustomDate}
+                                            className="flex items-center gap-1.5 bg-neon-cyan hover:bg-neon-cyan text-black px-4 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                                        >
+                                            <Check size={14} />
+                                            <span>Apply</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Priority Filter */}
+                        <div className="relative">
+                            <Filter className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
+                            <select
+                                value={priorityFilter}
+                                onChange={e => setPriorityFilter(e.target.value)}
+                                className={`w-full border rounded-xl pl-9 pr-8 py-2.5 text-xs focus:outline-none focus:border-neon-cyan transition-all appearance-none cursor-pointer ${priorityFilter !== 'all'
+                                    ? 'bg-neon-cyan/10 border-neon-cyan/40 text-neon-cyan font-medium'
+                                    : 'bg-zinc-900/80 border-zinc-800 text-zinc-300'
+                                    }`}
+                            >
+                                <option value="all" className="bg-zinc-900 text-zinc-300">All Priorities</option>
+                                <option value="standard" className="bg-zinc-900 text-zinc-300">Standard</option>
+                                <option value="priority" className="bg-zinc-900 text-zinc-300">Priority</option>
+                                <option value="express" className="bg-zinc-900 text-zinc-300">Express (Same Day)</option>
+                                <option value="urgent" className="bg-zinc-900 text-zinc-300">Urgent (Within 2 Hours)</option>
+                            </select>
+                            <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+                        </div>
+
+                        {/* Payment Status Filter */}
+                        <div className="relative">
+                            <CreditCard className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
+                            <select
+                                value={paymentFilter}
+                                onChange={e => setPaymentFilter(e.target.value)}
+                                className={`w-full border rounded-xl pl-9 pr-8 py-2.5 text-xs focus:outline-none focus:border-neon-cyan transition-all appearance-none cursor-pointer ${paymentFilter !== 'all'
+                                    ? 'bg-neon-cyan/10 border-neon-cyan/40 text-neon-cyan font-medium'
+                                    : 'bg-zinc-900/80 border-zinc-800 text-zinc-300'
+                                    }`}
+                            >
+                                <option value="all" className="bg-zinc-900 text-zinc-300">All Payments</option>
+                                <option value="paid" className="bg-zinc-900 text-zinc-300">Paid / Verified</option>
+                                <option value="pending_verification" className="bg-zinc-900 text-zinc-300">Pending Verification</option>
+                                <option value="unpaid" className="bg-zinc-900 text-zinc-300">Payment Due / Unpaid</option>
+                                <option value="rejected" className="bg-zinc-900 text-zinc-300">Payment Rejected</option>
+                                <option value="failed" className="bg-zinc-900 text-zinc-300">Payment Failed</option>
+                            </select>
+                            <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+                        </div>
+
+                        {/* Technician Filter */}
+                        <div className="relative">
+                            <UserCog className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
+                            <select
+                                value={technicianFilter}
+                                onChange={e => setTechnicianFilter(e.target.value)}
+                                className={`w-full border rounded-xl pl-9 pr-8 py-2.5 text-xs focus:outline-none focus:border-neon-cyan transition-all appearance-none cursor-pointer ${technicianFilter !== 'all'
+                                    ? 'bg-neon-cyan/10 border-neon-cyan/40 text-neon-cyan font-medium'
+                                    : 'bg-zinc-900/80 border-zinc-800 text-zinc-300'
+                                    }`}
+                            >
+                                <option value="all" className="bg-zinc-900 text-zinc-300">All Technicians</option>
+                                <option value="unassigned" className="bg-zinc-900 text-zinc-300">Unassigned Only</option>
+                                {technicians.map(t => (
+                                    <option key={t.id} value={t.id} className="bg-zinc-900 text-zinc-300">
+                                        {t.name}
+                                    </option>
+                                ))}
+                            </select>
+                            <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+                        </div>
+
+                        {/* Customer Type Filter */}
+                        <div className="relative">
+                            <Users className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500 pointer-events-none" />
+                            <select
+                                value={customerTypeFilter}
+                                onChange={e => setCustomerTypeFilter(e.target.value as any)}
+                                className={`w-full border rounded-xl pl-8 pr-6 py-2.5 text-xs focus:outline-none focus:border-neon-cyan transition-all appearance-none cursor-pointer truncate ${customerTypeFilter !== 'all'
+                                    ? 'bg-neon-cyan/10 border-neon-cyan/40 text-neon-cyan font-medium'
+                                    : 'bg-zinc-900/80 border-zinc-800 text-zinc-300'
+                                    }`}
+                            >
+                                <option value="all" className="bg-zinc-900 text-zinc-300">All Customers</option>
+                                <option value="individual" className="bg-zinc-900 text-zinc-300">Individual Customer</option>
+                                <option value="company" className="bg-zinc-900 text-zinc-300">B2B Customer</option>
+                            </select>
+                            <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
                         </div>
                     </div>
+
+                    {/* Active Filter Badges Bar */}
+                    {isAnyFilterActive && (
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 mr-1 flex items-center gap-1">
+                                <SlidersHorizontal size={11} /> Filters:
+                            </span>
+
+                            {activeFilter !== 'all' && (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-zinc-900/90 border border-zinc-800/50 text-zinc-300">
+                                    <span className="text-zinc-500 text-[10px] font-mono">STATUS:</span> {activeFilter.replace('_', ' ')}
+                                    <button onClick={() => setActiveFilter('all')} className="ml-1 text-zinc-500 hover:text-white"><X size={12} /></button>
+                                </span>
+                            )}
+
+                            {paymentFilter !== 'all' && (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-zinc-900/90 border border-zinc-800/50 text-zinc-300">
+                                    <span className="text-zinc-500 text-[10px] font-mono">PAYMENT:</span> {paymentFilter.toUpperCase()}
+                                    <button onClick={() => setPaymentFilter('all')} className="ml-1 text-zinc-500 hover:text-white"><X size={12} /></button>
+                                </span>
+                            )}
+
+                            {(startDate || endDate) && (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-neon-cyan/10 border border-neon-cyan/25 text-neon-cyan">
+                                    <Calendar size={11} /> {getDateTriggerText()}
+                                    <button onClick={handleClearDateFilter} className="ml-1 text-neon-cyan hover:text-white"><X size={12} /></button>
+                                </span>
+                            )}
+
+                            {searchQuery.trim() && (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-zinc-900/90 border border-zinc-800/50 text-zinc-300">
+                                    <span className="text-zinc-500 text-[10px] font-mono">SEARCH:</span> "{searchQuery}"
+                                    <button onClick={() => setSearchQuery('')} className="ml-1 text-zinc-500 hover:text-white"><X size={12} /></button>
+                                </span>
+                            )}
+
+                            {priorityFilter !== 'all' && (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-zinc-900/90 border border-zinc-800/50 text-zinc-300">
+                                    <span className="text-zinc-500 text-[10px] font-mono">PRIORITY:</span> {priorityFilter}
+                                    <button onClick={() => setPriorityFilter('all')} className="ml-1 text-zinc-500 hover:text-white"><X size={12} /></button>
+                                </span>
+                            )}
+
+                            {technicianFilter !== 'all' && (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-zinc-900/90 border border-zinc-800/50 text-zinc-300">
+                                    <span className="text-zinc-500 text-[10px] font-mono">TECH:</span> {technicianFilter === 'unassigned' ? 'Unassigned' : (technicians.find(t => t.id === Number(technicianFilter))?.name || technicianFilter)}
+                                    <button onClick={() => setTechnicianFilter('all')} className="ml-1 text-zinc-500 hover:text-white"><X size={12} /></button>
+                                </span>
+                            )}
+
+                            {customerTypeFilter !== 'all' && (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-zinc-900/90 border border-zinc-800/50 text-zinc-300">
+                                    <span className="text-zinc-500 text-[10px] font-mono">TYPE:</span> {customerTypeFilter === 'company' ? 'B2B Customer' : 'Individual Customer'}
+                                    <button onClick={() => setCustomerTypeFilter('all')} className="ml-1 text-zinc-500 hover:text-white"><X size={12} /></button>
+                                </span>
+                            )}
+
+                            <button
+                                onClick={handleClearAllFilters}
+                                className="text-[11px] text-zinc-500 hover:text-white underline ml-1 cursor-pointer transition-colors"
+                            >
+                                Clear all
+                            </button>
+                        </div>
+                    )}
+
+                    {/* Content Area */}
+                    {loading ? (
+                        <div className="flex items-center justify-center min-h-[300px]">
+                            <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-indigo-500"></div>
+                        </div>
+                    ) : filteredRequests.length === 0 ? (
+                        <div className="bg-[#0c0c0c] border border-zinc-800/40 border-dashed rounded-2xl py-20 text-center flex flex-col items-center justify-center space-y-4">
+                            <Wrench size={40} className="text-zinc-700" />
+                            <div className="space-y-1">
+                                <h3 className="text-zinc-300 font-bold text-base">
+                                    {isAnyFilterActive ? 'No Tickets Match Your Filters' : 'No Tickets Found'}
+                                </h3>
+                                <p className="text-zinc-500 text-xs max-w-sm">
+                                    {isAnyFilterActive ? 'Try clearing your search or status filter.' : 'There are currently no repair tickets registered in the system.'}
+                                </p>
+                            </div>
+                            {isAnyFilterActive && (
+                                <button
+                                    onClick={handleClearAllFilters}
+                                    className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer mt-2"
+                                >
+                                    Reset filters
+                                </button>
+                            )}
+                        </div>
+                    ) : (
+                        <div className="space-y-4">
+                            {/* Bulk Action Bar */}
+                            {selectedTicketIds.length > 0 && (
+                                <div className="bg-zinc-950 border border-indigo-500/30 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-lg animate-in fade-in">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs font-mono text-indigo-400 font-bold uppercase">{selectedTicketIds.length} tickets selected</span>
+                                        <button onClick={() => setSelectedTicketIds([])} className="text-[10px] text-zinc-400 hover:text-white underline cursor-pointer">Clear Selection</button>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                                        <select
+                                            value={bulkTechSelect}
+                                            onChange={e => setBulkTechSelect(e.target.value === '' ? '' : Number(e.target.value))}
+                                            className="bg-zinc-900 border border-zinc-800/50 hover:border-zinc-700/50 rounded-xl px-3 py-2 text-xs text-white focus:outline-none cursor-pointer w-full sm:w-auto"
+                                        >
+                                            <option value="">Assign Technician...</option>
+                                            {technicians.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                        </select>
+                                        <select
+                                            value={bulkStatusSelect}
+                                            onChange={e => setBulkStatusSelect(e.target.value)}
+                                            className="bg-zinc-900 border border-zinc-800/50 hover:border-zinc-700/50 rounded-xl px-3 py-2 text-xs text-white focus:outline-none cursor-pointer w-full sm:w-auto"
+                                        >
+                                            <option value="">Update Status...</option>
+                                            <option value="pending">Pending</option>
+                                            <option value="in_progress">In Progress</option>
+                                            <option value="completed">Completed</option>
+                                            <option value="delivered">Delivered</option>
+                                            <option value="cancelled">Cancelled</option>
+                                        </select>
+                                        <button
+                                            onClick={handleBulkUpdate}
+                                            disabled={bulkAssigning || (!bulkTechSelect && !bulkStatusSelect)}
+                                            className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-sm w-full sm:w-auto text-center"
+                                        >
+                                            {bulkAssigning ? 'Applying...' : 'Apply Bulk Actions'}
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                setShowBulkDeleteModal(true);
+                                                setBulkDeleteReason('');
+                                            }}
+                                            className="bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 hover:text-red-300 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm w-full sm:w-auto"
+                                            title={`Delete ${selectedTicketIds.length} selected tickets`}
+                                        >
+                                            <Trash2 size={13} />
+                                            <span>Delete Selected ({selectedTicketIds.length})</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Tickets Table (Reusing Company Portal Layout & Theme) */}
+                            <div className="bg-[#0c0c0c] border border-zinc-800/40 rounded-2xl overflow-hidden shadow-sm">
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left">
+                                        <thead>
+                                            <tr className="border-b border-zinc-800/30 text-xs text-zinc-500 uppercase tracking-widest font-mono select-none">
+                                                <th className="py-4 px-4 w-12 text-center">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={filteredRequests.length > 0 && selectedTicketIds.length === filteredRequests.length}
+                                                        onChange={e => {
+                                                            if (e.target.checked) {
+                                                                setSelectedTicketIds(filteredRequests.map(r => r.id));
+                                                            } else {
+                                                                setSelectedTicketIds([]);
+                                                            }
+                                                        }}
+                                                        className="rounded border-zinc-700/50 hover:border-zinc-600/60 bg-zinc-900 text-indigo-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                                    />
+                                                </th>
+                                                <th className="py-4 px-6">Ticket No.</th>
+                                                <th className="py-4 px-4 font-mono">Device Details</th>
+                                                <th className="py-4 px-4">User Assignment</th>
+                                                <th className="py-4 px-4">Priority / Type</th>
+                                                <th className="py-4 px-4">SLA Resolve Deadline</th>
+                                                <th className="py-4 px-4">Status</th>
+                                                <th className="py-4 px-4">Payment</th>
+                                                <th className="py-4 px-4 text-right">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-zinc-900/40 text-sm text-zinc-300 font-medium">
+                                            {filteredRequests.map(r => {
+                                                const isSelected = selectedTicketIds.includes(r.id);
+                                                const approxBudget = Number(r.estimatedCost || (r as any).estimated_cost || r.repairCost || (r as any).repair_cost || 0);
+                                                const approvalStatus = r.customerApprovalStatus || (r as any).customer_approval_status || 'none';
+                                                const pStatus = (r.paymentStatus || (r as any).payment_status || 'unpaid').toLowerCase();
+                                                const cStatus = (r.collectionStatus || (r as any).collection_status || '').toLowerCase();
+                                                const isSlaClose = (r as any).sla_deadline || (r as any).slaDeadline
+                                                    ? new Date((r as any).sla_deadline || (r as any).slaDeadline) < new Date(Date.now() + 24 * 60 * 60 * 1000) && !['completed', 'delivered', 'cancelled'].includes(r.status)
+                                                    : false;
+
+                                                return (
+                                                    <tr
+                                                        key={r.id}
+                                                        onClick={() => openModal(r)}
+                                                        className={`hover:bg-zinc-900/10 transition-colors cursor-pointer group hover:opacity-80 ${isSelected ? 'bg-indigo-500/10' : ''}`}
+                                                    >
+                                                        <td className="py-4 px-4 text-center w-12" onClick={e => e.stopPropagation()}>
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={isSelected}
+                                                                onChange={e => {
+                                                                    if (e.target.checked) {
+                                                                        setSelectedTicketIds(prev => [...prev, r.id]);
+                                                                    } else {
+                                                                        setSelectedTicketIds(prev => prev.filter(id => id !== r.id));
+                                                                    }
+                                                                }}
+                                                                className="rounded border-zinc-700/50 hover:border-zinc-600/60 bg-zinc-900 text-indigo-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                                            />
+                                                        </td>
+                                                        <td className="py-4 px-6">
+                                                            <span className="font-mono text-white text-sm block group-hover:text-indigo-400 transition-colors font-bold">
+                                                                {r.ticketNumber || `#${r.id}`}
+                                                            </span>
+                                                            <span className="text-[10px] text-zinc-500 font-mono font-medium block mt-1">
+                                                                {r.createdAt ? new Date(r.createdAt).toLocaleDateString() : 'N/A'}
+                                                            </span>
+                                                        </td>
+                                                        <td className="py-4 px-4">
+                                                            <div className="text-zinc-200 flex items-center gap-1.5 font-medium">
+                                                                <span>{r.brand} {r.modelNumber || ''}</span>
+                                                                {(r.deviceId || (r as any).device_id) && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            setHistoryModalDeviceId(r.deviceId || (r as any).device_id);
+                                                                        }}
+                                                                        className="p-1 text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors cursor-pointer"
+                                                                        title="View Complete Device Repair History"
+                                                                    >
+                                                                        <Clock size={12} />
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                            <div className="text-[11px] text-zinc-500 font-mono mt-0.5">
+                                                                {r.serialNumber || (r as any).device_serial || r.deviceCategory || 'Hardware'}
+                                                            </div>
+                                                        </td>
+                                                        <td className="py-4 px-4 text-zinc-400">
+                                                            <div className="text-white font-medium flex items-center gap-1.5">
+                                                                <span>{r.customerName}</span>
+                                                                {(r as any).repeatCount > 1 && (
+                                                                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest bg-rose-500/10 text-rose-400 border border-rose-500/20" title="This device has been sent for repair multiple times">
+                                                                        Repeat ({(r as any).repeatCount})
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                            <div className="text-[10px] text-zinc-500 font-mono mt-0.5">
+                                                                {r.mobile || r.email || (r.companyId ? 'B2B Client' : 'Individual')}
+                                                            </div>
+                                                        </td>
+                                                        <td className="py-4 px-4">
+                                                            <div className="flex flex-col gap-1 items-start">
+                                                                <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold border ${['urgent', 'express'].includes(r.priority?.toLowerCase() || '')
+                                                                    ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                                                                    : r.priority?.toLowerCase() === 'priority'
+                                                                        ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                                                                        : 'bg-zinc-900 text-zinc-400 border-zinc-800/40'
+                                                                    }`}>
+                                                                    {r.priority}
+                                                                </span>
+                                                                <span className="text-[10px] text-zinc-500 block font-mono">{r.problemType}</span>
+                                                            </div>
+                                                        </td>
+                                                        <td className="py-4 px-4">
+                                                            {(r as any).sla_deadline || (r as any).slaDeadline ? (
+                                                                <span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${isSlaClose ? 'text-red-400 animate-pulse' : 'text-zinc-400'}`}>
+                                                                    {isSlaClose ? <ShieldAlert size={13} /> : <Clock size={13} />}
+                                                                    {((r as any).sla_deadline || (r as any).slaDeadline).replace('T', ' ').substring(0, 16)}
+                                                                </span>
+                                                            ) : (
+                                                                <span className="text-zinc-500 text-xs font-mono">
+                                                                    {r.createdAt ? new Date(r.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '-'}
+                                                                </span>
+                                                            )}
+                                                        </td>
+                                                        <td className="py-4 px-4">
+                                                            <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${r.status === 'completed'
+                                                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                                                : r.status === 'delivered'
+                                                                    ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                                                                    : r.status === 'in_progress'
+                                                                        ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'
+                                                                        : r.status === 'cancelled'
+                                                                            ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                                                                            : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                                                }`}>
+                                                                {(r.status || 'PENDING').toUpperCase().replace('_', ' ')}
+                                                            </span>
+                                                        </td>
+                                                        <td className="py-4 px-4" onClick={e => e.stopPropagation()}>
+                                                            {pStatus === 'paid' ? (
+                                                                <div className="flex flex-col items-start gap-1">
+                                                                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                                                                        <CheckCircle2 size={11} /> Paid {approxBudget > 0 ? `₹${approxBudget.toLocaleString('en-IN')}` : ''}
+                                                                    </span>
+                                                                    <div className="flex items-center gap-1.5 pt-0.5">
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => handleViewTicketReceipt(r.id)}
+                                                                            disabled={isActionLoading}
+                                                                            className="px-2 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-cyan-400/40 text-zinc-300 hover:text-cyan-400 text-[11px] font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                                                                            title="View Official Tax Invoice"
+                                                                        >
+                                                                            <Receipt size={11} className="text-cyan-400" />
+                                                                            <span>View</span>
+                                                                        </button>
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => handlePrintTicketReceipt(r.id)}
+                                                                            disabled={isActionLoading}
+                                                                            className="px-2 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-amber-400/40 text-zinc-300 hover:text-amber-400 text-[11px] font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                                                                            title="Print Document"
+                                                                        >
+                                                                            <Printer size={11} className="text-amber-400" />
+                                                                            <span>Print</span>
+                                                                        </button>
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => handleDownloadTicketReceipt(r.id)}
+                                                                            disabled={downloadingId === r.id || isActionLoading}
+                                                                            className="px-2 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-emerald-500/40 text-zinc-300 hover:text-emerald-400 text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-50"
+                                                                            title="Download Official GST Tax Invoice"
+                                                                        >
+                                                                            {downloadingId === r.id ? (
+                                                                                <Loader2 size={11} className="animate-spin text-emerald-400" />
+                                                                            ) : (
+                                                                                <Download size={11} className="text-emerald-400" />
+                                                                            )}
+                                                                            <span>PDF</span>
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            ) : pStatus === 'pending_verification' ? (
+                                                                <div className="flex flex-col items-start gap-1">
+                                                                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full animate-pulse font-mono">
+                                                                        <Clock size={11} /> {cStatus === 'collected' ? 'Cash Collected' : 'Verification Pending'}
+                                                                    </span>
+                                                                    <span className="text-[10px] text-zinc-500 font-mono">Awaiting Clearance</span>
+                                                                </div>
+                                                            ) : pStatus === 'rejected' ? (
+                                                                <div className="flex flex-col items-start gap-1">
+                                                                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-400 bg-rose-500/10 border border-rose-500/20 px-2 py-0.5 rounded-full font-mono">
+                                                                        <XCircle size={11} /> Rejected
+                                                                    </span>
+                                                                </div>
+                                                            ) : approvalStatus === 'pending_approval' ? (
+                                                                <div className="flex flex-col items-start gap-1">
+                                                                    <span className="inline-flex items-center gap-1 text-[10px] uppercase font-mono font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded-full animate-pulse">
+                                                                        <Clock size={10} /> Approval Req.
+                                                                    </span>
+                                                                    <span className="text-xs font-semibold text-white font-mono">
+                                                                        Approx: ₹{approxBudget.toLocaleString('en-IN')}
+                                                                    </span>
+                                                                </div>
+                                                            ) : approvalStatus === 'approved' ? (
+                                                                <div className="flex flex-col items-start gap-0.5">
+                                                                    <span className="inline-flex items-center gap-1 text-[10px] uppercase font-mono font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded">
+                                                                        <CheckCircle2 size={10} /> Approved
+                                                                    </span>
+                                                                    <span className="text-xs text-zinc-300 font-mono">
+                                                                        ₹{approxBudget.toLocaleString('en-IN')}
+                                                                    </span>
+                                                                </div>
+                                                            ) : approvalStatus === 'rejected' || approvalStatus === 'on_hold' ? (
+                                                                <div className="flex flex-col items-start gap-0.5">
+                                                                    <span className="text-[10px] uppercase font-mono font-bold text-rose-400 bg-rose-500/10 border border-rose-500/20 px-1.5 py-0.5 rounded">
+                                                                        Declined
+                                                                    </span>
+                                                                    <span className="text-xs text-zinc-500 line-through font-mono">
+                                                                        ₹{approxBudget.toLocaleString('en-IN')}
+                                                                    </span>
+                                                                </div>
+                                                            ) : approxBudget > 0 ? (
+                                                                <div className="text-xs text-zinc-400">
+                                                                    <span className="text-zinc-500 text-[10px] block font-mono">Approx. Budget</span>
+                                                                    <span className="font-mono font-semibold text-zinc-300">₹{approxBudget.toLocaleString('en-IN')}</span>
+                                                                </div>
+                                                            ) : (
+                                                                <span className="text-xs text-zinc-600">-</span>
+                                                            )}
+                                                        </td>
+                                                        <td className="py-4 px-4 text-right" onClick={e => e.stopPropagation()}>
+                                                            <div className="flex justify-end items-center gap-1.5">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setDrawerRequest(r)}
+                                                                    className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 transition-colors cursor-pointer"
+                                                                    title="Quick Preview in Drawer"
+                                                                >
+                                                                    <Eye size={13} />
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleNotifyCustomer(r.id)}
+                                                                    disabled={notifyLoading === r.id || !['completed', 'delivered'].includes(r.status?.toLowerCase())}
+                                                                    className={`p-1.5 rounded-lg border transition-all cursor-pointer inline-flex items-center text-xs ${['completed', 'delivered'].includes(r.status?.toLowerCase())
+                                                                        ? 'bg-emerald-500/10 border-emerald-500/20 hover:bg-emerald-500/20 text-emerald-400 hover:text-emerald-300'
+                                                                        : 'bg-zinc-900 border-zinc-800 text-zinc-600 cursor-not-allowed opacity-40'
+                                                                        }`}
+                                                                    title={['completed', 'delivered'].includes(r.status?.toLowerCase()) ? "Notify Customer" : "Only completed or delivered tickets can notify customer"}
+                                                                >
+                                                                    {notifyLoading === r.id ? <Loader2 size={12} className="animate-spin" /> : <Mail size={12} />}
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        setAssigningTicket(r);
+                                                                        setQuickTechSelect(r.pendingTechnicianId || r.assignedTechnicianId || '');
+                                                                    }}
+                                                                    className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-indigo-400 transition-colors cursor-pointer"
+                                                                    title="Assign Technician"
+                                                                >
+                                                                    <UserCog size={13} />
+                                                                </button>
+                                                                {r.status?.toLowerCase() === 'cancelled' || (r as any).is_active === false ? (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleReactivateTicket(r.id, r.ticketNumber || `#${r.id}`)}
+                                                                        disabled={deleteLoading === r.id}
+                                                                        className="p-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg hover:bg-emerald-500/20 text-emerald-400 transition-all cursor-pointer inline-flex items-center gap-1 text-xs"
+                                                                        title="Reactivate Ticket"
+                                                                    >
+                                                                        {deleteLoading === r.id ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
+                                                                    </button>
+                                                                ) : (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleDeactivateTicket(r.id, r.ticketNumber || `#${r.id}`)}
+                                                                        disabled={isDeletingTicket && ticketToDelete?.id === r.id}
+                                                                        className="p-1.5 bg-red-500/10 border border-red-500/20 rounded-lg hover:bg-red-500/20 text-red-400 transition-all cursor-pointer inline-flex items-center gap-1 text-xs"
+                                                                        title="Delete Ticket"
+                                                                    >
+                                                                        <Trash2 size={12} />
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            {/* Pagination Bar */}
+                            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
+                                <div className="text-xs font-mono text-zinc-500">
+                                    Showing <span className="text-zinc-300 font-bold">{filteredRequests.length}</span> of <span className="text-zinc-300 font-bold">{totalRecords}</span> tickets
+                                </div>
+                                {totalPages > 1 && (
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={() => setPage(p => Math.max(1, p - 1))}
+                                            disabled={page === 1}
+                                            className="p-2 rounded-xl border border-zinc-800/50 bg-zinc-900/60 text-zinc-400 hover:text-white hover:border-zinc-700/60 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
+                                        >
+                                            <ChevronLeft size={16} />
+                                        </button>
+                                        <span className="text-xs font-mono text-zinc-400 px-2">
+                                            Page <span className="text-white font-bold">{page}</span> of <span className="text-white font-bold">{totalPages}</span>
+                                        </span>
+                                        <button
+                                            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                                            disabled={page === totalPages}
+                                            className="p-2 rounded-xl border border-zinc-800/50 bg-zinc-900/60 text-zinc-400 hover:text-white hover:border-zinc-700/60 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
+                                        >
+                                            <ChevronRight size={16} />
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </>
+            )}
+
+            {/* Quick Preview Side Drawer (Reusing RepairTicketWorkspace) */}
+            <SideDrawer
+                isOpen={Boolean(drawerRequest)}
+                onClose={() => setDrawerRequest(null)}
+                title={`Ticket #${drawerRequest?.ticketNumber || (drawerRequest as any)?.ticket_number || ''}`}
+                subtitle={`${drawerRequest?.brand || ''} ${drawerRequest?.modelNumber || ''}`}
+                size="xl"
+                badge={{
+                    text: (drawerRequest?.status || 'PENDING').toUpperCase().replace('_', ' '),
+                    variant: drawerRequest?.status === 'completed' ? 'success' : drawerRequest?.status === 'delivered' ? 'info' : drawerRequest?.status === 'in_progress' ? 'info' : 'warning'
+                }}
+                footer={
+                    <div className="flex justify-between items-center w-full">
+                        <button
+                            type="button"
+                            onClick={() => setDrawerRequest(null)}
+                            className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white bg-zinc-900 hover:bg-zinc-800 transition-colors cursor-pointer"
+                        >
+                            Close Drawer
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const r = drawerRequest;
+                                setDrawerRequest(null);
+                                if (r) openModal(r);
+                            }}
+                            className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 transition-colors flex items-center gap-1.5 cursor-pointer shadow-lg shadow-indigo-600/20"
+                        >
+                            <ExternalLink size={13} />
+                            Open Full Workspace
+                        </button>
+                    </div>
+                }
+            >
+                {drawerRequest && (
+                    <RepairTicketWorkspace
+                        ticket={drawerRequest}
+                        isDrawer={true}
+                        role="admin"
+                        technicians={technicians}
+                        onBack={() => setDrawerRequest(null)}
+                        onOpenFullWorkspace={() => {
+                            const r = drawerRequest;
+                            setDrawerRequest(null);
+                            if (r) openModal(r);
+                        }}
+                        onRefresh={() => {
+                            fetchData(page, true);
+                            setDrawerRequest(null);
+                        }}
+                        onRequestUpdated={(updated) => {
+                            setRequests(prev => prev.map(r => r.id === updated.id ? { ...r, ...updated } : r));
+                            setDrawerRequest(prev => prev ? { ...prev, ...updated } as ServiceRequest : null);
+                        }}
+                        onDelete={() => {
+                            const r = drawerRequest;
+                            setDrawerRequest(null);
+                            if (r) handleDeactivateTicket(r.id, r.ticketNumber || `#${r.id}`);
+                        }}
+                        onImagePreview={handleImagePreview}
+                    />
                 )}
             </SideDrawer>
 
@@ -2084,6 +2240,26 @@ export default function RepairTickets() {
                     </div>
                 </div>
             )}
+
+            {/* Device Repair History Modal */}
+            {historyModalDeviceId && (
+                <DeviceRepairHistoryModal
+                    deviceId={historyModalDeviceId}
+                    onClose={() => setHistoryModalDeviceId(null)}
+                />
+            )}
+
+            {/* Tax Invoice & Payment Receipt Modal */}
+            <PaymentReceiptModal
+                isOpen={viewReceiptModalOpen}
+                onClose={() => {
+                    setViewReceiptModalOpen(false);
+                    setSelectedReceiptData(null);
+                    setSelectedReceiptTicketId(undefined);
+                }}
+                receipt={selectedReceiptData}
+                ticketId={selectedReceiptData ? undefined : selectedReceiptTicketId}
+            />
         </div>
     );
 }

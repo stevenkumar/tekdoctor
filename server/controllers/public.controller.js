@@ -1,5 +1,69 @@
 const { pool } = require('../config/db.config');
+const config = require('../config/app.config');
 const { formatResponse } = require('../utils/helpers');
+
+/**
+ * Public Allowlist for Site Settings
+ * Only explicitly listed, non-sensitive public settings are exposed to the browser.
+ * Sensitive configuration (SMTP credentials, tokens, private secrets, and templates)
+ * are strictly excluded from public responses.
+ */
+const PUBLIC_SAFE_SETTINGS = {
+    company: new Set([
+        'company_name',
+        'company_email',
+        'company_phone',
+        'company_alternate_phone',
+        'company_address',
+        'logo_url',
+        'gstin',
+        'site_tagline',
+        'site_logo',
+        'site_logo_black',
+        'site_url'
+    ]),
+    theme: new Set([
+        'theme_primary_color',
+        'theme_secondary_color',
+        'primary_color',
+        'secondary_color'
+    ]),
+    branding: new Set([
+        'favicon_url',
+        'tekunik_image_url',
+        'logo_url'
+    ]),
+    social: new Set([
+        'facebook_url',
+        'twitter_url',
+        'instagram_url',
+        'linkedin_url'
+    ]),
+    integrations: new Set([
+        'google_maps_link',
+        'google_sheet_url',
+        'google_login_enabled',
+        'google_client_id'
+    ]),
+    security: new Set([
+        'recaptcha_enabled',
+        'recaptcha_site_key'
+    ]),
+    system: new Set([
+        'maintenance_mode'
+    ]),
+    seo: new Set([
+        'meta_title',
+        'meta_description',
+        'meta_keywords'
+    ]),
+    billing: new Set([
+        'invoice_prefix',
+        'default_gst_rate',
+        'invoice_gst_enabled',
+        'invoice_default_items'
+    ])
+};
 
 /**
  * Get all active public site settings and homepage content
@@ -10,13 +74,35 @@ const getPublicSiteData = async (req, res, next) => {
     try {
         connection = await pool.getConnection();
 
-        // Fetch site settings
+        // Fetch site settings (strictly allowlisted for public consumption)
         const [settingsRows] = await connection.query('SELECT setting_group, setting_key, setting_value FROM site_settings');
         const settings = {};
         settingsRows.forEach(row => {
-            if (!settings[row.setting_group]) settings[row.setting_group] = {};
-            settings[row.setting_group][row.setting_key] = row.setting_value;
+            const allowedKeys = PUBLIC_SAFE_SETTINGS[row.setting_group];
+            if (allowedKeys && allowedKeys.has(row.setting_key)) {
+                if (!settings[row.setting_group]) settings[row.setting_group] = {};
+                settings[row.setting_group][row.setting_key] = row.setting_value;
+            }
         });
+
+        // Fall back to environment configuration if database settings are absent or empty
+        if (!settings.integrations) settings.integrations = {};
+        if (settings.integrations.google_login_enabled === undefined || settings.integrations.google_login_enabled === '') {
+            const envGoogleEnabled = process.env.GOOGLE_LOGIN_ENABLED !== 'false' && Boolean(config.google?.clientId);
+            settings.integrations.google_login_enabled = envGoogleEnabled ? 'true' : 'false';
+        }
+        if ((!settings.integrations.google_client_id || !settings.integrations.google_client_id.trim()) && config.google?.clientId) {
+            settings.integrations.google_client_id = config.google.clientId;
+        }
+
+        if (!settings.security) settings.security = {};
+        if (settings.security.recaptcha_enabled === undefined || settings.security.recaptcha_enabled === '') {
+            const envRecaptchaEnabled = config.recaptcha?.enabled !== false;
+            settings.security.recaptcha_enabled = envRecaptchaEnabled ? 'true' : 'false';
+        }
+        if ((!settings.security.recaptcha_site_key || !settings.security.recaptcha_site_key.trim()) && config.recaptcha?.siteKey) {
+            settings.security.recaptcha_site_key = config.recaptcha.siteKey;
+        }
 
         // Fetch active homepage content
         const [contentRows] = await connection.query('SELECT section, content FROM homepage_content WHERE is_active = 1 ORDER BY sort_order ASC');

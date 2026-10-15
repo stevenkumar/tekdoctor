@@ -73,6 +73,7 @@ FRONTEND_BUILD_PATH=/home/<user>/public_html
 # Shared
 JWT_SECRET=<openssl rand -base64 48>   # startup blocked in production if weak
 JWT_EXPIRES_IN=7d
+SETTINGS_ENCRYPTION_KEY=<openssl rand -hex 32> # 32-byte key for AES-256-GCM credentials at rest
 UPLOAD_DIR=uploads
 LOG_LEVEL=info
 EMAIL_USER=your@gmail.com
@@ -187,6 +188,7 @@ location / { root /var/www/tekdoctor/client/dist; try_files $uri $uri/ /index.ht
 
 - [x] Fix root `package.json` script paths (`backend`→`server`, `frontend`→`client`)
 - [ ] Set strong `JWT_SECRET` in production `.env`
+- [ ] Set persistent 32-byte (64 hex characters) `SETTINGS_ENCRYPTION_KEY` in production `.env` (backup securely)
 - [ ] Configure production `CORS_ORIGIN` with actual domain (exactly once — no duplicate key)
 - [ ] Set `NODE_ENV=production` and `HOST=0.0.0.0`
 - [ ] Configure real `DB_*` credentials

@@ -21,11 +21,26 @@ The source is configured for production:
 
 - `server/.env` -> `NODE_ENV=production`, cPanel DB credentials,
   `HOST=0.0.0.0`, strong `JWT_SECRET`,
+  `SETTINGS_ENCRYPTION_KEY=<64 hex chars>`,
   `CORS_ORIGIN=https://thetekdoctor.com`,
   `FRONTEND_URL=https://thetekdoctor.com`,
   `FRONTEND_BUILD_PATH=/home/vibgyorventures/public_html`,
   `DB_AUTO_INIT=true` (first run only).
 - `client/.env.production` -> `VITE_API_URL=https://thetekdoctor.com`.
+
+### Settings Encryption Key (`SETTINGS_ENCRYPTION_KEY`)
+TekDoctor encrypts sensitive database credentials at rest (SMTP passwords, OAuth client secrets, API keys) using authenticated AES-256-GCM.
+- **Generation:** Generate a dedicated 32-byte key (64 hex characters):
+  ```bash
+  openssl rand -hex 32
+  # OR via Node.js
+  node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  ```
+- **Independence:** Never derive this key from `JWT_SECRET` or reuse an authentication secret.
+- **Persistence & Stability:** This key MUST remain identical across server restarts, app reloads, and deployments. It is the only key capable of decrypting stored credentials in `site_settings`.
+- **Backup & Recovery:** Securely back up this key in a password manager or secret vault **before** deploying or migrating data. **If this key is lost, encrypted credentials in the database can NEVER be decrypted or recovered.**
+- **Automatic Migration:** On server startup (`DB_AUTO_INIT=true`), migration `2026_09_encrypt_stored_secrets` scans `site_settings` for legacy plaintext secrets and encrypts them using this key.
+- **Credential Rotation:** To rotate a credential, update it via the Admin Settings UI. To rotate the encryption key itself, re-encrypt the stored values under the new key before deploying the updated environment variable.
 
 > `server/.env` is the **only** env file the server reads by default.
 > `server/.env.production` is loaded additionally when `NODE_ENV=production`,

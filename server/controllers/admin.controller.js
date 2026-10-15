@@ -5,6 +5,13 @@ const logger = require('../utils/logger');
 const nodemailer = require('nodemailer');
 const { sendCustomerNotification, resolveTlsConfig } = require('../utils/email.utils');
 const { normalizePhoneNumber } = require('../middleware/validate.middleware');
+const {
+    isSecretKey,
+    isMaskedPlaceholder,
+    encryptSecret,
+    decryptSecret,
+    MASKED_SECRET_INDICATOR
+} = require('../utils/crypto.utils');
 
 const { logActivity: centralLogActivity } = require('../utils/activity.logger');
 
@@ -725,11 +732,18 @@ const getSettings = async (req, res, next) => {
         query += ' ORDER BY setting_group, setting_key';
         const [rows] = await connection.query(query, params);
 
-        // Transform to a grouped object
+        // Transform to a grouped object, masking any secret fields
         const settings = {};
         rows.forEach(r => {
             if (!settings[r.setting_group]) settings[r.setting_group] = {};
-            settings[r.setting_group][r.setting_key] = r.setting_value;
+            if (isSecretKey(r.setting_key)) {
+                // Return masked indicator if secret exists and is non-empty, otherwise empty string
+                settings[r.setting_group][r.setting_key] = (r.setting_value && String(r.setting_value).trim())
+                    ? MASKED_SECRET_INDICATOR
+                    : '';
+            } else {
+                settings[r.setting_group][r.setting_key] = r.setting_value;
+            }
         });
 
         return res.json(formatResponse(true, 'Settings fetched.', settings));
@@ -758,6 +772,15 @@ const SETTING_KEY_GROUPS = {
     linkedin_url: 'social',
     google_maps_link: 'integrations',
     google_sheet_url: 'integrations',
+    google_login_enabled: 'integrations',
+    google_client_id: 'integrations',
+    google_client_secret: 'integrations',
+    recaptcha_enabled: 'security',
+    recaptcha_site_key: 'security',
+    recaptcha_secret_key: 'security',
+    recaptcha_api_key: 'security',
+    recaptcha_project_id: 'security',
+    recaptcha_score_threshold: 'security',
     maintenance_mode: 'system',
     meta_title: 'seo',
     meta_description: 'seo',
@@ -828,14 +851,108 @@ const updateSettings = async (req, res, next) => {
             }
         }
 
+        // Validate reCAPTCHA score threshold (0.0 to 1.0)
+        if (settings.recaptcha_score_threshold !== undefined) {
+            const thresholdNum = parseFloat(settings.recaptcha_score_threshold);
+            if (isNaN(thresholdNum) || thresholdNum < 0 || thresholdNum > 1) {
+                return res.status(400).json(formatResponse(false, 'reCAPTCHA score threshold must be a valid number between 0.0 and 1.0.'));
+            }
+            settings.recaptcha_score_threshold = String(thresholdNum);
+        }
+
+        // Validate enabling Google Login
+        if (settings.google_login_enabled === 'true' || settings.google_login_enabled === true) {
+            let clientId = settings.google_client_id;
+            if (!clientId || typeof clientId !== 'string' || !clientId.trim()) {
+                const [dbClientId] = await connection.query(
+                    "SELECT setting_value FROM site_settings WHERE setting_key = 'google_client_id' LIMIT 1"
+                );
+                clientId = (dbClientId[0]?.setting_value) || process.env.GOOGLE_CLIENT_ID || '';
+            }
+            if (!clientId || !String(clientId).trim()) {
+                return res.status(400).json(formatResponse(false, 'Cannot enable Google Sign-In: Google Client ID must be configured.'));
+            }
+        }
+
+        // Validate enabling reCAPTCHA
+        if (settings.recaptcha_enabled === 'true' || settings.recaptcha_enabled === true) {
+            let siteKey = settings.recaptcha_site_key;
+            if (!siteKey || typeof siteKey !== 'string' || !siteKey.trim()) {
+                const [dbSiteKey] = await connection.query(
+                    "SELECT setting_value FROM site_settings WHERE setting_key = 'recaptcha_site_key' LIMIT 1"
+                );
+                siteKey = (dbSiteKey[0]?.setting_value) || process.env.RECAPTCHA_SITE_KEY || '';
+            }
+            if (!siteKey || !String(siteKey).trim()) {
+                return res.status(400).json(formatResponse(false, 'Cannot enable reCAPTCHA: Site Key must be configured.'));
+            }
+        }
+
         for (const [key, value] of Object.entries(settings)) {
             const keyGroup = group || SETTING_KEY_GROUPS[key] || 'general';
-            const cleanVal = typeof value === 'string' ? value.trim() : value;
-            await connection.query(
-                'INSERT INTO site_settings (setting_key, setting_value, setting_group) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE setting_value = ?, setting_group = ?',
-                [key, cleanVal, keyGroup, cleanVal, keyGroup]
+            const isSecret = isSecretKey(key);
+
+            if (isSecret) {
+                // If omitted, blank, or unchanged masked placeholder, preserve existing stored secret without overwriting
+                if (value === undefined || value === null || isMaskedPlaceholder(value)) {
+                    continue;
+                }
+                const cleanVal = typeof value === 'string' ? value.trim() : String(value);
+                if (!cleanVal) {
+                    continue;
+                }
+                // Explicit new secret supplied: encrypt with AES-256-GCM before writing to database
+                const encryptedVal = encryptSecret(cleanVal);
+                await connection.query(
+                    'INSERT INTO site_settings (setting_key, setting_value, setting_group) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE setting_value = ?, setting_group = ?',
+                    [key, encryptedVal, keyGroup, encryptedVal, keyGroup]
+                );
+            } else {
+                const cleanVal = typeof value === 'string' ? value.trim() : value;
+                await connection.query(
+                    'INSERT INTO site_settings (setting_key, setting_value, setting_group) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE setting_value = ?, setting_group = ?',
+                    [key, cleanVal, keyGroup, cleanVal, keyGroup]
+                );
+            }
+        }
+
+        // Specific security activity logging for Google Login and reCAPTCHA toggle changes
+        if (settings.google_login_enabled !== undefined) {
+            const googleStatus = (settings.google_login_enabled === 'true' || settings.google_login_enabled === true) ? 'enabled' : 'disabled';
+            await logActivity(
+                connection,
+                req.user.id,
+                `google_login_${googleStatus}`,
+                'security_setting',
+                null,
+                { setting: 'google_login_enabled', status: googleStatus },
+                req.ip
             );
         }
+
+        if (settings.recaptcha_enabled !== undefined) {
+            const recaptchaStatus = (settings.recaptcha_enabled === 'true' || settings.recaptcha_enabled === true) ? 'enabled' : 'disabled';
+            await logActivity(
+                connection,
+                req.user.id,
+                `recaptcha_${recaptchaStatus}`,
+                'security_setting',
+                null,
+                { setting: 'recaptcha_enabled', status: recaptchaStatus },
+                req.ip
+            );
+        }
+
+        // Invalidate cached runtime configurations
+        try {
+            const { invalidateGoogleConfigCache } = require('../utils/google.auth');
+            invalidateGoogleConfigCache();
+        } catch (_) {}
+
+        try {
+            const { invalidateRecaptchaConfigCache } = require('../utils/recaptcha.utils');
+            invalidateRecaptchaConfigCache();
+        } catch (_) {}
 
         await logActivity(connection, req.user.id, 'update_settings', 'settings', null, { keys: Object.keys(settings) }, req.ip);
         return res.json(formatResponse(true, 'Settings updated successfully.'));
@@ -847,10 +964,31 @@ const updateSettings = async (req, res, next) => {
 };
 
 const testEmailSettings = async (req, res, next) => {
+    let connection;
     try {
         const { settings } = req.body;
-        if (!settings || !settings.smtp_host || !settings.smtp_port || !settings.smtp_user || !settings.smtp_password) {
+        if (!settings || !settings.smtp_host || !settings.smtp_port || !settings.smtp_user) {
             return res.status(400).json(formatResponse(false, 'Incomplete SMTP configuration provided.'));
+        }
+
+        let smtpPassword = settings.smtp_password;
+        // If password is blank or masked placeholder, retrieve and decrypt the stored password from the database
+        if (!smtpPassword || isMaskedPlaceholder(smtpPassword)) {
+            connection = await pool.getConnection();
+            const [rows] = await connection.query(
+                "SELECT setting_value FROM site_settings WHERE setting_key = 'smtp_password' LIMIT 1"
+            );
+            if (rows.length > 0 && rows[0].setting_value) {
+                try {
+                    smtpPassword = decryptSecret(rows[0].setting_value);
+                } catch (decErr) {
+                    logger.error('[testEmailSettings] Failed to decrypt stored SMTP password: ' + decErr.message);
+                }
+            }
+        }
+
+        if (!smtpPassword) {
+            return res.status(400).json(formatResponse(false, 'SMTP password is required to test email.'));
         }
 
         const transporter = nodemailer.createTransport({
@@ -859,7 +997,7 @@ const testEmailSettings = async (req, res, next) => {
             secure: parseInt(settings.smtp_port, 10) === 465, // true for 465, false for other ports
             auth: {
                 user: settings.smtp_user,
-                pass: settings.smtp_password
+                pass: smtpPassword
             },
             tls: resolveTlsConfig(settings.smtp_host)
         });
@@ -879,6 +1017,8 @@ const testEmailSettings = async (req, res, next) => {
     } catch (error) {
         logger.error('SMTP Test Failed:', error);
         return res.status(500).json(formatResponse(false, 'Failed to connect or send email. ' + error.message));
+    } finally {
+        if (connection) connection.release();
     }
 };
 

@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { publicApi } from '@/services/api';
+import { setRecaptchaRuntimeConfig } from '@/utils/recaptcha';
 
 interface SiteContextType {
     settings: Record<string, Record<string, string>>;
@@ -87,6 +88,10 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
                     }
                     setFlattenedSettings(flat);
                     applyThemeVariables(flat);
+                    setRecaptchaRuntimeConfig({
+                        siteKey: flat.recaptcha_site_key,
+                        enabled: flat.recaptcha_enabled
+                    });
                 }
             } catch (err) {
                 console.error('Failed to load dynamic site settings', err);
@@ -113,6 +118,10 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
                 }
                 setFlattenedSettings(flat);
                 applyThemeVariables(flat);
+                setRecaptchaRuntimeConfig({
+                    siteKey: flat.recaptcha_site_key,
+                    enabled: flat.recaptcha_enabled
+                });
             }
         } catch (err) {
             console.error('Failed to load dynamic site settings', err);

@@ -8,7 +8,7 @@ const logger = require('../utils/logger');
 const { logActivity } = require('../utils/activity.logger');
 const { generateToken } = require('../utils/auth.helpers');
 const { sendCustomerNotification } = require('../utils/email.utils');
-const { verifyGoogleIdentity } = require('../utils/google.auth');
+const { verifyGoogleIdentity, getGoogleConfig } = require('../utils/google.auth');
 const { normalizePhoneNumber } = require('../middleware/validate.middleware');
 
 /**
@@ -526,6 +526,13 @@ const googleSignIn = async (req, res, next) => {
   let connection;
 
   try {
+    // 0. Enforce Google Sign-In enable/disable state
+    const googleConfig = await getGoogleConfig();
+    if (!googleConfig.enabled) {
+      logger.warn(`Google Sign-In rejected: Google authentication is disabled by administrator. IP: ${req.ip}`);
+      return res.status(403).json(formatResponse(false, 'Google Sign-In is currently disabled.'));
+    }
+
     // 1. Verify Google Identity Token or Code on backend
     let googleUser;
     try {

@@ -706,6 +706,15 @@ const seedDefaultDataIfEmpty = async (connection) => {
       ['smtp_password', '', 'email'],
       ['from_email', 'noreply@tekdoctor.in', 'email'],
       ['from_name', 'The Tek Doctor', 'email'],
+      ['google_login_enabled', 'false', 'integrations'],
+      ['google_client_id', '', 'integrations'],
+      ['google_client_secret', '', 'integrations'],
+      ['recaptcha_enabled', 'false', 'security'],
+      ['recaptcha_site_key', '', 'security'],
+      ['recaptcha_secret_key', '', 'security'],
+      ['recaptcha_api_key', '', 'security'],
+      ['recaptcha_project_id', '', 'security'],
+      ['recaptcha_score_threshold', '0.5', 'security'],
       ...billingDefaults
     ];
     for (const [key, value, group] of defaults) {
@@ -1122,6 +1131,49 @@ const MIGRATIONS = [
         WHERE tax_amount IS NULL OR tax_amount = 0.00
       `);
     }
+  },
+  {
+    version: '2026_09_encrypt_stored_secrets',
+    name: 'Encrypt Stored Plaintext Secrets in Site Settings',
+    isSatisfied: async (connection) => {
+      const { getEncryptionKey } = require('../utils/crypto.utils');
+      if (!getEncryptionKey()) {
+        // If encryption key is not set, skip automatic encryption to avoid blocking boot
+        return true;
+      }
+      const secretKeys = ['smtp_password', 'google_client_secret', 'recaptcha_secret_key'];
+      const [rows] = await connection.query(
+        "SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN (?) AND setting_value IS NOT NULL AND setting_value != ''",
+        [secretKeys]
+      );
+      if (rows.length === 0) return true;
+      return rows.every(r => typeof r.setting_value === 'string' && r.setting_value.startsWith('enc:v1:'));
+    },
+    apply: async (connection) => {
+      const { encryptSecret, getEncryptionKey } = require('../utils/crypto.utils');
+      const key = getEncryptionKey();
+      if (!key) {
+        console.warn('[Migration:2026_09] SETTINGS_ENCRYPTION_KEY is not configured or invalid in environment. Skipping automatic encryption of existing plaintext secrets. Configure SETTINGS_ENCRYPTION_KEY in .env to encrypt credentials at rest.');
+        return;
+      }
+
+      const secretKeys = ['smtp_password', 'google_client_secret', 'recaptcha_secret_key'];
+      const [rows] = await connection.query(
+        "SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN (?) AND setting_value IS NOT NULL AND setting_value != ''",
+        [secretKeys]
+      );
+
+      for (const row of rows) {
+        if (typeof row.setting_value === 'string' && !row.setting_value.startsWith('enc:v1:')) {
+          const cipher = encryptSecret(row.setting_value);
+          await connection.query(
+            'UPDATE site_settings SET setting_value = ? WHERE setting_key = ?',
+            [cipher, row.setting_key]
+          );
+        }
+      }
+      console.log('[Migration:2026_09] Legacy plaintext secrets encrypted successfully.');
+    }
   }
 ];
 
@@ -1270,4 +1322,5 @@ const initDatabase = async () => {
   }
 };
 
+initDatabase.MIGRATIONS = MIGRATIONS;
 module.exports = initDatabase;

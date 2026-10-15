@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { adminApi, repairApi, companyApi, billingApi } from '@/services/api';
@@ -10,13 +10,14 @@ import {
     ShieldAlert, Phone, Mail, MapPin, Plus, FileText, ChevronDown,
     SlidersHorizontal, Sparkles, AlertTriangle, Calendar, Filter,
     Tag, ArrowUpRight, CreditCard, Download, FileDown, Eye,
-    MessageSquare, Send, Printer
+    MessageSquare, Send, Printer, XCircle, Hourglass
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'react-hot-toast';
 import { ROUTES } from '@/config/routes';
 import DeviceRepairHistoryModal from '@/components/DeviceRepairHistoryModal';
-import AdminTicketWorkspace from '@/components/AdminTicketWorkspace';
+import RepairTicketWorkspace from '@/components/RepairTicketWorkspace';
+import SideDrawer from '@/components/SideDrawer';
 import ImagePreviewModal from '@/components/ImagePreviewModal';
 import PaymentReceiptModal from '@/components/PaymentReceiptModal';
 import { downloadPaymentBillPdf, printPaymentBill } from '@/utils/billGenerator';
@@ -138,6 +139,7 @@ export default function CompanyManagementDashboard() {
 
     // Main Content Ticket Workspace State
     const [workspaceTicket, setWorkspaceTicket] = useState<any | null>(null);
+    const [quickDrawerTicket, setQuickDrawerTicket] = useState<any | null>(null);
     const [workspaceLoading, setWorkspaceLoading] = useState(false);
     const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
 
@@ -830,6 +832,51 @@ export default function CompanyManagementDashboard() {
     const [modalInvoiceId, setModalInvoiceId] = useState<string | number | null>(null);
     const [modalTicketId, setModalTicketId] = useState<string | number | null>(null);
 
+    // View Ticket Receipt Modal
+    const handleViewTicketReceipt = (ticketId: number) => {
+        setModalTicketId(ticketId);
+        setModalInvoiceId(null);
+        setReceiptModalOpen(true);
+    };
+
+    // Print Ticket Tax Invoice / Bill
+    const handlePrintTicketReceipt = async (ticketId: number) => {
+        if (!token) return;
+        const toastId = toast.loading('Preparing document for printing...');
+        try {
+            const res = await billingApi.getPaymentReceiptByTicket(ticketId, token);
+            const receiptData = res.data?.data || res.data?.receipt || (res.data?.receiptNumber ? res.data : null);
+            if (res.ok && receiptData) {
+                await printPaymentBill(receiptData);
+                toast.dismiss(toastId);
+            } else {
+                toast.error('Could not prepare invoice for printing.', { id: toastId });
+            }
+        } catch {
+            toast.error('Print failed.', { id: toastId });
+        }
+    };
+
+    // Download Ticket Tax Invoice / Bill PDF
+    const handleDownloadTicketReceipt = async (ticketId: number) => {
+        if (!token || downloadingId) return;
+        setDownloadingId(ticketId);
+        try {
+            const res = await billingApi.getPaymentReceiptByTicket(ticketId, token);
+            const receiptData = res.data?.data || res.data?.receipt || (res.data?.receiptNumber ? res.data : null);
+            if (res.ok && receiptData) {
+                await downloadPaymentBillPdf(receiptData);
+                toast.success('Official GST Tax Invoice downloaded.');
+            } else {
+                toast.error(res.error || 'Failed to download GST invoice.');
+            }
+        } catch {
+            toast.error('Could not generate PDF bill.');
+        } finally {
+            setDownloadingId(null);
+        }
+    };
+
     // Print Invoice Handler
     const handlePrintInvoice = async (inv: any) => {
         if (!token) return;
@@ -1021,17 +1068,110 @@ export default function CompanyManagementDashboard() {
         );
     });
 
+    // Counts for Selected Company Ticket Status Tabs
+    const companyTicketCounts = useMemo(() => {
+        const counts: Record<string, number> = {
+            all: companyTickets.length,
+            approval_budget: 0,
+            pending: 0,
+            in_progress: 0,
+            completed: 0,
+            delivered: 0,
+            cancelled: 0,
+        };
+        for (const rep of companyTickets) {
+            const st = (rep.status || '').toLowerCase();
+            if (counts[st] !== undefined) {
+                counts[st]++;
+            }
+            const isPendingApproval = (rep.customer_approval_status === 'pending_approval' || rep.customerApprovalStatus === 'pending_approval') &&
+                (Number(rep.estimated_cost || rep.estimatedCost || 0) > 0 || Number(rep.repair_cost || rep.repairCost || 0) > 0) &&
+                !['completed', 'cancelled', 'delivered'].includes(st);
+            if (isPendingApproval) {
+                counts.approval_budget++;
+            }
+        }
+        return counts;
+    }, [companyTickets]);
+
+    // Filtered Tickets for Selected Company (Client-side fallback for instant responsiveness & budget filtering)
+    const filteredCompanyTickets = useMemo(() => {
+        return companyTickets.filter((t: any) => {
+            const status = (t.status || '').toLowerCase();
+            if (ticketStatusFilter === 'approval_budget' || ticketStatusFilter === 'pending_approval') {
+                const isPendingApproval = (t.customer_approval_status === 'pending_approval' || t.customerApprovalStatus === 'pending_approval') &&
+                    (Number(t.estimated_cost || t.estimatedCost || 0) > 0 || Number(t.repair_cost || t.repairCost || 0) > 0) &&
+                    !['completed', 'cancelled', 'delivered'].includes(status);
+                if (!isPendingApproval) return false;
+            } else if (ticketStatusFilter !== 'all' && ticketStatusFilter !== '') {
+                if (status !== ticketStatusFilter.toLowerCase()) return false;
+            }
+
+            if (ticketSearch.trim()) {
+                const q = ticketSearch.toLowerCase().trim();
+                const ticketNo = String(t.ticket_number || t.ticketNumber || t.id || '').toLowerCase();
+                const brand = String(t.brand || t.device_brand || '').toLowerCase();
+                const model = String(t.model || t.model_number || t.modelNumber || t.device_model || '').toLowerCase();
+                const serial = String(t.serial_number || t.device_serial || t.asset_tag || t.asset_id || '').toLowerCase();
+                const emp = String(t.employee_name || t.employeeName || t.customer_name || t.customerName || '').toLowerCase();
+                const desc = String(t.issue_description || t.problem_description || t.problemDescription || '').toLowerCase();
+                const branch = String(t.branch_name || t.branchName || '').toLowerCase();
+
+                const matchSearch = ticketNo.includes(q) ||
+                    brand.includes(q) ||
+                    model.includes(q) ||
+                    serial.includes(q) ||
+                    emp.includes(q) ||
+                    desc.includes(q) ||
+                    branch.includes(q);
+                if (!matchSearch) return false;
+            }
+
+            return true;
+        });
+    }, [companyTickets, ticketStatusFilter, ticketSearch]);
+
+    // Status Tabs Definition for Selected Company Tickets
+    const companyTicketTabs = [
+        { id: 'all', label: 'All', count: companyTicketCounts.all },
+        {
+            id: 'approval_budget',
+            label: `Approval Budget${companyTicketCounts.approval_budget > 0 ? ` (${companyTicketCounts.approval_budget})` : ''}`,
+            count: companyTicketCounts.approval_budget,
+            highlight: companyTicketCounts.approval_budget > 0
+        },
+        { id: 'pending', label: 'Pending', count: companyTicketCounts.pending },
+        { id: 'in_progress', label: 'In Progress', count: companyTicketCounts.in_progress },
+        { id: 'completed', label: 'Completed', count: companyTicketCounts.completed },
+        { id: 'delivered', label: 'Delivered', count: companyTicketCounts.delivered },
+        { id: 'cancelled', label: 'Cancelled', count: companyTicketCounts.cancelled },
+    ];
+
     if (workspaceTicket) {
         return (
             <div className="space-y-6 pb-20">
-                <AdminTicketWorkspace
-                    request={workspaceTicket}
+                <RepairTicketWorkspace
+                    ticket={workspaceTicket}
+                    role="admin"
                     technicians={technicians as any}
-                    token={token}
                     onBack={handleCloseTicketWorkspace}
-                    onRequestUpdated={(updated) => {
+                    onRefresh={() => {
+                        if (workspaceTicket?.id && token) {
+                            repairApi.getRequestById(token, workspaceTicket.id).then(res => {
+                                if (res.ok && res.data?.data) {
+                                    setWorkspaceTicket(res.data.data);
+                                }
+                            });
+                        }
+                        if (selectedCompany) {
+                            loadCompanyDrilldown(selectedCompany.id);
+                        }
+                        fetchCorporateRepairs();
+                    }}
+                    onRequestUpdated={(updated: any) => {
                         setWorkspaceTicket((prev: any) => prev ? ({ ...prev, ...updated }) : null);
                         setCompanyTickets(prev => prev.map(item => item.id === updated.id ? { ...item, ...updated } : item));
+                        setAllCorporateRepairs(prev => prev.map(item => item.id === updated.id ? { ...item, ...updated } : item));
                     }}
                     onDelete={async () => {
                         if (!token || !workspaceTicket) return;
@@ -2213,12 +2353,20 @@ export default function CompanyManagementDashboard() {
                                                         <td className="py-3.5 px-4 text-right">
                                                             <div className="inline-flex items-center gap-1.5 justify-end">
                                                                 <button
+                                                                    type="button"
+                                                                    onClick={() => setQuickDrawerTicket(t)}
+                                                                    className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 transition-colors cursor-pointer"
+                                                                    title="Quick Preview in Drawer"
+                                                                >
+                                                                    <Eye size={13} />
+                                                                </button>
+                                                                <button
                                                                     onClick={() => handleOpenTicketWorkspace(t)}
                                                                     className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-800 text-xs font-medium transition-colors cursor-pointer"
-                                                                    title="Open Complete Ticket Details"
+                                                                    title="Open Complete Ticket Workspace"
                                                                 >
-                                                                    <Eye size={12} />
-                                                                    <span>Details</span>
+                                                                    <ExternalLink size={12} />
+                                                                    <span>Workspace</span>
                                                                 </button>
                                                                 {t.device_id && (
                                                                     <button
@@ -2826,219 +2974,376 @@ export default function CompanyManagementDashboard() {
                     </div>
 
                     {drilldownTab === 'tickets' ? (
-                        /* ── COMPANY REPAIR TICKETS TABLE ── */
-                        <div className="bg-[#0a0a0a] border border-zinc-900/90 rounded-2xl overflow-hidden shadow-xl">
-                            {/* Table Header & Filters */}
-                            <div className="p-4 border-b border-zinc-900/80 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
-                                        <Wrench size={16} />
+                        /* ── COMPANY REPAIR TICKETS (ALIGNED WITH COMPANY PORTAL & ADMIN REPAIR TICKETS) ── */
+                        <div className="space-y-4">
+                            {/* Header & Status Pill Tabs */}
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                                <div>
+                                    <h3 className="text-xl font-bold font-outfit text-white tracking-tight flex items-center gap-2">
+                                        <Wrench size={18} className="text-neon-cyan" />
+                                        <span>Company Repair Tickets</span>
+                                        <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-400 font-mono">
+                                            {filteredCompanyTickets.length} / {companyTickets.length}
+                                        </span>
+                                    </h3>
+                                    <p className="text-xs text-zinc-400 mt-1">
+                                        Monitor hardware service requests, SLAs, and settlements for {selectedCompany.name}
+                                    </p>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2">
+                                    {/* Status Pill Tabs Bar */}
+                                    <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-xl p-1 overflow-x-auto">
+                                        {companyTicketTabs.map(st => (
+                                            <button
+                                                key={st.id}
+                                                type="button"
+                                                onClick={() => setTicketStatusFilter(st.id)}
+                                                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${ticketStatusFilter === st.id
+                                                    ? 'bg-zinc-800 text-white font-semibold shadow-sm'
+                                                    : st.highlight
+                                                        ? 'text-amber-400 hover:text-amber-300 font-semibold'
+                                                        : 'text-zinc-400 hover:text-zinc-200'
+                                                    }`}
+                                            >
+                                                <span>{st.label}</span>
+                                                {st.count !== undefined && (
+                                                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${ticketStatusFilter === st.id ? 'bg-zinc-700 text-white' : 'bg-zinc-900 text-zinc-500'}`}>
+                                                        {st.count}
+                                                    </span>
+                                                )}
+                                                {st.highlight && ticketStatusFilter !== st.id && (
+                                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                                                )}
+                                            </button>
+                                        ))}
                                     </div>
-                                    <div>
-                                        <h3 className="text-sm font-bold font-outfit text-white">
-                                            Company Repair Tickets ({companyTickets.length})
+
+                                    <button
+                                        type="button"
+                                        onClick={() => selectedCompany?.id && loadCompanyDrilldown(selectedCompany.id)}
+                                        className="p-2 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                                        title="Refresh Tickets"
+                                    >
+                                        <RefreshCw size={14} className={companyTicketsLoading ? 'animate-spin text-neon-cyan' : ''} />
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Search Input Bar with Clear Action */}
+                            <div className="relative">
+                                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" size={16} />
+                                <input
+                                    type="text"
+                                    placeholder="Search tickets by ticket number, brand, model, serial, employee, or problem description..."
+                                    value={ticketSearch}
+                                    onChange={e => setTicketSearch(e.target.value)}
+                                    className="w-full bg-[#0c0c0c] border border-zinc-900 focus:border-neon-cyan/50 rounded-xl pl-10 pr-10 py-2.5 text-sm text-white focus:outline-none transition-colors"
+                                />
+                                {ticketSearch && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setTicketSearch('')}
+                                        className="absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white p-1 cursor-pointer"
+                                        title="Clear search"
+                                    >
+                                        <X size={14} />
+                                    </button>
+                                )}
+                            </div>
+
+                            {/* Table */}
+                            {companyTicketsLoading ? (
+                                <div className="bg-[#0c0c0c] border border-zinc-800/40 rounded-2xl py-20 text-center flex flex-col items-center justify-center space-y-3">
+                                    <RefreshCw size={24} className="animate-spin text-neon-cyan" />
+                                    <p className="text-zinc-400 text-xs font-medium">Loading repair tickets for {selectedCompany.name}...</p>
+                                </div>
+                            ) : filteredCompanyTickets.length === 0 ? (
+                                <div className="bg-[#0c0c0c] border border-zinc-800/40 border-dashed rounded-2xl py-20 text-center flex flex-col items-center justify-center space-y-4">
+                                    <Wrench size={40} className="text-zinc-700" />
+                                    <div className="space-y-1">
+                                        <h3 className="text-zinc-300 font-bold text-base">
+                                            {ticketSearch || ticketStatusFilter !== 'all' ? 'No Tickets Match Your Filters' : 'No Tickets Found'}
                                         </h3>
-                                        <p className="text-[11px] text-zinc-500">
-                                            All service requests assigned to {selectedCompany.name}
+                                        <p className="text-zinc-500 text-xs max-w-sm">
+                                            {ticketSearch || ticketStatusFilter !== 'all' ? 'Try clearing your search or status filter.' : `No repair tickets have been raised for ${selectedCompany.name} yet.`}
                                         </p>
                                     </div>
+                                    {ticketSearch || ticketStatusFilter !== 'all' ? (
+                                        <button
+                                            type="button"
+                                            onClick={() => { setTicketSearch(''); setTicketStatusFilter('all'); }}
+                                            className="text-xs text-neon-cyan hover:underline font-semibold cursor-pointer mt-2"
+                                        >
+                                            Reset filters
+                                        </button>
+                                    ) : null}
                                 </div>
+                            ) : (
+                                <div className="bg-[#0c0c0c] border border-zinc-800/40 rounded-2xl overflow-hidden shadow-xl">
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-left">
+                                            <thead>
+                                                <tr className="border-b border-zinc-800/30 text-xs text-zinc-500 uppercase tracking-widest font-mono select-none">
+                                                    <th className="py-4 px-6">Ticket No.</th>
+                                                    <th className="py-4 px-4 font-mono">Device Details</th>
+                                                    <th className="py-4 px-4">User Assignment</th>
+                                                    <th className="py-4 px-4">Priority / Type</th>
+                                                    <th className="py-4 px-4">SLA Resolve Deadline</th>
+                                                    <th className="py-4 px-4">Status</th>
+                                                    <th className="py-4 px-4">Payment</th>
+                                                    <th className="py-4 px-4 text-right">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-zinc-900/40 text-sm text-zinc-300 font-medium">
+                                                {filteredCompanyTickets.map((rep: any) => {
+                                                    const isSlaClose = rep.sla_deadline
+                                                        ? new Date(rep.sla_deadline) < new Date(Date.now() + 24 * 60 * 60 * 1000) && !['completed', 'delivered', 'cancelled'].includes((rep.status || '').toLowerCase())
+                                                        : false;
+                                                    const approxBudget = Number(rep.estimated_cost || rep.estimatedCost || rep.repair_cost || rep.repairCost || rep.charges || 0);
+                                                    const approvalStatus = (rep.customer_approval_status || rep.customerApprovalStatus || 'none').toLowerCase();
+                                                    const pStatus = (rep.payment_status || rep.paymentStatus || 'unpaid').toLowerCase();
+                                                    const hasTech = Boolean(rep.assigned_technician_id || rep.assignedTechnicianId);
+                                                    const ticketNum = rep.ticket_number || rep.ticketNumber || rep.id;
+                                                    const createdDate = rep.created_at || rep.createdAt;
+                                                    const devId = rep.device_id || rep.deviceId;
 
-                                {/* Filters */}
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <div className="relative">
-                                        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
-                                        <input
-                                            type="text"
-                                            placeholder="Search ticket #, device, issue..."
-                                            value={ticketSearch}
-                                            onChange={(e) => setTicketSearch(e.target.value)}
-                                            className="pl-8 pr-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-neon-cyan/40"
-                                        />
-                                    </div>
+                                                    return (
+                                                        <tr
+                                                            key={rep.id}
+                                                            onClick={() => handleOpenTicketWorkspace(rep)}
+                                                            className="hover:bg-zinc-900/10 transition-colors cursor-pointer group hover:opacity-90"
+                                                        >
+                                                            {/* Ticket No. */}
+                                                            <td className="py-4 px-6">
+                                                                <span className="font-mono text-white text-sm block group-hover:text-neon-cyan transition-colors">
+                                                                    #{ticketNum}
+                                                                </span>
+                                                                <span className="text-[10px] text-zinc-500 font-mono font-medium block mt-1">
+                                                                    {createdDate ? new Date(createdDate).toLocaleDateString() : '—'}
+                                                                </span>
+                                                            </td>
 
-                                    <select
-                                        value={ticketStatusFilter}
-                                        onChange={(e) => setTicketStatusFilter(e.target.value)}
-                                        className="px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-300 focus:outline-none focus:border-neon-cyan/40 cursor-pointer"
-                                    >
-                                        <option value="all">All Statuses</option>
-                                        <option value="pending">Pending</option>
-                                        <option value="in_progress">In Progress</option>
-                                        <option value="completed">Completed</option>
-                                        <option value="cancelled">Cancelled</option>
-                                    </select>
-                                </div>
-                            </div>
+                                                            {/* Device Details */}
+                                                            <td className="py-4 px-4">
+                                                                <div className="text-zinc-200 flex items-center gap-1.5">
+                                                                    <span>
+                                                                        {rep.brand || rep.device_brand || 'Device'} {rep.model || rep.model_number || rep.modelNumber || rep.device_model || ''}
+                                                                    </span>
+                                                                    {devId && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                setHistoryModalDeviceId(Number(devId));
+                                                                            }}
+                                                                            className="p-1 text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors cursor-pointer"
+                                                                            title="View Complete Device Repair History"
+                                                                        >
+                                                                            <Clock size={12} />
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                                <div className="text-[11px] text-zinc-500 font-mono mt-0.5">
+                                                                    {rep.serial_number || rep.device_serial || rep.asset_tag || rep.asset_id || rep.assetId || '—'}
+                                                                </div>
+                                                            </td>
 
-                            {/* Tickets List */}
-                            <div className="overflow-x-auto">
-                                <table className="w-full min-w-[760px] text-left border-collapse text-xs">
-                                    <thead>
-                                        <tr className="border-b border-zinc-900 bg-zinc-950/40 text-[11px] font-mono uppercase tracking-wider text-zinc-500">
-                                            <th className="py-3 px-4">Ticket</th>
-                                            <th className="py-3 px-4">Device & Problem</th>
-                                            <th className="py-3 px-4">Employee / Branch</th>
-                                            <th className="py-3 px-4">Status</th>
-                                            <th className="py-3 px-4">Assigned Technician</th>
-                                            <th className="py-3 px-4">Charges</th>
-                                            <th className="py-3 px-4 text-right">Technician Action</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-zinc-900/70">
-                                        {companyTicketsLoading ? (
-                                            <tr>
-                                                <td colSpan={7} className="py-12 text-center text-zinc-500">
-                                                    <RefreshCw size={24} className="animate-spin mx-auto mb-2 text-neon-cyan" />
-                                                    <span>Loading company repair tickets...</span>
-                                                </td>
-                                            </tr>
-                                        ) : companyTickets.length === 0 ? (
-                                            <tr>
-                                                <td colSpan={7} className="py-12 text-center text-zinc-500">
-                                                    <Wrench size={32} className="mx-auto mb-2 opacity-30" />
-                                                    <p className="text-zinc-400 font-medium">No repair tickets found for this company</p>
-                                                    <p className="text-[11px] text-zinc-600 mt-1">
-                                                        Tickets created by this company or booked under this account will appear here.
-                                                    </p>
-                                                </td>
-                                            </tr>
-                                        ) : (
-                                            companyTickets.map((t) => {
-                                                const hasTech = Boolean(t.assigned_technician_id || t.assignedTechnicianId);
-                                                const techName = t.technician_name || t.technicianName || (hasTech ? `Technician #${t.assigned_technician_id || t.assignedTechnicianId}` : null);
-                                                const ticketNum = t.ticket_number || t.ticketNumber || t.id;
-                                                const createdDate = t.created_at || t.createdAt;
-                                                const devType = t.device_type || t.deviceCategory || 'Device';
-                                                const devModel = t.model || t.modelNumber || '';
-                                                const issueDesc = t.issue_description || t.problemDescription || 'No description';
-                                                const empName = t.employee_name || t.employeeName || t.contact_person || 'Company Staff';
-                                                const branch = t.branch_name || t.branchName || 'Main Branch';
-                                                const chargesVal = parseFloat(t.repair_cost || t.repairCost || t.charges || 0);
-                                                const devId = t.device_id || t.deviceId;
+                                                            {/* User Assignment */}
+                                                            <td className="py-4 px-4 text-zinc-400">
+                                                                <div className="text-zinc-300 font-medium truncate max-w-[150px]">
+                                                                    {rep.employee_name || rep.employeeName || rep.customer_name || rep.customerName || (
+                                                                        <span className="text-zinc-600 italic">Inventory / Staff</span>
+                                                                    )}
+                                                                </div>
+                                                                <div className="text-[11px] text-zinc-500 truncate max-w-[150px]">
+                                                                    {rep.branch_name || rep.branchName || 'Main Branch'}
+                                                                </div>
+                                                            </td>
 
-                                                return (
-                                                    <tr 
-                                                        key={t.id} 
-                                                        onClick={() => handleOpenTicketWorkspace(t)}
-                                                        className="hover:bg-zinc-900/50 transition-colors cursor-pointer group"
-                                                    >
-                                                        {/* Ticket ID */}
-                                                        <td className="py-3.5 px-4 font-mono">
-                                                            <div className="font-bold text-white group-hover:text-neon-cyan transition-colors flex items-center gap-1.5">
-                                                                <span>#{ticketNum}</span>
-                                                                <Eye size={12} className="opacity-0 group-hover:opacity-100 text-neon-cyan transition-opacity" />
-                                                            </div>
-                                                            <div className="text-[10px] text-zinc-500">
-                                                                {createdDate ? new Date(createdDate).toLocaleDateString() : '—'}
-                                                            </div>
-                                                        </td>
+                                                            {/* Priority / Type */}
+                                                            <td className="py-4 px-4">
+                                                                <div className="flex flex-col gap-1 items-start">
+                                                                    <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold border ${
+                                                                        (rep.priority || '').toLowerCase() === 'urgent'
+                                                                            ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                                                                            : (rep.priority || '').toLowerCase() === 'high'
+                                                                                ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                                                                                : 'bg-zinc-900 text-zinc-400 border-zinc-800/40'
+                                                                    }`}>
+                                                                        {rep.priority || 'Standard'}
+                                                                    </span>
+                                                                    <span className="text-[10px] text-zinc-400 block font-mono truncate max-w-[140px]" title={rep.problem_type || rep.problemType || rep.issue_description || 'Hardware'}>
+                                                                        {rep.problem_type || rep.problemType || rep.issue_description || 'Hardware'}
+                                                                    </span>
+                                                                </div>
+                                                            </td>
 
-                                                        {/* Device & Issue */}
-                                                        <td className="py-3.5 px-4 max-w-[220px]">
-                                                            <div className="font-medium text-zinc-200 truncate flex items-center gap-1.5">
-                                                                <span>{devType} {t.brand ? `• ${t.brand}` : ''} {devModel}</span>
-                                                                {devId && (
-                                                                    <button
-                                                                        onClick={(e) => {
-                                                                            e.stopPropagation();
-                                                                            setHistoryModalDeviceId(Number(devId));
-                                                                        }}
-                                                                        className="p-1 text-neon-cyan hover:bg-neon-cyan/10 rounded transition-colors cursor-pointer"
-                                                                        title="View Device Lifecycle & Repair History"
-                                                                    >
-                                                                        <Clock size={12} />
-                                                                    </button>
+                                                            {/* SLA Resolve Deadline */}
+                                                            <td className="py-4 px-4">
+                                                                {rep.sla_deadline ? (
+                                                                    <span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${
+                                                                        isSlaClose ? 'text-red-400 animate-pulse' : 'text-zinc-400'
+                                                                    }`}>
+                                                                        {isSlaClose ? <ShieldAlert size={13} /> : <Clock size={13} />}
+                                                                        {String(rep.sla_deadline).replace('T', ' ').substring(0, 16)}
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="text-zinc-600 font-mono text-xs">—</span>
                                                                 )}
-                                                            </div>
-                                                            <div className="text-[11px] text-zinc-500 truncate" title={issueDesc}>
-                                                                {issueDesc}
-                                                            </div>
-                                                        </td>
+                                                            </td>
 
-                                                        {/* Branch / Employee */}
-                                                        <td className="py-3.5 px-4">
-                                                            <div className="text-zinc-300 font-medium truncate max-w-[140px]">
-                                                                {empName}
-                                                            </div>
-                                                            <div className="text-[11px] text-zinc-500 truncate max-w-[140px]">
-                                                                {branch}
-                                                            </div>
-                                                        </td>
+                                                            {/* Status */}
+                                                            <td className="py-4 px-4">
+                                                                <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                                                                    rep.status === 'completed'
+                                                                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                                                        : rep.status === 'delivered'
+                                                                            ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                                                                            : rep.status === 'in_progress'
+                                                                                ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'
+                                                                                : rep.status === 'cancelled'
+                                                                                    ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                                                                                    : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                                                }`}>
+                                                                    {(rep.status || 'PENDING').toUpperCase().replace('_', ' ')}
+                                                                </span>
+                                                            </td>
 
-                                                        {/* Status Badge */}
-                                                        <td className="py-3.5 px-4">
-                                                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium border capitalize ${getStatusBadge(t.status)}`}>
-                                                                {t.status?.replace('_', ' ') || 'pending'}
-                                                            </span>
-                                                        </td>
-
-                                                        {/* Assigned Technician */}
-                                                        <td className="py-3.5 px-4">
-                                                            {hasTech ? (
-                                                                <div className="flex items-center gap-2">
-                                                                    <div className="w-6 h-6 rounded-full bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-[10px] font-bold text-blue-400 uppercase">
-                                                                        {techName?.charAt(0) || 'T'}
-                                                                    </div>
-                                                                    <div className="min-w-0">
-                                                                        <div className="font-medium text-white text-xs truncate max-w-[120px]">
-                                                                            {techName}
+                                                            {/* Payment */}
+                                                            <td className="py-4 px-4" onClick={e => e.stopPropagation()}>
+                                                                {pStatus === 'paid' ? (
+                                                                    <div className="flex flex-col items-start gap-1">
+                                                                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                                                                            <CheckCircle2 size={11} /> Paid {approxBudget > 0 ? `₹${approxBudget.toLocaleString('en-IN')}` : ''}
+                                                                        </span>
+                                                                        <div className="flex items-center gap-1.5 pt-0.5">
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => handleViewTicketReceipt(rep.id)}
+                                                                                className="px-2 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-cyan-400/40 text-zinc-300 hover:text-cyan-400 text-[11px] font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                                                                                title="View Official Tax Invoice"
+                                                                            >
+                                                                                <Receipt size={11} className="text-cyan-400" />
+                                                                                <span>View</span>
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => handlePrintTicketReceipt(rep.id)}
+                                                                                className="px-2 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-amber-400/40 text-zinc-300 hover:text-amber-400 text-[11px] font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                                                                                title="Print Document"
+                                                                            >
+                                                                                <Printer size={11} className="text-amber-400" />
+                                                                                <span>Print</span>
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => handleDownloadTicketReceipt(rep.id)}
+                                                                                disabled={downloadingId === rep.id}
+                                                                                className="px-2 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-emerald-500/40 text-zinc-300 hover:text-emerald-400 text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-50"
+                                                                                title="Download Official GST Tax Invoice"
+                                                                            >
+                                                                                {downloadingId === rep.id ? (
+                                                                                    <RefreshCw size={11} className="animate-spin text-emerald-400" />
+                                                                                ) : (
+                                                                                    <Download size={11} className="text-emerald-400" />
+                                                                                )}
+                                                                                <span>PDF</span>
+                                                                            </button>
                                                                         </div>
                                                                     </div>
-                                                                </div>
-                                                            ) : (
-                                                                <span className="inline-flex items-center gap-1 text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20 text-[11px]">
-                                                                    <AlertCircle size={12} />
-                                                                    <span>Unassigned</span>
-                                                                </span>
-                                                            )}
-                                                        </td>
+                                                                ) : pStatus === 'pending_verification' ? (
+                                                                    <div className="flex flex-col items-start gap-1">
+                                                                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full animate-pulse font-mono">
+                                                                            <Clock size={11} /> {(rep.collection_status === 'collected' || rep.collectionStatus === 'collected') ? 'Cash Collected' : 'Verification Pending'}
+                                                                        </span>
+                                                                        <span className="text-[10px] text-zinc-500 font-mono">Awaiting Clearance</span>
+                                                                    </div>
+                                                                ) : pStatus === 'rejected' ? (
+                                                                    <div className="flex flex-col items-start gap-1">
+                                                                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-400 bg-rose-500/10 border border-rose-500/20 px-2 py-0.5 rounded-full font-mono">
+                                                                            <AlertCircle size={11} /> Rejected
+                                                                        </span>
+                                                                    </div>
+                                                                ) : approvalStatus === 'pending_approval' ? (
+                                                                    <div className="flex flex-col items-start gap-1">
+                                                                        <span className="inline-flex items-center gap-1 text-[10px] uppercase font-mono font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded-full animate-pulse">
+                                                                            <Clock size={10} /> Approval Req.
+                                                                        </span>
+                                                                        <span className="text-xs font-semibold text-white font-mono">
+                                                                            Approx: ₹{approxBudget.toLocaleString('en-IN')}
+                                                                        </span>
+                                                                    </div>
+                                                                ) : approvalStatus === 'approved' ? (
+                                                                    <div className="flex flex-col items-start gap-0.5">
+                                                                        <span className="inline-flex items-center gap-1 text-[10px] uppercase font-mono font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded">
+                                                                            <CheckCircle2 size={10} /> Approved
+                                                                        </span>
+                                                                        <span className="text-xs text-zinc-300 font-mono">
+                                                                            ₹{approxBudget.toLocaleString('en-IN')}
+                                                                        </span>
+                                                                    </div>
+                                                                ) : approvalStatus === 'rejected' ? (
+                                                                    <div className="flex flex-col items-start gap-0.5">
+                                                                        <span className="text-[10px] uppercase font-mono font-bold text-rose-400 bg-rose-500/10 border border-rose-500/20 px-1.5 py-0.5 rounded">
+                                                                            Declined
+                                                                        </span>
+                                                                        <span className="text-xs text-zinc-500 line-through font-mono">
+                                                                            ₹{approxBudget.toLocaleString('en-IN')}
+                                                                        </span>
+                                                                    </div>
+                                                                ) : approxBudget > 0 ? (
+                                                                    <div className="text-xs text-zinc-400">
+                                                                        <span className="text-zinc-500 text-[10px] block font-mono">Approx. Budget</span>
+                                                                        <span className="font-mono font-semibold text-zinc-300">₹{approxBudget.toLocaleString('en-IN')}</span>
+                                                                    </div>
+                                                                ) : (
+                                                                    <span className="text-xs text-zinc-600 font-mono">—</span>
+                                                                )}
+                                                            </td>
 
-                                                        {/* Charges */}
-                                                        <td className="py-3.5 px-4 font-mono font-medium text-zinc-300">
-                                                            {chargesVal > 0 ? (
-                                                                formatINR(chargesVal)
-                                                            ) : (
-                                                                <span className="text-zinc-500 text-[11px]">Pending Quote</span>
-                                                            )}
-                                                        </td>
-
-                                                        {/* Technician Action Button */}
-                                                        <td className="py-3.5 px-4 text-right">
-                                                            <div className="flex items-center justify-end gap-2">
-                                                                <button
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation();
-                                                                        handleOpenTicketWorkspace(t);
-                                                                    }}
-                                                                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800 transition-all cursor-pointer"
-                                                                    title="View Complete Ticket Details"
-                                                                >
-                                                                    <Eye size={12} />
-                                                                    <span>Details</span>
-                                                                </button>
-                                                                <button
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation();
-                                                                        handleOpenAssignModal(t);
-                                                                    }}
-                                                                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${hasTech
-                                                                        ? 'bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800'
-                                                                        : 'bg-gradient-to-r from-neon-cyan to-blue-600 text-black shadow-md shadow-neon-cyan/20 hover:brightness-110 active:scale-[0.98]'
+                                                            {/* Actions */}
+                                                            <td className="py-4 px-4 text-right" onClick={e => e.stopPropagation()}>
+                                                                <div className="flex justify-end items-center gap-1.5">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setQuickDrawerTicket(rep)}
+                                                                        className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 transition-colors cursor-pointer"
+                                                                        title="Quick Preview in Drawer"
+                                                                    >
+                                                                        <Eye size={13} />
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleOpenTicketWorkspace(rep)}
+                                                                        className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-indigo-400 transition-colors cursor-pointer"
+                                                                        title="Open Complete Ticket Workspace"
+                                                                    >
+                                                                        <ExternalLink size={13} />
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleOpenAssignModal(rep)}
+                                                                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                                                                            hasTech
+                                                                                ? 'bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800'
+                                                                                : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow'
                                                                         }`}
-                                                                >
-                                                                    <UserCog size={13} />
-                                                                    <span>{hasTech ? 'Reassign' : 'Assign Tech'}</span>
-                                                                </button>
-                                                            </div>
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            })
-                                        )}
-                                    </tbody>
-                                </table>
-                            </div>
+                                                                        title="Assign or Reassign Technician"
+                                                                    >
+                                                                        <UserCog size={12} />
+                                                                        <span>{hasTech ? 'Reassign' : 'Assign'}</span>
+                                                                    </button>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     ) : drilldownTab === 'devices' ? (
                         /* ── COMPANY FLEET & DEVICES TABLE ── */
@@ -3810,6 +4115,89 @@ export default function CompanyManagementDashboard() {
                 invoiceId={modalInvoiceId}
                 ticketId={modalTicketId}
             />
+
+            {/* Quick Preview Side Drawer (Reusing RepairTicketWorkspace) */}
+            <SideDrawer
+                isOpen={Boolean(quickDrawerTicket)}
+                onClose={() => setQuickDrawerTicket(null)}
+                title={`Ticket #${quickDrawerTicket?.ticket_number || quickDrawerTicket?.ticketNumber || quickDrawerTicket?.id || ''}`}
+                subtitle={`${quickDrawerTicket?.brand || quickDrawerTicket?.device_brand || ''} ${quickDrawerTicket?.model || quickDrawerTicket?.model_number || quickDrawerTicket?.modelNumber || quickDrawerTicket?.device_model || ''}`}
+                size="xl"
+                badge={{
+                    text: (quickDrawerTicket?.status || 'PENDING').toUpperCase().replace('_', ' '),
+                    variant: quickDrawerTicket?.status === 'completed' ? 'success' : quickDrawerTicket?.status === 'delivered' ? 'info' : quickDrawerTicket?.status === 'in_progress' ? 'info' : 'warning'
+                }}
+                footer={
+                    <div className="flex justify-between items-center w-full">
+                        <button
+                            type="button"
+                            onClick={() => setQuickDrawerTicket(null)}
+                            className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white bg-zinc-900 hover:bg-zinc-800 transition-colors cursor-pointer"
+                        >
+                            Close Drawer
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const t = quickDrawerTicket;
+                                setQuickDrawerTicket(null);
+                                if (t) handleOpenTicketWorkspace(t);
+                            }}
+                            className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 transition-colors flex items-center gap-1.5 cursor-pointer shadow-lg shadow-indigo-600/20"
+                        >
+                            <ExternalLink size={13} />
+                            Open Full Workspace
+                        </button>
+                    </div>
+                }
+            >
+                {quickDrawerTicket && (
+                    <RepairTicketWorkspace
+                        ticket={quickDrawerTicket}
+                        isDrawer={true}
+                        role="admin"
+                        technicians={technicians as any}
+                        onBack={() => setQuickDrawerTicket(null)}
+                        onOpenFullWorkspace={() => {
+                            const t = quickDrawerTicket;
+                            setQuickDrawerTicket(null);
+                            if (t) handleOpenTicketWorkspace(t);
+                        }}
+                        onRefresh={() => {
+                            if (selectedCompany) {
+                                loadCompanyDrilldown(selectedCompany.id);
+                            }
+                            fetchCorporateRepairs();
+                            setQuickDrawerTicket(null);
+                        }}
+                        onRequestUpdated={(updated: any) => {
+                            setCompanyTickets(prev => prev.map(item => item.id === updated.id ? { ...item, ...updated } : item));
+                            setAllCorporateRepairs(prev => prev.map(item => item.id === updated.id ? { ...item, ...updated } : item));
+                            setQuickDrawerTicket((prev: any) => prev ? ({ ...prev, ...updated }) : null);
+                        }}
+                        onDelete={async () => {
+                            const t = quickDrawerTicket;
+                            setQuickDrawerTicket(null);
+                            if (t && token) {
+                                if (!window.confirm('Are you sure you want to delete this repair ticket?')) return;
+                                try {
+                                    const res = await repairApi.deleteRequest(token, t.id);
+                                    if (res.ok) {
+                                        toast.success('Repair ticket deleted successfully');
+                                        if (selectedCompany) loadCompanyDrilldown(selectedCompany.id);
+                                        fetchCorporateRepairs();
+                                    } else {
+                                        toast.error(res.error || 'Failed to delete ticket');
+                                    }
+                                } catch {
+                                    toast.error('Error deleting ticket');
+                                }
+                            }
+                        }}
+                        onImagePreview={(src, alt) => setPreviewImage({ src, alt })}
+                    />
+                )}
+            </SideDrawer>
         </div>
     );
 }

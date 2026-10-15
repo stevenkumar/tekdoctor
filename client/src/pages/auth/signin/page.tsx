@@ -235,20 +235,23 @@ export default function SignIn() {
             </button>
           </form>
 
-          {/* Divider */}
-          <div className="relative my-6">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-zinc-800" />
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-zinc-900/90 px-3 text-zinc-500 font-mono text-[11px] rounded">
-                Or continue with
-              </span>
-            </div>
-          </div>
+          {/* Divider & Google Sign In */}
+          {flattenedSettings.google_login_enabled !== 'false' && (
+            <>
+              <div className="relative my-6">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-zinc-800" />
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-zinc-900/90 px-3 text-zinc-500 font-mono text-[11px] rounded">
+                    Or continue with
+                  </span>
+                </div>
+              </div>
 
-          {/* Google Sign In */}
-          <GoogleSignInButton text="Continue with Google" redirectPath={ROUTES.HOME} />
+              <GoogleSignInButton text="Continue with Google" redirectPath={ROUTES.HOME} />
+            </>
+          )}
         </div>
 
         <div className="mt-8 text-center">

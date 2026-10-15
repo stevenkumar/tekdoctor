@@ -2,6 +2,8 @@ import { appConfig } from '@/config/appConfig';
 
 /**
  * Google reCAPTCHA v3 & Enterprise Frontend Helper
+ * Supports dynamic runtime configuration, safe DOM script replacement on key rotation,
+ * and graceful bypass when reCAPTCHA is disabled by administrator.
  */
 
 interface GRecaptchaObject {
@@ -14,7 +16,57 @@ interface WindowWithRecaptcha extends Window {
   grecaptcha?: GRecaptchaObject;
 }
 
+// Runtime dynamic settings populated from SiteContext
+let runtimeSiteKey: string | null = null;
+let runtimeEnabled: boolean | null = null;
+let activeLoadedSiteKey: string | null = null;
 let recaptchaScriptPromise: Promise<void> | null = null;
+
+/**
+ * Updates dynamic runtime reCAPTCHA settings from SiteContext.
+ * If the Site Key changes or reCAPTCHA is disabled, cleans up previous DOM elements
+ * and resets stale promises to avoid stale key assessment or badge duplicates.
+ */
+export const setRecaptchaRuntimeConfig = (config: { siteKey?: string; enabled?: string | boolean }) => {
+  if (typeof window === 'undefined') return;
+
+  const newEnabled = config.enabled !== undefined
+    ? (config.enabled === true || config.enabled === 'true')
+    : null;
+  const newSiteKey = (config.siteKey && config.siteKey.trim()) ? config.siteKey.trim() : null;
+
+  const siteKeyChanged = newSiteKey !== null && activeLoadedSiteKey !== null && newSiteKey !== activeLoadedSiteKey;
+  const wasDisabled = runtimeEnabled !== false && newEnabled === false;
+
+  runtimeSiteKey = newSiteKey;
+  runtimeEnabled = newEnabled;
+
+  if (siteKeyChanged || wasDisabled) {
+    // 1. Remove previous script tag
+    const existingScript = document.getElementById('google-recaptcha');
+    if (existingScript && existingScript.parentNode) {
+      existingScript.parentNode.removeChild(existingScript);
+    }
+
+    // 2. Remove any floating grecaptcha badges
+    const badges = document.querySelectorAll('.grecaptcha-badge');
+    badges.forEach(badge => {
+      if (badge.parentNode) badge.parentNode.removeChild(badge);
+    });
+
+    // 3. Clear window.grecaptcha and reset cached promise
+    const win = window as any;
+    if (win.grecaptcha) {
+      try {
+        delete win.grecaptcha;
+      } catch (_) {
+        win.grecaptcha = undefined;
+      }
+    }
+    recaptchaScriptPromise = null;
+    activeLoadedSiteKey = null;
+  }
+};
 
 /**
  * Dynamically injects the Google reCAPTCHA script into document head.
@@ -26,9 +78,22 @@ export const loadRecaptchaScript = (siteKey: string): Promise<void> => {
 
   const win = window as WindowWithRecaptcha;
 
-  // Check if grecaptcha or enterprise is already loaded and ready
-  if (win.grecaptcha?.execute || win.grecaptcha?.enterprise?.execute) {
+  // If already loaded for this exact site key
+  if (activeLoadedSiteKey === siteKey && (win.grecaptcha?.execute || win.grecaptcha?.enterprise?.execute)) {
     return Promise.resolve();
+  }
+
+  // If site key changed while script was previously loaded, clean up first
+  if (activeLoadedSiteKey && activeLoadedSiteKey !== siteKey) {
+    const existingScript = document.getElementById('google-recaptcha');
+    if (existingScript && existingScript.parentNode) {
+      existingScript.parentNode.removeChild(existingScript);
+    }
+    const badges = document.querySelectorAll('.grecaptcha-badge');
+    badges.forEach(badge => {
+      if (badge.parentNode) badge.parentNode.removeChild(badge);
+    });
+    recaptchaScriptPromise = null;
   }
 
   if (!recaptchaScriptPromise) {
@@ -44,12 +109,14 @@ export const loadRecaptchaScript = (siteKey: string): Promise<void> => {
 
       const handleSuccess = () => {
         cleanup();
+        activeLoadedSiteKey = siteKey;
         resolve();
       };
 
       const handleFailure = (errMsg: string) => {
         cleanup();
-        recaptchaScriptPromise = null; // Allow retry on failure
+        recaptchaScriptPromise = null;
+        activeLoadedSiteKey = null;
         reject(new Error(errMsg));
       };
 
@@ -88,17 +155,23 @@ export const loadRecaptchaScript = (siteKey: string): Promise<void> => {
  * Throws actionable errors on failure in production so forms do not submit invalid requests.
  *
  * @param action Expected action string ('login', 'signup', 'forgot_password', 'book_repair', 'contact_us', 'google_login')
- * @returns Token string or fallback test token in development
+ * @returns Token string, or null if reCAPTCHA is explicitly disabled
  */
 export const getRecaptchaToken = async (action: string): Promise<string | null> => {
-  const siteKey = appConfig.recaptchaSiteKey;
+  // 1. Explicitly disabled via Admin settings
+  if (runtimeEnabled === false) {
+    return null;
+  }
 
-  // If no site key is configured
+  // 2. Resolve dynamic site key with fallback to static appConfig
+  const siteKey = (runtimeSiteKey && runtimeSiteKey.trim()) ? runtimeSiteKey.trim() : appConfig.recaptchaSiteKey;
+
+  // 3. If no site key is configured
   if (!siteKey || siteKey.trim() === '') {
     if (appConfig.isDevelopment) {
       return 'test-token';
     }
-    throw new Error('reCAPTCHA site key is not configured. Please set VITE_RECAPTCHA_SITE_KEY in the frontend environment.');
+    throw new Error('reCAPTCHA site key is not configured. Please configure it in Admin -> Website Settings.');
   }
 
   try {
@@ -119,9 +192,7 @@ export const getRecaptchaToken = async (action: string): Promise<string | null> 
         reject(new Error('Security verification (reCAPTCHA) execution timed out. Please try again.'));
       }, 15000);
 
-      // reCAPTCHA v3 only attaches `execute` once the async runtime script
-      // (recaptcha__en.js) finishes loading. Checking/executing must therefore
-      // happen inside `grecaptcha.ready()`, never right after the api.js onload.
+      // reCAPTCHA v3 only attaches `execute` once the async runtime script finishes loading
       const runExecute = async () => {
         try {
           const activeExecutor = grecaptcha.enterprise?.execute ? grecaptcha.enterprise : grecaptcha;

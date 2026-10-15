@@ -19,6 +19,8 @@ const testSuites = [
   'verify-phase5-security-fixes.js',
   'verify-recaptcha-flows.js',
   'verify-technician-isolation.js',
+  'verify-settings-security.js',
+  'verify-stage2-dynamic-config.js',
 
   // 2. Ticket & Operational Lifecycle
   'verify-ticket-system.js',
