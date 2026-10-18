@@ -394,6 +394,21 @@ const createRepairRequest = async (req, res, next) => {
       ? customDeviceCategory.trim()
       : null;
 
+    const cleanCustomerName = (customerName || '').trim();
+    const cleanAddress = address && address.trim() ? address.trim() : null;
+    const cleanCity = (city || '').trim();
+    const cleanState = state && state.trim() ? state.trim() : null;
+    const cleanZip = zipCode && zipCode.trim() ? zipCode.trim() : null;
+    const cleanBrand = resolvedBrand ? resolvedBrand.trim() : '';
+    const cleanCustomBrand = (cleanBrand.toLowerCase() === 'other' && customBrand && customBrand.trim()) ? customBrand.trim() : null;
+    const cleanModelNumber = resolvedModelNumber && resolvedModelNumber.trim() ? resolvedModelNumber.trim() : null;
+    const cleanSerialNumber = resolvedSerialNumber && resolvedSerialNumber.trim() ? resolvedSerialNumber.trim() : null;
+    const cleanDeviceConfig = resolvedDeviceConfig && resolvedDeviceConfig.trim() ? resolvedDeviceConfig.trim() : null;
+    const cleanProblemType = (problemType || '').trim();
+    const cleanCustomProblem = (cleanProblemType.toLowerCase() === 'other' && customProblemType && customProblemType.trim()) ? customProblemType.trim() : null;
+    const cleanServiceType = (serviceType || 'Bring to Service Center').trim();
+    const cleanCustomServiceType = (cleanServiceType.toLowerCase() === 'other' && customServiceType && customServiceType.trim()) ? customServiceType.trim() : null;
+
     // Insert service request with corporate linkages and submission_id
     const [result] = await connection.query(`
       INSERT INTO service_requests (
@@ -404,11 +419,11 @@ const createRepairRequest = async (req, res, next) => {
         image_path, screenshot_path, status, ticket_number, submission_id
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
     `, [
-      userId, targetCompanyId, targetDeviceId, targetEmployeeId, customerName, mobile, email || null, address || null, city,
-      state || null, zipCode || null, finalDeviceCategory, finalCustomDeviceCategory,
-      resolvedBrand, customBrand || null, resolvedModelNumber || null, resolvedSerialNumber || null,
-      resolvedDeviceConfig || null, problemType, customProblemType || null,
-      cleanDesc, serviceType || 'Bring to Service Center', customServiceType || null,
+      userId, targetCompanyId, targetDeviceId, targetEmployeeId, cleanCustomerName, cleanMobile, cleanEmail, cleanAddress, cleanCity,
+      cleanState, cleanZip, finalDeviceCategory, finalCustomDeviceCategory,
+      cleanBrand, cleanCustomBrand, cleanModelNumber, cleanSerialNumber,
+      cleanDeviceConfig, cleanProblemType, cleanCustomProblem,
+      cleanDesc, cleanServiceType, cleanCustomServiceType,
       priority || 'Standard', contactMethodStr,
       deviceImagePath, screenshotPath, ticketNumber, submissionKey || null
     ]);

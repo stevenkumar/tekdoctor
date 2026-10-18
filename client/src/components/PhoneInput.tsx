@@ -63,20 +63,27 @@ export const PhoneInput: React.FC<PhoneInputProps> = ({
     }
   }, [value]);
 
-  // Click outside to close dropdown
+  // Click outside or press Escape to close dropdown
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setDropdownOpen(false);
       }
     };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setDropdownOpen(false);
+      }
+    };
     if (dropdownOpen) {
       document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleKeyDown);
       // Auto-focus search input when opened
       setTimeout(() => searchInputRef.current?.focus(), 50);
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
     };
   }, [dropdownOpen]);
 
@@ -130,7 +137,7 @@ export const PhoneInput: React.FC<PhoneInputProps> = ({
 
       <div className="relative flex items-center">
         {/* Country Selector Dropdown Container */}
-        <div className="relative shrink-0" ref={dropdownRef}>
+        <div className={`relative shrink-0 ${dropdownOpen ? 'z-30' : ''}`} ref={dropdownRef}>
           <button
             type="button"
             disabled={disabled}
@@ -158,7 +165,7 @@ export const PhoneInput: React.FC<PhoneInputProps> = ({
 
           {/* Floating Dropdown Menu */}
           {dropdownOpen && (
-            <div className="absolute top-full left-0 mt-1.5 w-72 sm:w-80 max-h-72 bg-zinc-950 border border-zinc-800 rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col backdrop-blur-xl">
+            <div className="absolute top-full left-0 mt-1.5 w-72 sm:w-80 max-w-[calc(100vw-2rem)] max-h-72 bg-zinc-950 border border-zinc-800 rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col backdrop-blur-xl">
               {/* Search Box */}
               <div className="p-2 border-b border-zinc-800/80 bg-zinc-900/60 sticky top-0 z-10">
                 <div className="relative flex items-center">
@@ -168,6 +175,17 @@ export const PhoneInput: React.FC<PhoneInputProps> = ({
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (filteredCountries.length > 0) {
+                          handleSelectCountry(filteredCountries[0]);
+                        }
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        setDropdownOpen(false);
+                      }
+                    }}
                     placeholder="Search country or code..."
                     className="w-full bg-black/80 border border-zinc-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-neon-cyan transition-colors"
                   />
@@ -218,6 +236,8 @@ export const PhoneInput: React.FC<PhoneInputProps> = ({
             disabled={disabled}
             placeholder={placeholder || selectedCountry.placeholder}
             maxLength={selectedCountry.maxLength}
+            aria-invalid={Boolean(error)}
+            aria-describedby={error ? `${id}-error` : undefined}
             className={`w-full ${
               size === 'sm' ? 'h-9 px-3 text-xs' : 'h-11 sm:h-12 px-3.5 sm:px-4 text-sm'
             } bg-zinc-950/80 border-y border-r ${
@@ -231,7 +251,7 @@ export const PhoneInput: React.FC<PhoneInputProps> = ({
 
       {/* Field Error Message */}
       {error && (
-        <p className="flex items-center gap-1 text-xs font-mono text-red-400 mt-1.5 px-0.5">
+        <p id={`${id}-error`} className="flex items-center gap-1 text-xs font-mono text-red-400 mt-1.5 px-0.5">
           <AlertCircle size={12} className="shrink-0" />
           <span>{error}</span>
         </p>

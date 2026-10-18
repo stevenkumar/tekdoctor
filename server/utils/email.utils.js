@@ -243,9 +243,52 @@ const sendCustomerNotification = async (toEmail, subject, htmlContent) => {
     }
 };
 
+/**
+ * Send an OTP code verification email using the branded TekDoctor template.
+ * @param {Object} options
+ * @param {string} options.toEmail - Recipient email address
+ * @param {string} options.otpCode - 6-digit numeric OTP
+ * @param {'login'|'password_reset'} [options.purpose='login']
+ * @param {number} [options.expiresInMinutes=5]
+ * @returns {Promise<boolean>}
+ */
+const sendOtpEmail = async ({ toEmail, otpCode, purpose = 'login', expiresInMinutes = 5 }) => {
+    const isLogin = purpose === 'login';
+    const subject = isLogin 
+        ? 'TekDoctor Admin — Login Verification Code' 
+        : 'TekDoctor Admin — Password Reset Code';
+    const titleText = isLogin ? 'Admin Login Verification' : 'Admin Password Reset';
+    const actionDesc = isLogin 
+        ? 'Use the verification code below to complete your administrative login.'
+        : 'Use the verification code below to proceed with resetting your administrator password.';
+
+    const htmlContent = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; background-color: #050508; color: #f4f4f5; border: 1px solid #27272a; border-radius: 16px; overflow: hidden; padding: 36px 28px;">
+        <div style="margin-bottom: 24px;">
+          <span style="font-size: 20px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.5px; color: #ffffff;">TEK<span style="color: #00e5ff;">DOCTOR</span></span>
+        </div>
+        <h2 style="font-size: 20px; font-weight: 700; color: #ffffff; margin-top: 0; margin-bottom: 12px;">${titleText}</h2>
+        <p style="font-size: 14px; line-height: 1.6; color: #a1a1aa; margin-bottom: 20px;">${actionDesc}</p>
+        <div style="margin: 28px 0; background: #0e0e14; border: 1px solid #1f1f28; border-radius: 12px; padding: 24px; text-align: center;">
+          <div style="font-size: 11px; font-family: monospace; text-transform: uppercase; letter-spacing: 2px; color: #71717a; margin-bottom: 8px;">One-Time Verification Code</div>
+          <div style="font-size: 36px; font-family: monospace; font-weight: 800; letter-spacing: 8px; color: #00e5ff;">${otpCode}</div>
+          <div style="font-size: 12px; color: #a1a1aa; margin-top: 12px;">Valid for <strong>${expiresInMinutes} minutes</strong>. Single-use only.</div>
+        </div>
+        <p style="font-size: 12px; color: #71717a; line-height: 1.6; margin-bottom: 24px;">
+          If you did not initiate this administrator request, your password may be compromised. Please investigate immediate session activity.
+        </p>
+        <hr style="border: 0; border-top: 1px solid #27272a; margin: 24px 0;" />
+        <p style="font-size: 11px; color: #52525b; line-height: 1.5; margin: 0;">TekDoctor Security Systems • Automated Notification • Do not reply to this email.</p>
+      </div>
+    `;
+
+    return sendCustomerNotification(toEmail, subject, htmlContent);
+};
+
 module.exports = {
     sendAdminNotification,
     sendCustomerNotification,
+    sendOtpEmail,
     getEmailConfig,
     resolveTlsConfig,
     sanitizeErrorMessage

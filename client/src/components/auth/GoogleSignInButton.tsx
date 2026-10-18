@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { useAuth } from '@/context/AuthContext';
+import type { UserRole } from '@/context/AuthContext';
 import { useSiteContext } from '@/context/SiteContext';
 import { authApi } from '@/services/api';
 import { appConfig } from '@/config/appConfig';
@@ -14,6 +15,7 @@ interface GoogleSignInButtonProps {
   disabled?: boolean;
   className?: string;
   redirectPath?: string;
+  onOtpRequired?: (data: { pendingToken: string; maskedEmail: string }) => void;
 }
 
 // Global script load promise cache
@@ -60,6 +62,7 @@ export default function GoogleSignInButton({
   disabled = false,
   className = '',
   redirectPath,
+  onOtpRequired,
 }: GoogleSignInButtonProps) {
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const { login } = useAuth();
@@ -121,12 +124,30 @@ export default function GoogleSignInButton({
                 throw new Error(result.error || 'Server rejected Google authentication.');
               }
 
+              // Intercept Admin OTP challenge
+              if (result.data.data.requiresOtp) {
+                if (onOtpRequired && result.data.data.pendingToken) {
+                  onOtpRequired({
+                    pendingToken: result.data.data.pendingToken,
+                    maskedEmail: result.data.data.maskedEmail || ''
+                  });
+                  return;
+                } else {
+                  toast.error('Admin authentication requires email OTP verification.');
+                  return;
+                }
+              }
+
               const { id, name, email, role, token, avatar_url } = result.data.data;
+              if (!token || !id || !name || !email || !role) {
+                throw new Error('Authentication token or user information missing from response.');
+              }
+
               toast.success(`Welcome back, ${name}!`);
               if (role === 'customer' && redirectPath) {
-                login(token, { id, name, email, role, avatar_url }, false, redirectPath);
+                login(token, { id, name, email, role: role as UserRole, avatar_url }, false, redirectPath);
               } else {
-                login(token, { id, name, email, role, avatar_url });
+                login(token, { id, name, email, role: role as UserRole, avatar_url });
               }
               onSuccess?.();
             } catch (backendError: any) {

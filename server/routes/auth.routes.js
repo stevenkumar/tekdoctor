@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
 
-const { signup, signin, setPassword, forgotPassword, resetPassword, googleSignIn, logout, updateProfile } = require('../controllers/auth.controller');
-const { validateSignUp, validateSignIn, validateSetPassword, validateForgotPassword, validateResetPassword, validateGoogleSignIn, validateUpdateProfile } = require('../middleware/validate.middleware');
+const { signup, signin, verifyLoginOtp, resendOtp, setPassword, forgotPassword, verifyResetOtp, resetPassword, googleSignIn, logout, updateProfile } = require('../controllers/auth.controller');
+const { validateSignUp, validateSignIn, validateVerifyLoginOtp, validateResendOtp, validateVerifyResetOtp, validateSetPassword, validateForgotPassword, validateResetPassword, validateGoogleSignIn, validateUpdateProfile } = require('../middleware/validate.middleware');
 const { authLimiter } = require('../middleware/rateLimiter.middleware');
 const { authenticate } = require('../middleware/auth.middleware');
 const { verifyRecaptcha } = require('../middleware/recaptcha.middleware');
@@ -13,11 +13,20 @@ router.post('/signup', authLimiter, verifyRecaptcha('signup'), validateSignUp, s
 // Route: POST /api/auth/signin
 router.post('/signin', authLimiter, verifyRecaptcha('login'), validateSignIn, signin);
 
+// Route: POST /api/auth/admin/verify-login-otp (Admin MFA Verification)
+router.post('/admin/verify-login-otp', authLimiter, validateVerifyLoginOtp, verifyLoginOtp);
+
+// Route: POST /api/auth/admin/resend-otp (Admin MFA Resend)
+router.post('/admin/resend-otp', authLimiter, validateResendOtp, resendOtp);
+
 // Route: POST /api/auth/google (Public OAuth / OpenID Connect — rate limited)
 router.post('/google', authLimiter, verifyRecaptcha('google_login'), validateGoogleSignIn, googleSignIn);
 
 // Route: POST /api/auth/forgot-password (Public — rate limited)
 router.post('/forgot-password', authLimiter, verifyRecaptcha('forgot_password'), validateForgotPassword, forgotPassword);
+
+// Route: POST /api/auth/admin/verify-reset-otp (Admin Password Reset OTP Verification)
+router.post('/admin/verify-reset-otp', authLimiter, validateVerifyResetOtp, verifyResetOtp);
 
 // Route: POST /api/auth/reset-password (Public — rate limited with token)
 router.post('/reset-password', authLimiter, validateResetPassword, resetPassword);

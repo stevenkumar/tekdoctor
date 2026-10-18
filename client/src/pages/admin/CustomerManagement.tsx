@@ -175,6 +175,21 @@ export default function CustomerManagement() {
         return `${appConfig.apiUrl}/uploads/${filename}`;
     };
 
+    // Resolves authoritative identifier for each entity type
+    const getEntityId = (c: Customer | any) => {
+        if (!c) return '—';
+        if (c.role === 'technician') {
+            return c.technician_id || '—';
+        }
+        if (c.role === 'company') {
+            return c.company_id || '—';
+        }
+        if (c.role === 'admin') {
+            return 'ADMIN';
+        }
+        return c.permanent_customer_id || (c.id ? `TD-${String(c.id).padStart(3, '0')}` : '—');
+    };
+
     // Primary Data Fetcher
     const fetchData = useCallback(async (
         targetPage = page,
@@ -1078,7 +1093,15 @@ export default function CustomerManagement() {
                         type="text"
                         placeholder={
                             activeTab === 'individual'
-                                ? "Search by Customer ID (TD-001), name, email, phone..."
+                                ? (selectedRole === 'technician'
+                                    ? "Search by Tech ID (TD-TECH-001), name, email, phone..."
+                                    : selectedRole === 'company'
+                                        ? "Search by Company ID (CMP-001), name, email, phone..."
+                                        : selectedRole === 'admin'
+                                            ? "Search by Admin ID (ADMIN), name, email, phone..."
+                                            : selectedRole === 'customer'
+                                                ? "Search by Customer ID (TD-001), name, email, phone..."
+                                                : "Search by ID (ADMIN, TD-001, TD-TECH-001, CMP-001), name, email, phone...")
                                 : companySubTab === 'tickets'
                                     ? "Search ticket #, brand, model, employee..."
                                     : companySubTab === 'devices'
@@ -1105,8 +1128,12 @@ export default function CustomerManagement() {
                             <table className="w-full min-w-[780px] border-collapse text-left">
                                 <thead>
                                     <tr className="border-b border-zinc-900 bg-zinc-950/40 text-[10px] font-mono font-semibold uppercase tracking-wider text-zinc-400">
-                                        <th className="p-4">Customer ID</th>
-                                        <th className="p-4">Customer Name</th>
+                                        <th className="p-4">
+                                            {selectedRole === 'technician' ? 'Technician ID' : selectedRole === 'company' ? 'Company ID' : selectedRole === 'admin' ? 'Admin ID' : selectedRole === 'customer' ? 'Customer ID' : 'Account ID'}
+                                        </th>
+                                        <th className="p-4">
+                                            {selectedRole === 'technician' ? 'Technician Name' : selectedRole === 'company' ? 'Company Name' : selectedRole === 'admin' ? 'Admin Name' : selectedRole === 'customer' ? 'Customer Name' : 'Account Name'}
+                                        </th>
                                         <th className="p-4">Contact Details</th>
                                         <th className="p-4 text-center">Account Status</th>
                                         <th className="p-4 text-center">Tickets Raised</th>
@@ -1119,7 +1146,15 @@ export default function CustomerManagement() {
                                     {customers.length === 0 ? (
                                         <tr>
                                             <td colSpan={8} className="p-8 text-center text-zinc-500 text-xs font-mono">
-                                                No customers found matching the query.
+                                                {selectedRole === 'technician'
+                                                    ? 'No technicians found matching the query.'
+                                                    : selectedRole === 'company'
+                                                        ? 'No companies found matching the query.'
+                                                        : selectedRole === 'admin'
+                                                            ? 'No admin accounts found matching the query.'
+                                                            : selectedRole === 'customer'
+                                                                ? 'No customers found matching the query.'
+                                                                : 'No accounts found matching the query.'}
                                             </td>
                                         </tr>
                                     ) : (
@@ -1131,7 +1166,7 @@ export default function CustomerManagement() {
                                             >
                                                 <td className="p-4 text-xs font-mono">
                                                     <span className="px-2 py-0.5 rounded font-bold bg-neon-cyan/10 text-neon-cyan border border-neon-cyan/30">
-                                                        {c.permanent_customer_id || `TD-${String(c.id).padStart(3, '0')}`}
+                                                        {getEntityId(c)}
                                                     </span>
                                                 </td>
                                                 <td className="p-4">
@@ -2372,9 +2407,9 @@ export default function CustomerManagement() {
             <SideDrawer
                 isOpen={Boolean(historyModal)}
                 onClose={() => setHistoryModal(null)}
-                title={historyModal?.customer?.permanent_customer_id
-                    ? `${historyModal.name} (${historyModal.customer.permanent_customer_id})`
-                    : `Customer Profile — ${historyModal?.name || ''}`
+                title={historyModal?.customer
+                    ? `${historyModal.name} (${getEntityId(historyModal.customer)})`
+                    : `Account Profile — ${historyModal?.name || ''}`
                 }
                 size="lg"
                 badge={!historyLoading && historyModal?.stats ? (
@@ -2411,11 +2446,11 @@ export default function CustomerManagement() {
                                                 {historyModal.customer?.name || historyModal.name}
                                             </h3>
                                             <span className="px-2 py-0.5 rounded font-mono font-bold text-xs bg-neon-cyan/15 text-neon-cyan border border-neon-cyan/30">
-                                                {historyModal.customer?.permanent_customer_id || `TD-${String(historyModal.id).padStart(3, '0')}`}
+                                                {getEntityId(historyModal.customer || historyModal)}
                                             </span>
                                         </div>
                                         <span className="text-[11px] font-mono text-zinc-500">
-                                            User ID #{historyModal.id} &bull; Role: <span className="text-zinc-300 font-semibold uppercase">{historyModal.customer?.role || 'customer'}</span>
+                                            {historyModal.customer?.role === 'admin' ? 'System Administrator' : `User ID #${historyModal.id}`} &bull; Role: <span className="text-zinc-300 font-semibold uppercase">{historyModal.customer?.role || 'customer'}</span>
                                         </span>
                                     </div>
                                 </div>

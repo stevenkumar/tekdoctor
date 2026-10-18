@@ -91,7 +91,7 @@ async function runTests() {
       headers: { 'Content-Type': 'application/json' }
     }, {
       email: adminEmail,
-      password: 'Admin@123',
+      password: 'VIVEKvKUMAR',
       recaptchaToken: 'test-token'
     });
 
@@ -357,7 +357,31 @@ async function runTests() {
         `Status: ${newLoginRes.statusCode}, msg: ${JSON.stringify(newLoginRes.data)}`
       );
 
-      const newToken = newLoginRes.data?.data?.token;
+      let newToken = newLoginRes.data?.data?.token;
+      if (newLoginRes.data?.data?.requiresOtp) {
+        // Complete Admin OTP verification step
+        const [otpRow] = await pool.query(
+          "SELECT id FROM auth_otps WHERE user_id = ? AND purpose = 'admin_login' AND is_used = 0 ORDER BY id DESC LIMIT 1",
+          [testAdminId]
+        );
+        const testCode = '777888';
+        const crypto = require('crypto');
+        const testHash = crypto.createHash('sha256').update(testCode).digest('hex');
+        await pool.query("UPDATE auth_otps SET otp_hash = ? WHERE id = ?", [testHash, otpRow[0].id]);
+
+        const verifyOtpRes = await request({
+          hostname: '127.0.0.1',
+          port: 5000,
+          path: '/api/auth/admin/verify-login-otp',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        }, {
+          pendingToken: newLoginRes.data?.data?.pendingToken,
+          otp: testCode
+        });
+        newToken = verifyOtpRes.data?.data?.token;
+      }
+
       const newAccessRes = await request({
         hostname: '127.0.0.1',
         port: 5000,

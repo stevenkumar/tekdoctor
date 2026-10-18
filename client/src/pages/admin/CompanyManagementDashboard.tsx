@@ -22,6 +22,14 @@ import ImagePreviewModal from '@/components/ImagePreviewModal';
 import PaymentReceiptModal from '@/components/PaymentReceiptModal';
 import { downloadPaymentBillPdf, printPaymentBill } from '@/utils/billGenerator';
 import { MESSAGE_MAX_LENGTH } from '@/config/constants';
+import {
+    validateRegisterField,
+    validateAllRegisterFields,
+    cleanPhoneInput,
+    cleanGstInput,
+    type CompanyRegisterFormData,
+    type CompanyRegisterFieldErrors
+} from '@/utils/companyValidation';
 
 interface CompanyStats {
     totalCompanies: number;
@@ -162,7 +170,7 @@ export default function CompanyManagementDashboard() {
     // In-Dashboard Company Registration State
     const [showRegisterModal, setShowRegisterModal] = useState(false);
     const [registering, setRegistering] = useState(false);
-    const [registerForm, setRegisterForm] = useState({
+    const [registerForm, setRegisterForm] = useState<CompanyRegisterFormData>({
         companyName: '',
         contactPerson: '',
         email: '',
@@ -172,6 +180,38 @@ export default function CompanyManagementDashboard() {
         gstNumber: '',
         websiteUrl: ''
     });
+    const [registerErrors, setRegisterErrors] = useState<CompanyRegisterFieldErrors>({});
+    const [registerTouched, setRegisterTouched] = useState<Record<string, boolean>>({});
+
+    const handleRegisterFieldChange = (field: keyof CompanyRegisterFormData, val: string) => {
+        setRegisterForm(f => ({ ...f, [field]: val }));
+        if (registerErrors[field]) {
+            const error = validateRegisterField(field, val);
+            setRegisterErrors(prev => {
+                const next = { ...prev };
+                if (error) {
+                    next[field] = error;
+                } else {
+                    delete next[field];
+                }
+                return next;
+            });
+        }
+    };
+
+    const handleRegisterFieldBlur = (field: keyof CompanyRegisterFormData) => {
+        setRegisterTouched(prev => ({ ...prev, [field]: true }));
+        const error = validateRegisterField(field, registerForm[field] || '');
+        setRegisterErrors(prev => {
+            const next = { ...prev };
+            if (error) {
+                next[field] = error;
+            } else {
+                delete next[field];
+            }
+            return next;
+        });
+    };
 
     // In-Dashboard Company Profile Edit State
     const [showEditModal, setShowEditModal] = useState(false);
@@ -196,25 +236,61 @@ export default function CompanyManagementDashboard() {
             gstNumber: '',
             websiteUrl: ''
         });
+        setRegisterErrors({});
+        setRegisterTouched({});
         setShowRegisterModal(true);
+    };
+
+    const handleCloseRegisterModal = () => {
+        setShowRegisterModal(false);
+        setRegisterErrors({});
+        setRegisterTouched({});
     };
 
     const handleRegisterSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!registerForm.companyName || !registerForm.email || !registerForm.password) {
-            toast.error('Company name, email, and password are required.');
+
+        // Mark all fields as touched for inline validation display
+        const allTouched: Record<string, boolean> = {
+            companyName: true,
+            email: true,
+            password: true,
+            contactPerson: true,
+            phone: true,
+            gstNumber: true,
+            websiteUrl: true,
+            address: true
+        };
+        setRegisterTouched(allTouched);
+
+        const formErrors = validateAllRegisterFields(registerForm);
+        if (Object.keys(formErrors).length > 0) {
+            setRegisterErrors(formErrors);
             return;
         }
+
         setRegistering(true);
         try {
             const res = await companyApi.registerCompany(registerForm);
             if (res.ok && res.data?.success) {
                 toast.success('Company registered successfully!');
-                setShowRegisterModal(false);
+                handleCloseRegisterModal();
                 fetchCompanies();
                 fetchStats();
             } else {
-                toast.error(res.error || res.data?.message || 'Registration failed');
+                const backendErrors = res.errors || (res.data as any)?.errors;
+                if (backendErrors && typeof backendErrors === 'object' && Object.keys(backendErrors).length > 0) {
+                    setRegisterErrors(prev => ({ ...prev, ...backendErrors }));
+                    setRegisterTouched(prev => {
+                        const next = { ...prev };
+                        Object.keys(backendErrors).forEach(k => {
+                            next[k] = true;
+                        });
+                        return next;
+                    });
+                } else {
+                    toast.error(res.error || res.data?.message || 'Registration failed');
+                }
             }
         } catch (err: any) {
             toast.error(err.message || 'Error registering company');
@@ -3866,112 +3942,238 @@ export default function CompanyManagementDashboard() {
                                     </div>
                                 </div>
                                 <button
-                                    onClick={() => setShowRegisterModal(false)}
+                                    onClick={handleCloseRegisterModal}
                                     className="p-1 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
                                 >
                                     <X size={16} />
                                 </button>
                             </div>
 
-                            <form onSubmit={handleRegisterSubmit} className="p-5 space-y-3.5 max-h-[75vh] overflow-y-auto">
+                            <form noValidate onSubmit={handleRegisterSubmit} className="p-5 space-y-3.5 max-h-[75vh] overflow-y-auto">
                                 <div>
-                                    <label className="text-xs font-medium text-zinc-300 block mb-1">Company Name *</label>
+                                    <label htmlFor="register-companyName" className="text-xs font-medium text-zinc-300 block mb-1">Company Name *</label>
                                     <input
+                                        id="register-companyName"
+                                        name="companyName"
                                         type="text"
-                                        required
+                                        maxLength={50}
                                         value={registerForm.companyName}
-                                        onChange={(e) => setRegisterForm(f => ({ ...f, companyName: e.target.value }))}
+                                        onChange={(e) => handleRegisterFieldChange('companyName', e.target.value)}
+                                        onBlur={() => handleRegisterFieldBlur('companyName')}
                                         placeholder="e.g. Acme Innovations Corp"
-                                        className="w-full px-3.5 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-neon-cyan"
+                                        aria-invalid={!!(registerTouched.companyName && registerErrors.companyName)}
+                                        aria-describedby={registerTouched.companyName && registerErrors.companyName ? "register-companyName-error" : undefined}
+                                        className={`w-full px-3.5 py-2 bg-zinc-900 border rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none transition-colors ${
+                                            registerTouched.companyName && registerErrors.companyName
+                                                ? 'border-red-500/80 ring-1 ring-red-500/20 focus:border-red-500'
+                                                : 'border-zinc-800 focus:border-neon-cyan'
+                                        }`}
                                     />
+                                    {registerTouched.companyName && registerErrors.companyName && (
+                                        <p id="register-companyName-error" role="alert" className="flex items-center gap-1 text-[11px] text-red-400 mt-1 font-sans">
+                                            <AlertCircle size={12} className="shrink-0" />
+                                            <span>{registerErrors.companyName}</span>
+                                        </p>
+                                    )}
                                 </div>
 
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                     <div>
-                                        <label className="text-xs font-medium text-zinc-300 block mb-1">Corporate Email *</label>
+                                        <label htmlFor="register-email" className="text-xs font-medium text-zinc-300 block mb-1">Corporate Email *</label>
                                         <input
+                                            id="register-email"
+                                            name="email"
                                             type="email"
-                                            required
+                                            maxLength={255}
                                             value={registerForm.email}
-                                            onChange={(e) => setRegisterForm(f => ({ ...f, email: e.target.value }))}
+                                            onChange={(e) => handleRegisterFieldChange('email', e.target.value)}
+                                            onBlur={() => handleRegisterFieldBlur('email')}
                                             placeholder="admin@company.com"
-                                            className="w-full px-3.5 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-neon-cyan"
+                                            aria-invalid={!!(registerTouched.email && registerErrors.email)}
+                                            aria-describedby={registerTouched.email && registerErrors.email ? "register-email-error" : undefined}
+                                            className={`w-full px-3.5 py-2 bg-zinc-900 border rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none transition-colors ${
+                                                registerTouched.email && registerErrors.email
+                                                    ? 'border-red-500/80 ring-1 ring-red-500/20 focus:border-red-500'
+                                                    : 'border-zinc-800 focus:border-neon-cyan'
+                                            }`}
                                         />
+                                        {registerTouched.email && registerErrors.email && (
+                                            <p id="register-email-error" role="alert" className="flex items-center gap-1 text-[11px] text-red-400 mt-1 font-sans">
+                                                <AlertCircle size={12} className="shrink-0" />
+                                                <span>{registerErrors.email}</span>
+                                            </p>
+                                        )}
                                     </div>
                                     <div>
-                                        <label className="text-xs font-medium text-zinc-300 block mb-1">Initial Password *</label>
+                                        <label htmlFor="register-password" className="text-xs font-medium text-zinc-300 block mb-1">Initial Password *</label>
                                         <input
+                                            id="register-password"
+                                            name="password"
                                             type="password"
-                                            required
+                                            maxLength={128}
                                             value={registerForm.password}
-                                            onChange={(e) => setRegisterForm(f => ({ ...f, password: e.target.value }))}
-                                            placeholder="Min 8 chars, 1 uppercase"
-                                            className="w-full px-3.5 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-neon-cyan"
+                                            onChange={(e) => handleRegisterFieldChange('password', e.target.value)}
+                                            onBlur={() => handleRegisterFieldBlur('password')}
+                                            placeholder="Min 8 chars, 1 uppercase, 1 number"
+                                            aria-invalid={!!(registerTouched.password && registerErrors.password)}
+                                            aria-describedby={registerTouched.password && registerErrors.password ? "register-password-error" : undefined}
+                                            className={`w-full px-3.5 py-2 bg-zinc-900 border rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none transition-colors ${
+                                                registerTouched.password && registerErrors.password
+                                                    ? 'border-red-500/80 ring-1 ring-red-500/20 focus:border-red-500'
+                                                    : 'border-zinc-800 focus:border-neon-cyan'
+                                            }`}
                                         />
+                                        {registerTouched.password && registerErrors.password && (
+                                            <p id="register-password-error" role="alert" className="flex items-center gap-1 text-[11px] text-red-400 mt-1 font-sans">
+                                                <AlertCircle size={12} className="shrink-0" />
+                                                <span>{registerErrors.password}</span>
+                                            </p>
+                                        )}
                                     </div>
                                 </div>
 
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                     <div>
-                                        <label className="text-xs font-medium text-zinc-300 block mb-1">Contact Person</label>
+                                        <label htmlFor="register-contactPerson" className="text-xs font-medium text-zinc-300 block mb-1">Contact Person</label>
                                         <input
+                                            id="register-contactPerson"
+                                            name="contactPerson"
                                             type="text"
+                                            maxLength={50}
                                             value={registerForm.contactPerson}
-                                            onChange={(e) => setRegisterForm(f => ({ ...f, contactPerson: e.target.value }))}
+                                            onChange={(e) => handleRegisterFieldChange('contactPerson', e.target.value)}
+                                            onBlur={() => handleRegisterFieldBlur('contactPerson')}
                                             placeholder="Primary contact name"
-                                            className="w-full px-3.5 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-neon-cyan"
+                                            aria-invalid={!!(registerTouched.contactPerson && registerErrors.contactPerson)}
+                                            aria-describedby={registerTouched.contactPerson && registerErrors.contactPerson ? "register-contactPerson-error" : undefined}
+                                            className={`w-full px-3.5 py-2 bg-zinc-900 border rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none transition-colors ${
+                                                registerTouched.contactPerson && registerErrors.contactPerson
+                                                    ? 'border-red-500/80 ring-1 ring-red-500/20 focus:border-red-500'
+                                                    : 'border-zinc-800 focus:border-neon-cyan'
+                                            }`}
                                         />
+                                        {registerTouched.contactPerson && registerErrors.contactPerson && (
+                                            <p id="register-contactPerson-error" role="alert" className="flex items-center gap-1 text-[11px] text-red-400 mt-1 font-sans">
+                                                <AlertCircle size={12} className="shrink-0" />
+                                                <span>{registerErrors.contactPerson}</span>
+                                            </p>
+                                        )}
                                     </div>
                                     <div>
-                                        <label className="text-xs font-medium text-zinc-300 block mb-1">Phone Number</label>
+                                        <label htmlFor="register-phone" className="text-xs font-medium text-zinc-300 block mb-1">Phone Number</label>
                                         <input
-                                            type="text"
+                                            id="register-phone"
+                                            name="phone"
+                                            type="tel"
+                                            inputMode="numeric"
+                                            maxLength={10}
                                             value={registerForm.phone}
-                                            onChange={(e) => setRegisterForm(f => ({ ...f, phone: e.target.value }))}
-                                            placeholder="10-digit mobile or phone"
-                                            className="w-full px-3.5 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-neon-cyan"
+                                            onChange={(e) => handleRegisterFieldChange('phone', cleanPhoneInput(e.target.value))}
+                                            onBlur={() => handleRegisterFieldBlur('phone')}
+                                            placeholder="10-digit mobile number"
+                                            aria-invalid={!!(registerTouched.phone && registerErrors.phone)}
+                                            aria-describedby={registerTouched.phone && registerErrors.phone ? "register-phone-error" : undefined}
+                                            className={`w-full px-3.5 py-2 bg-zinc-900 border rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none transition-colors font-mono ${
+                                                registerTouched.phone && registerErrors.phone
+                                                    ? 'border-red-500/80 ring-1 ring-red-500/20 focus:border-red-500'
+                                                    : 'border-zinc-800 focus:border-neon-cyan'
+                                            }`}
                                         />
+                                        {registerTouched.phone && registerErrors.phone && (
+                                            <p id="register-phone-error" role="alert" className="flex items-center gap-1 text-[11px] text-red-400 mt-1 font-sans">
+                                                <AlertCircle size={12} className="shrink-0" />
+                                                <span>{registerErrors.phone}</span>
+                                            </p>
+                                        )}
                                     </div>
                                 </div>
 
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                     <div>
-                                        <label className="text-xs font-medium text-zinc-300 block mb-1">GST Number (Optional)</label>
+                                        <label htmlFor="register-gstNumber" className="text-xs font-medium text-zinc-300 block mb-1">GST Number (Optional)</label>
                                         <input
+                                            id="register-gstNumber"
+                                            name="gstNumber"
                                             type="text"
+                                            maxLength={15}
                                             value={registerForm.gstNumber}
-                                            onChange={(e) => setRegisterForm(f => ({ ...f, gstNumber: e.target.value.toUpperCase() }))}
+                                            onChange={(e) => handleRegisterFieldChange('gstNumber', cleanGstInput(e.target.value))}
+                                            onBlur={() => handleRegisterFieldBlur('gstNumber')}
                                             placeholder="15-char GSTIN"
-                                            className="w-full px-3.5 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-neon-cyan uppercase font-mono"
+                                            aria-invalid={!!(registerTouched.gstNumber && registerErrors.gstNumber)}
+                                            aria-describedby={registerTouched.gstNumber && registerErrors.gstNumber ? "register-gstNumber-error" : undefined}
+                                            className={`w-full px-3.5 py-2 bg-zinc-900 border rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none transition-colors uppercase font-mono ${
+                                                registerTouched.gstNumber && registerErrors.gstNumber
+                                                    ? 'border-red-500/80 ring-1 ring-red-500/20 focus:border-red-500'
+                                                    : 'border-zinc-800 focus:border-neon-cyan'
+                                            }`}
                                         />
+                                        {registerTouched.gstNumber && registerErrors.gstNumber && (
+                                            <p id="register-gstNumber-error" role="alert" className="flex items-center gap-1 text-[11px] text-red-400 mt-1 font-sans">
+                                                <AlertCircle size={12} className="shrink-0" />
+                                                <span>{registerErrors.gstNumber}</span>
+                                            </p>
+                                        )}
                                     </div>
                                     <div>
-                                        <label className="text-xs font-medium text-zinc-300 block mb-1">Website URL (Optional)</label>
+                                        <label htmlFor="register-websiteUrl" className="text-xs font-medium text-zinc-300 block mb-1">Website URL (Optional)</label>
                                         <input
+                                            id="register-websiteUrl"
+                                            name="websiteUrl"
                                             type="text"
+                                            maxLength={255}
                                             value={registerForm.websiteUrl}
-                                            onChange={(e) => setRegisterForm(f => ({ ...f, websiteUrl: e.target.value }))}
+                                            onChange={(e) => handleRegisterFieldChange('websiteUrl', e.target.value.slice(0, 255))}
+                                            onBlur={() => handleRegisterFieldBlur('websiteUrl')}
                                             placeholder="https://company.com"
-                                            className="w-full px-3.5 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-neon-cyan"
+                                            aria-invalid={!!(registerTouched.websiteUrl && registerErrors.websiteUrl)}
+                                            aria-describedby={registerTouched.websiteUrl && registerErrors.websiteUrl ? "register-websiteUrl-error" : undefined}
+                                            className={`w-full px-3.5 py-2 bg-zinc-900 border rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none transition-colors ${
+                                                registerTouched.websiteUrl && registerErrors.websiteUrl
+                                                    ? 'border-red-500/80 ring-1 ring-red-500/20 focus:border-red-500'
+                                                    : 'border-zinc-800 focus:border-neon-cyan'
+                                            }`}
                                         />
+                                        {registerTouched.websiteUrl && registerErrors.websiteUrl && (
+                                            <p id="register-websiteUrl-error" role="alert" className="flex items-center gap-1 text-[11px] text-red-400 mt-1 font-sans">
+                                                <AlertCircle size={12} className="shrink-0" />
+                                                <span>{registerErrors.websiteUrl}</span>
+                                            </p>
+                                        )}
                                     </div>
                                 </div>
 
                                 <div>
-                                    <label className="text-xs font-medium text-zinc-300 block mb-1">Headquarters / Office Address</label>
+                                    <label htmlFor="register-address" className="text-xs font-medium text-zinc-300 block mb-1">Headquarters / Office Address</label>
                                     <textarea
+                                        id="register-address"
+                                        name="address"
                                         rows={2}
+                                        maxLength={250}
                                         value={registerForm.address}
-                                        onChange={(e) => setRegisterForm(f => ({ ...f, address: e.target.value }))}
-                                        placeholder="Corporate address..."
-                                        className="w-full px-3.5 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-neon-cyan resize-none"
+                                        onChange={(e) => handleRegisterFieldChange('address', e.target.value.slice(0, 250))}
+                                        onBlur={() => handleRegisterFieldBlur('address')}
+                                        placeholder="Corporate address (max 250 characters)..."
+                                        aria-invalid={!!(registerTouched.address && registerErrors.address)}
+                                        aria-describedby={registerTouched.address && registerErrors.address ? "register-address-error" : undefined}
+                                        className={`w-full px-3.5 py-2 bg-zinc-900 border rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none transition-colors resize-none ${
+                                            registerTouched.address && registerErrors.address
+                                                ? 'border-red-500/80 ring-1 ring-red-500/20 focus:border-red-500'
+                                                : 'border-zinc-800 focus:border-neon-cyan'
+                                        }`}
                                     />
+                                    {registerTouched.address && registerErrors.address && (
+                                        <p id="register-address-error" role="alert" className="flex items-center gap-1 text-[11px] text-red-400 mt-1 font-sans">
+                                            <AlertCircle size={12} className="shrink-0" />
+                                            <span>{registerErrors.address}</span>
+                                        </p>
+                                    )}
                                 </div>
 
                                 <div className="pt-3 flex items-center justify-end gap-2 border-t border-zinc-800">
                                     <button
                                         type="button"
-                                        onClick={() => setShowRegisterModal(false)}
+                                        onClick={handleCloseRegisterModal}
                                         className="px-4 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-300 text-xs font-medium transition-colors cursor-pointer"
                                     >
                                         Cancel

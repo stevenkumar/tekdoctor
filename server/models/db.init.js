@@ -594,6 +594,25 @@ const createBaseTables = async (connection) => {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
+  // 22. Auth OTPs Table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS auth_otps (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      otp_hash VARCHAR(255) NOT NULL,
+      purpose VARCHAR(50) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      attempts_count INT DEFAULT 0,
+      max_attempts INT DEFAULT 5,
+      resend_count INT DEFAULT 0,
+      last_sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      is_used BOOLEAN DEFAULT FALSE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      INDEX idx_otps_lookup (user_id, purpose, is_used, expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
 };
 
 // ─── Default Repair Protocol Homepage Content ────────────────────────────────
@@ -633,8 +652,8 @@ const getDefaultRepairProtocol = () => JSON.stringify({
 
 const seedDefaultDataIfEmpty = async (connection) => {
   // 1. Seed Admin Account if missing
-  const targetAdminEmail = config.initialAdmin?.email || (!config.isProduction ? 'admin@tekdoctor.in' : '');
-  const targetAdminPassword = config.initialAdmin?.password || (!config.isProduction ? 'Admin@123' : '');
+  const targetAdminEmail = config.initialAdmin?.email || (!config.isProduction ? 'vkvseri@gmail.com' : '');
+  const targetAdminPassword = config.initialAdmin?.password || (!config.isProduction ? 'VIVEKvKUMAR' : '');
 
   if (targetAdminEmail && targetAdminPassword) {
     const [existingTarget] = await connection.query('SELECT * FROM users WHERE email = ? LIMIT 1', [targetAdminEmail]);
@@ -754,6 +773,36 @@ const seedDefaultDataIfEmpty = async (connection) => {
       );
     }
     console.log('[Seed] Default homepage content seeded.');
+  }
+
+  // 4. Backfill missing authoritative IDs for existing technician & company records
+  try {
+    const [nullTechs] = await connection.query(
+      'SELECT id FROM users WHERE role = "technician" AND (technician_id IS NULL OR technician_id = "") ORDER BY id ASC'
+    );
+    if (nullTechs.length > 0) {
+      const { generateTechnicianId } = require('../utils/helpers');
+      for (const tech of nullTechs) {
+        const techId = await generateTechnicianId(connection);
+        await connection.query('UPDATE users SET technician_id = ? WHERE id = ?', [techId, tech.id]);
+        console.log(`[Seed] Backfilled technician_id '${techId}' for technician user #${tech.id}`);
+      }
+    }
+
+    const [nullComps] = await connection.query(
+      'SELECT id FROM users WHERE role = "company" AND (company_id IS NULL OR company_id = "") ORDER BY id ASC'
+    );
+    if (nullComps.length > 0) {
+      const { generateCompanyId } = require('../utils/helpers');
+      for (const comp of nullComps) {
+        const compId = await generateCompanyId(connection);
+        await connection.query('UPDATE users SET company_id = ? WHERE id = ?', [compId, comp.id]);
+        await connection.query('UPDATE company_profiles SET company_id = ? WHERE user_id = ? AND (company_id IS NULL OR company_id = "")', [compId, comp.id]);
+        console.log(`[Seed] Backfilled company_id '${compId}' for company user #${comp.id}`);
+      }
+    }
+  } catch (idBackfillErr) {
+    console.error('[Seed Error] Failed to backfill entity IDs:', idBackfillErr.message);
   }
 };
 
@@ -1173,6 +1222,69 @@ const MIGRATIONS = [
         }
       }
       console.log('[Migration:2026_09] Legacy plaintext secrets encrypted successfully.');
+    }
+  },
+  {
+    version: '2026_10_admin_auth_otps',
+    name: 'Admin Email OTP Authentication Table',
+    isSatisfied: async (connection) => {
+      return await checkTableExists(connection, 'auth_otps');
+    },
+    apply: async (connection) => {
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS auth_otps (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          otp_hash VARCHAR(255) NOT NULL,
+          purpose VARCHAR(50) NOT NULL,
+          expires_at DATETIME NOT NULL,
+          attempts_count INT DEFAULT 0,
+          max_attempts INT DEFAULT 5,
+          resend_count INT DEFAULT 0,
+          last_sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          is_used BOOLEAN DEFAULT FALSE,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          INDEX idx_otps_lookup (user_id, purpose, is_used, expires_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      `);
+      console.log('[Migration:2026_10] Created auth_otps table.');
+    }
+  },
+  {
+    version: '2026_10_admin_email_transition',
+    name: 'Transition Default Admin Email to vkvseri@gmail.com',
+    isSatisfied: async (connection) => {
+      const [rows] = await connection.query(
+        'SELECT id FROM users WHERE email = "vkvseri@gmail.com" AND role = "admin" LIMIT 1'
+      );
+      return rows.length > 0;
+    },
+    apply: async (connection) => {
+      const targetEmail = 'vkvseri@gmail.com';
+      const initialPassword = config.initialAdmin?.password || 'VIVEKvKUMAR';
+      const salt = await bcrypt.genSalt(12);
+      const hashedPassword = await bcrypt.hash(initialPassword, salt);
+
+      // Check if an existing admin account exists with another email
+      const [existingAdmins] = await connection.query(
+        'SELECT id, email FROM users WHERE role = "admin" LIMIT 1'
+      );
+
+      if (existingAdmins.length > 0) {
+        const oldAdmin = existingAdmins[0];
+        await connection.query(
+          'UPDATE users SET email = ?, password = ?, token_version = token_version + 1 WHERE id = ?',
+          [targetEmail, hashedPassword, oldAdmin.id]
+        );
+        console.log(`[Migration:2026_10] Safely updated existing admin (ID: ${oldAdmin.id}, old email: ${oldAdmin.email}) to ${targetEmail}`);
+      } else {
+        await connection.query(
+          'INSERT INTO users (name, email, password, role, is_active, token_version) VALUES (?, ?, ?, "admin", 1, 1)',
+          ['TekDoctor Admin', targetEmail, hashedPassword]
+        );
+        console.log(`[Migration:2026_10] Created initial admin account with email: ${targetEmail}`);
+      }
     }
   }
 ];

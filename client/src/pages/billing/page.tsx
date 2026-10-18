@@ -60,7 +60,7 @@ export default function BillingPage() {
     try {
       const current = invoices.find(inv => inv.id === invoiceId);
       if (!current) {
-        setError('Invoice not found.');
+        toast.error('Invoice not found.');
         return;
       }
       const payload: Partial<Invoice> = {
@@ -77,13 +77,13 @@ export default function BillingPage() {
       const res = await billingApi.updateInvoice(token, invoiceId, payload);
       if (res.ok) {
         setInvoices(prev => prev.map(inv => (inv.id === invoiceId ? { ...inv, status: newStatus } : inv)));
+        toast.success(`Invoice status updated to ${newStatus}.`);
       } else {
-        setError(res.error || 'Failed to update invoice status');
+        toast.error(res.error || 'Failed to update invoice status');
         throw new Error(res.error || 'Failed to update invoice status');
       }
     } catch (err) {
       console.error('Error updating status:', err);
-      setError(err instanceof Error ? err.message : 'Failed to update invoice status');
       throw err;
     }
   };
@@ -92,7 +92,7 @@ export default function BillingPage() {
     try {
       const current = invoices.find(inv => inv.id === invoiceId);
       if (!current) {
-        setError('Invoice not found.');
+        toast.error('Invoice not found.');
         return;
       }
       // Backend requires the full invoice payload (clientName, userId, amount,
@@ -109,14 +109,14 @@ export default function BillingPage() {
       };
       const res = await billingApi.updateInvoice(token, invoiceId, payload);
       if (res.ok) {
+        toast.success(`Invoice ${invoiceId} updated successfully.`);
         await fetchInvoices();
       } else {
-        setError(res.error || 'Failed to update invoice');
+        toast.error(res.error || 'Failed to update invoice');
         throw new Error(res.error || 'Failed to update invoice');
       }
     } catch (err) {
       console.error('Error updating invoice:', err);
-      setError(err instanceof Error ? err.message : 'Failed to update invoice');
       throw err;
     }
   };
@@ -142,7 +142,6 @@ export default function BillingPage() {
         toast.success(`Invoice ${invoiceId} finalized successfully.`);
         await fetchInvoices();
       } else {
-        setError(res.error || 'Failed to finalize invoice');
         toast.error(res.error || 'Failed to finalize invoice');
         throw new Error(res.error || 'Failed to finalize invoice');
       }

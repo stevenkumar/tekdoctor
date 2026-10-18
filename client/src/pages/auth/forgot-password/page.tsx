@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Mail, ArrowRight, Loader2, AlertCircle, CheckCircle2, ArrowLeft } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Mail, ArrowRight, Loader2, AlertCircle, CheckCircle2, ArrowLeft, KeyRound, ShieldCheck, RefreshCw } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
 import { useSiteContext } from '@/context/SiteContext';
 import { getMediaUrl } from '@/utils/media';
 import { authApi } from '@/services/api';
@@ -10,6 +10,7 @@ import { isValidEmail } from '@/config/constants';
 import { getRecaptchaToken } from '@/utils/recaptcha';
 
 export default function ForgotPassword() {
+  const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [touched, setTouched] = useState(false);
   const [fieldError, setFieldError] = useState('');
@@ -17,8 +18,33 @@ export default function ForgotPassword() {
   const [serverError, setServerError] = useState('');
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [shake, setShake] = useState(false);
+
+  // Admin OTP verification state
+  const [isOtpStep, setIsOtpStep] = useState(false);
+  const [targetEmail, setTargetEmail] = useState('');
+  const [maskedEmail, setMaskedEmail] = useState('');
+  const [otp, setOtp] = useState('');
+  const [otpError, setOtpError] = useState('');
+  const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [isResending, setIsResending] = useState(false);
+  const [resendMessage, setResendMessage] = useState('');
+
   const { flattenedSettings } = useSiteContext();
   const appName = flattenedSettings.company_name || 'TekDoctor';
+
+  // Resend cooldown timer
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    if (isOtpStep && resendCooldown > 0) {
+      timer = setInterval(() => {
+        setResendCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isOtpStep, resendCooldown]);
 
   const validate = (val: string) => {
     if (!val.trim()) return 'Email is required.';
@@ -62,6 +88,19 @@ export default function ForgotPassword() {
         throw new Error(result.error || 'Failed to request password reset.');
       }
 
+      // Check if Admin requires OTP verification
+      const responseData = result.data?.data || (result.data as any);
+      if (responseData?.requiresOtp) {
+        setTargetEmail(responseData.email || email.trim());
+        setMaskedEmail(responseData.maskedEmail || '');
+        setIsOtpStep(true);
+        setOtp('');
+        setOtpError('');
+        setResendCooldown(60);
+        return;
+      }
+
+      // Standard user flow (Customer, Technician, Company)
       setIsSubmitted(true);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to request password reset.';
@@ -69,6 +108,62 @@ export default function ForgotPassword() {
       triggerShake();
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setOtpError('');
+    const cleanOtp = otp.trim();
+
+    if (!cleanOtp || cleanOtp.length !== 6 || !/^\d{6}$/.test(cleanOtp)) {
+      setOtpError('Please enter a valid 6-digit verification code.');
+      triggerShake();
+      return;
+    }
+
+    setIsVerifyingOtp(true);
+    try {
+      const result = await authApi.verifyResetOtp(targetEmail, cleanOtp);
+
+      if (!result.ok || !result.data?.data?.resetToken) {
+        throw new Error(result.error || 'Invalid or expired verification code.');
+      }
+
+      const resetToken = result.data.data.resetToken;
+      // Navigate directly to Reset Password page with verified token
+      navigate(`${ROUTES.RESET_PASSWORD}?token=${encodeURIComponent(resetToken)}&email=${encodeURIComponent(targetEmail)}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Verification failed.';
+      setOtpError(msg);
+      triggerShake();
+    } finally {
+      setIsVerifyingOtp(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    if (resendCooldown > 0 || isResending) return;
+    setIsResending(true);
+    setOtpError('');
+    setResendMessage('');
+
+    try {
+      const recaptchaToken = await getRecaptchaToken('forgot_password');
+      const result = await authApi.forgotPassword(targetEmail, recaptchaToken);
+
+      if (!result.ok) {
+        throw new Error(result.error || 'Failed to resend code.');
+      }
+
+      setResendCooldown(60);
+      setResendMessage('A new verification code has been dispatched to your email.');
+      setTimeout(() => setResendMessage(''), 5000);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to resend code.';
+      setOtpError(msg);
+    } finally {
+      setIsResending(false);
     }
   };
 
@@ -101,12 +196,28 @@ export default function ForgotPassword() {
               </div>
             )}
           </Link>
-          <h1 className="text-3xl sm:text-4xl font-black uppercase tracking-tighter mb-2">
-            Reset <span className="text-neon-cyan">Password</span>
-          </h1>
-          <p className="text-zinc-500 font-mono text-[10px] sm:text-xs uppercase tracking-widest px-2">
-            {isSubmitted ? 'Instructions dispatched' : 'Recover your account access'}
-          </p>
+          {isOtpStep ? (
+            <>
+              <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-neon-cyan/10 border border-neon-cyan/30 text-neon-cyan mb-3 shadow-[0_0_20px_rgba(0,229,255,0.2)]">
+                <ShieldCheck size={26} />
+              </div>
+              <h1 className="text-3xl font-black uppercase tracking-tighter mb-2">
+                Admin <span className="text-neon-cyan">Verification</span>
+              </h1>
+              <p className="text-zinc-400 font-mono text-[10px] sm:text-xs max-w-xs">
+                Enter the 6-digit security code sent to <span className="text-neon-cyan font-semibold">{maskedEmail || targetEmail}</span>
+              </p>
+            </>
+          ) : (
+            <>
+              <h1 className="text-3xl sm:text-4xl font-black uppercase tracking-tighter mb-2">
+                Reset <span className="text-neon-cyan">Password</span>
+              </h1>
+              <p className="text-zinc-500 font-mono text-[10px] sm:text-xs uppercase tracking-widest px-2">
+                {isSubmitted ? 'Instructions dispatched' : 'Recover your account access'}
+              </p>
+            </>
+          )}
         </div>
 
         <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl sm:rounded-3xl p-6 sm:p-8 backdrop-blur-md shadow-[0_0_50px_rgba(0,0,0,0.5)]">
@@ -147,6 +258,92 @@ export default function ForgotPassword() {
                 </button>
               </div>
             </motion.div>
+          ) : isOtpStep ? (
+            <form onSubmit={handleVerifyOtp} className="space-y-6" noValidate>
+              <div>
+                <label htmlFor="admin-reset-otp-input" className="block text-xs font-mono text-zinc-400 uppercase tracking-wider mb-2 text-center">
+                  6-Digit Verification Code
+                </label>
+                <div className="relative group">
+                  <KeyRound className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 group-focus-within:text-neon-cyan transition-colors" size={18} />
+                  <input
+                    id="admin-reset-otp-input"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    autoFocus
+                    placeholder="••••••"
+                    className="w-full bg-zinc-900/50 border border-zinc-800 focus:border-neon-cyan/50 focus:ring-1 focus:ring-neon-cyan/20 rounded-xl py-4 pl-12 pr-4 font-mono text-center text-2xl tracking-[0.5em] font-bold text-white focus:outline-none transition-all placeholder:text-zinc-700"
+                    value={otp}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+                      setOtp(val);
+                      if (otpError) setOtpError('');
+                    }}
+                  />
+                </div>
+
+                {otpError && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex items-center gap-1.5 text-xs font-mono text-red-400 mt-2 px-1"
+                  >
+                    <AlertCircle size={14} className="shrink-0" />
+                    <span>{otpError}</span>
+                  </motion.div>
+                )}
+
+                {resendMessage && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex items-center gap-1.5 text-xs font-mono text-emerald-400 mt-2 px-1"
+                  >
+                    <CheckCircle2 size={14} className="shrink-0" />
+                    <span>{resendMessage}</span>
+                  </motion.div>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                disabled={isVerifyingOtp || otp.length !== 6}
+                className="w-full bg-neon-cyan text-black py-4 rounded-xl font-black uppercase tracking-widest text-sm hover:bg-white transition-all flex items-center justify-center gap-2 group disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-[0_0_20px_rgba(0,229,255,0.15)]"
+              >
+                {isVerifyingOtp ? (
+                  <Loader2 className="animate-spin" size={18} />
+                ) : (
+                  <>Verify Code & Continue <ArrowRight className="group-hover:translate-x-1 transition-transform" size={18} /></>
+                )}
+              </button>
+
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 text-xs font-mono">
+                <button
+                  type="button"
+                  onClick={handleResendOtp}
+                  disabled={resendCooldown > 0 || isResending}
+                  className="text-zinc-400 hover:text-neon-cyan transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 cursor-pointer"
+                >
+                  <RefreshCw size={13} className={isResending ? 'animate-spin text-neon-cyan' : ''} />
+                  {resendCooldown > 0 ? `Resend code in ${resendCooldown}s` : 'Resend verification code'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsOtpStep(false);
+                    setOtp('');
+                    setOtpError('');
+                    setServerError('');
+                  }}
+                  className="text-zinc-500 hover:text-white transition-colors flex items-center gap-1 cursor-pointer"
+                >
+                  <ArrowLeft size={13} /> Change Email
+                </button>
+              </div>
+            </form>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-5" noValidate>
               <div>

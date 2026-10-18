@@ -21,6 +21,7 @@ const testSuites = [
   'verify-technician-isolation.js',
   'verify-settings-security.js',
   'verify-stage2-dynamic-config.js',
+  'verify-company-registration-validation.js',
 
   // 2. Ticket & Operational Lifecycle
   'verify-ticket-system.js',
@@ -28,6 +29,7 @@ const testSuites = [
   'verify-estimate-sync.js',
   'verify-api-idempotency.js',
   'verify-repair-budget-input.js',
+  'verify-repair-form-validation.js',
 
   // 3. Billing, Payment & Authorization Matrix
   'verify-billing-sync.js',

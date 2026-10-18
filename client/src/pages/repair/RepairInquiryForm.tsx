@@ -12,12 +12,110 @@ import { repairApi, publicApi } from '@/services/api';
 import { useAuth } from '@/context/AuthContext';
 import { ROUTES } from '@/config/routes';
 import RepairStepProgress from '@/components/RepairStepProgress';
-import { INDIAN_STATES, STATE_CITIES, POPULAR_CITIES, validateName, validateProblemDescription, validatePostalCode } from '@/config/constants';
+import { INDIAN_STATES, STATES_DISTRICTS, validateName, validateProblemDescription, validatePostalCode } from '@/config/constants';
 import PhoneInput from '@/components/PhoneInput';
 import { validatePhoneNumber, parsePhoneNumber, DEFAULT_COUNTRY } from '@/utils/phoneUtils';
 import { getRecaptchaToken } from '@/utils/recaptcha';
 
 const DRAFT_ID_KEY = 'tekdoctor_repair_form_draft_id';
+
+const DISTRICT_ALIASES: Record<string, Record<string, string>> = {
+  'karnataka': {
+    'bangalore': 'Bengaluru Urban',
+    'bangalore urban': 'Bengaluru Urban',
+    'bangalore rural': 'Bengaluru Rural',
+    'bengaluru': 'Bengaluru Urban',
+    'mysore': 'Mysuru',
+    'mangalore': 'Dakshina Kannada',
+    'belgaum': 'Belagavi',
+    'gulbarga': 'Kalaburagi',
+    'bellary': 'Ballari',
+    'bijapur': 'Vijayapura',
+    'shimoga': 'Shivamogga',
+    'hubli': 'Dharwad',
+    'hubli-dharwad': 'Dharwad',
+  },
+  'maharashtra': {
+    'mumbai': 'Mumbai City',
+    'bombay': 'Mumbai City',
+    'aurangabad': 'Chhatrapati Sambhajinagar (Aurangabad)',
+    'osmanabad': 'Dharashiv (Osmanabad)',
+    'ahmednagar': 'Ahilyanagar (Ahmednagar)',
+  },
+  'delhi': {
+    'delhi': 'New Delhi',
+  },
+  'uttar pradesh': {
+    'noida': 'Gautam Buddha Nagar',
+    'greater noida': 'Gautam Buddha Nagar',
+    'allahabad': 'Prayagraj',
+    'faizabad': 'Ayodhya',
+  },
+  'haryana': {
+    'gurgaon': 'Gurugram',
+  },
+  'tamil nadu': {
+    'madras': 'Chennai',
+  },
+  'west bengal': {
+    'calcutta': 'Kolkata',
+  },
+  'kerala': {
+    'cochin': 'Ernakulam',
+    'kochi': 'Ernakulam',
+    'trivandrum': 'Thiruvananthapuram',
+  },
+  'odisha': {
+    'bhubaneswar': 'Khordha',
+    'bhubaneshwar': 'Khordha',
+  },
+  'puducherry': {
+    'pondicherry': 'Puducherry',
+  },
+};
+
+function matchDistrictForState(stateName: string, loc: { district?: string; city?: string; places?: string[] }): string {
+  if (!stateName) return '';
+  const districts = STATES_DISTRICTS[stateName] || [];
+  if (!districts.length) return '';
+
+  const candidates = [
+    loc.district,
+    loc.city,
+    ...(Array.isArray(loc.places) ? loc.places : [])
+  ].filter(Boolean) as string[];
+
+  // 1. Direct case-insensitive equality
+  for (const candidate of candidates) {
+    const cleanCand = candidate.trim().toLowerCase();
+    const exact = districts.find(d => d.toLowerCase() === cleanCand);
+    if (exact) return exact;
+  }
+
+  // 2. Alias dictionary
+  const stateAliases = DISTRICT_ALIASES[stateName.toLowerCase()];
+  if (stateAliases) {
+    for (const candidate of candidates) {
+      const cleanCand = candidate.trim().toLowerCase();
+      if (stateAliases[cleanCand] && districts.includes(stateAliases[cleanCand])) {
+        return stateAliases[cleanCand];
+      }
+    }
+  }
+
+  // 3. Substring match for compound district names
+  for (const candidate of candidates) {
+    const cleanCand = candidate.trim().toLowerCase().replace(/[().]/g, '');
+    for (const d of districts) {
+      const cleanD = d.toLowerCase().replace(/[().]/g, '');
+      if (cleanCand.length >= 4 && (cleanD.includes(cleanCand) || cleanCand.includes(cleanD))) {
+        return d;
+      }
+    }
+  }
+
+  return '';
+}
 
 const DEVICE_CATEGORIES = [
   'Laptop', 'Desktop PC', 'Printer', 'CCTV',
@@ -101,6 +199,7 @@ export default function RepairInquiryForm() {
     customProblemType: '',
     problemDescription: '',
     serviceType: 'Bring to Service Center',
+    customServiceType: '',
     priority: 'Standard',
     preferredContactMethod: ['WhatsApp'],
   });
@@ -170,21 +269,33 @@ export default function RepairInquiryForm() {
           setPincodePlaces(placesList);
 
           setFormData((prev) => {
-            const nextState = matchedState || loc.state || prev.state;
-            const chosenCity = loc.city || loc.district || placesList[0] || prev.city;
+            const nextState = matchedState || prev.state;
+            let matchedDistrict = '';
+            if (nextState) {
+              matchedDistrict = matchDistrictForState(nextState, {
+                district: loc.district,
+                city: loc.city,
+                places: foundPlaces
+              });
+            }
+
+            // Only populate district if it matches the verified dataset for that state;
+            // otherwise leave it empty so the user can cleanly select from that state's districts
+            const chosenCity = matchedDistrict || (prev.state === nextState ? prev.city : '');
             return {
               ...prev,
-              state: nextState,
+              state: nextState || prev.state,
               city: chosenCity,
             };
           });
 
-          // Clear city/state/zip errors if present
+          // Clear errors if valid
           setErrors((prev) => {
             const newErr = { ...prev };
-            delete newErr.city;
-            delete newErr.state;
             delete newErr.zipCode;
+            if (matchedState) {
+              delete newErr.state;
+            }
             return newErr;
           });
         }
@@ -325,11 +436,184 @@ export default function RepairInquiryForm() {
     }
   }, [formData]);
 
+  const validateSingleField = (name: string, value: any, currentForm: typeof formData): string | undefined => {
+    switch (name) {
+      case 'customerName': {
+        const trimmed = (value || '').trim();
+        if (!trimmed) return 'Customer name is required.';
+        if (trimmed.length < 2 || trimmed.length > 30) {
+          return 'Name must be between 2 and 30 characters.';
+        }
+        if (/\d/.test(trimmed)) {
+          return 'Name cannot contain numbers.';
+        }
+        if (!/^[a-zA-Z\s'-]+$/.test(trimmed)) {
+          return 'Name can only contain letters, spaces, hyphens, and apostrophes.';
+        }
+        return undefined;
+      }
+      case 'mobile': {
+        const str = (value || '').trim();
+        if (!str) return 'Mobile number is required.';
+        const { country, nationalNumber } = parsePhoneNumber(str, DEFAULT_COUNTRY);
+        if (country.code === 'IN') {
+          const digits = str.replace(/\D/g, '');
+          const nat = digits.startsWith('91') && digits.length === 12 ? digits.slice(2) : digits;
+          if (nat.length !== 10 || !/^[6-9]\d{9}$/.test(nat) || /^(\d)\1{9}$/.test(nat)) {
+            return 'Enter a valid 10-digit mobile number.';
+          }
+          return undefined;
+        } else {
+          const phoneRes = validatePhoneNumber(nationalNumber, country);
+          if (!phoneRes.isValid) {
+            return phoneRes.error || 'Please enter a valid phone number with country code.';
+          }
+          return undefined;
+        }
+      }
+      case 'email': {
+        const trimmed = (value || '').trim();
+        if (!trimmed) return 'Email address is required.';
+        if (trimmed.length > 255) return 'Email cannot exceed 255 characters.';
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmed)) {
+          return 'Please enter a valid email address.';
+        }
+        return undefined;
+      }
+      case 'address': {
+        const trimmed = (value || '').trim();
+        if (trimmed.length > 150) return 'Address cannot exceed 150 characters.';
+        return undefined;
+      }
+      case 'city': {
+        const trimmed = (value || '').trim();
+        if (!trimmed) return 'Please select a District / City.';
+        if (!currentForm.state) return 'Please select a State or Union Territory first.';
+        const stateDistricts = STATES_DISTRICTS[currentForm.state] || [];
+        if (stateDistricts.length > 0 && !stateDistricts.includes(trimmed)) {
+          return 'Please select a valid District / City from the list.';
+        }
+        return undefined;
+      }
+      case 'state': {
+        const trimmed = (value || '').trim();
+        if (!trimmed) return 'Please select a State or Union Territory.';
+        if (!STATES_DISTRICTS[trimmed]) return 'Please select a valid Indian State or Union Territory.';
+        return undefined;
+      }
+      case 'zipCode': {
+        const trimmed = (value || '').trim();
+        if (!trimmed) return undefined;
+        if (!/^[1-9][0-9]{5}$/.test(trimmed)) return 'Postal / PIN code must be a 6-digit number.';
+        return undefined;
+      }
+      case 'deviceCategory': {
+        if (!value || !(value as string).trim()) return 'Device category is required.';
+        return undefined;
+      }
+      case 'customDeviceCategory': {
+        if (currentForm.deviceCategory === 'Other') {
+          const trimmed = (value || '').trim();
+          if (!trimmed) return 'Please specify your device category.';
+          if (trimmed.length < 2 || trimmed.length > 100) return 'Device category must be between 2 and 100 characters.';
+          if (!/^[a-zA-Z0-9\s/&'()\-]+$/.test(trimmed)) return 'Device category contains invalid characters.';
+        }
+        return undefined;
+      }
+      case 'brand': {
+        const trimmed = (value || '').trim();
+        if (!trimmed) return 'Brand is required.';
+        if (trimmed.length > 30) return 'Brand cannot exceed 30 characters.';
+        return undefined;
+      }
+      case 'customBrand': {
+        if (currentForm.brand === 'Other') {
+          const trimmed = (value || '').trim();
+          if (!trimmed) return 'Please specify your custom brand.';
+          if (trimmed.length < 2 || trimmed.length > 30) return 'Brand name must be between 2 and 30 characters.';
+        }
+        return undefined;
+      }
+      case 'modelNumber': {
+        const trimmed = (value || '').trim();
+        if (!trimmed) return undefined;
+        if (trimmed.length > 30) return 'Model number cannot exceed 30 characters.';
+        if (!/^[a-zA-Z0-9\s\-._/]+$/.test(trimmed)) return 'Model number contains invalid characters.';
+        return undefined;
+      }
+      case 'serialNumber': {
+        const trimmed = (value || '').trim();
+        if (!trimmed) return undefined;
+        if (trimmed.length > 30) return 'Serial number cannot exceed 30 characters.';
+        if (!/^[a-zA-Z0-9\s\-._/]+$/.test(trimmed)) return 'Serial number contains invalid characters.';
+        return undefined;
+      }
+      case 'deviceConfiguration': {
+        const trimmed = (value || '').trim();
+        if (trimmed.length > 200) return 'Configuration cannot exceed 200 characters.';
+        return undefined;
+      }
+      case 'problemType': {
+        if (!value || !(value as string).trim()) return 'Problem type is required.';
+        return undefined;
+      }
+      case 'customProblemType': {
+        if (currentForm.problemType === 'Other') {
+          const trimmed = (value || '').trim();
+          if (!trimmed) return 'Please specify your custom problem type.';
+          if (trimmed.length < 2 || trimmed.length > 150) return 'Custom problem type cannot exceed 150 characters.';
+        }
+        return undefined;
+      }
+      case 'problemDescription': {
+        const trimmed = (value || '').trim();
+        if (!trimmed) return 'Problem description is required.';
+        if (trimmed.length < 10) return 'Problem description must be at least 10 characters.';
+        if (trimmed.length > 500) return 'Problem description cannot exceed 500 characters.';
+        return undefined;
+      }
+      case 'serviceType': {
+        if (!value || !(value as string).trim()) return 'Service type is required.';
+        return undefined;
+      }
+      case 'customServiceType': {
+        if (currentForm.serviceType === 'Other') {
+          const trimmed = (value || '').trim();
+          if (!trimmed) return 'Please specify the service when Other is selected.';
+          if (trimmed.length < 2 || trimmed.length > 150) return 'Custom service preference must be between 2 and 150 characters.';
+        }
+        return undefined;
+      }
+      default:
+        return undefined;
+    }
+  };
+
+  const handleBlur = (
+    e: React.FocusEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement> | { target: { name: string; value: any } }
+  ) => {
+    const { name, value } = e.target;
+    const err = validateSingleField(name, value, formData);
+    setErrors(prev => {
+      const next = { ...prev };
+      if (err) {
+        next[name] = err;
+      } else {
+        delete next[name];
+      }
+      return next;
+    });
+  };
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
 
     setFormData(prev => {
       const nextData = { ...prev, [name]: value };
+      if (name === 'state') {
+        // Clear previously selected district immediately on State change
+        nextData.city = '';
+      }
       if (name === 'deviceCategory') {
         nextData.problemType = '';
         nextData.customProblemType = '';
@@ -337,42 +621,45 @@ export default function RepairInquiryForm() {
           nextData.customDeviceCategory = '';
         }
       }
+      if (name === 'brand' && value !== 'Other') {
+        nextData.customBrand = '';
+      }
       if (name === 'problemType' && value !== 'Other') {
         nextData.customProblemType = '';
+      }
+      if (name === 'serviceType' && value !== 'Other') {
+        nextData.customServiceType = '';
       }
       return nextData;
     });
 
-    // Instant validation for field
-    if (name === 'customerName' && value.trim()) {
-      const nameVal = validateName(value, 'Full Name');
-      if (!nameVal.isValid) {
-        setErrors(prev => ({ ...prev, customerName: nameVal.error || 'Invalid name.' }));
-      } else if (errors.customerName) {
-        setErrors(prev => {
-          const next = { ...prev };
-          delete next.customerName;
-          return next;
-        });
-      }
-    } else if (name === 'zipCode' && value.trim()) {
-      const zipVal = validatePostalCode(value);
-      if (!zipVal.isValid) {
-        setErrors(prev => ({ ...prev, zipCode: zipVal.error || 'Invalid postal code.' }));
-      } else if (errors.zipCode) {
-        setErrors(prev => {
-          const next = { ...prev };
-          delete next.zipCode;
-          return next;
-        });
-      }
-    } else if (errors[name] || (name === 'deviceCategory' && value !== 'Other' && errors.customDeviceCategory)) {
+    if (name === 'state') {
       setErrors(prev => {
         const next = { ...prev };
-        delete next[name];
-        if (name === 'deviceCategory' && value !== 'Other') {
-          delete next.customDeviceCategory;
+        delete next.city;
+        if (value) {
+          delete next.state;
         }
+        return next;
+      });
+    }
+
+    // Instant validation for field if already showing an error
+    if (errors[name] || (name === 'deviceCategory' && errors.customDeviceCategory) || (name === 'brand' && errors.customBrand) || (name === 'problemType' && errors.customProblemType) || (name === 'serviceType' && errors.customServiceType)) {
+      const currentValues = { ...formData, [name]: value, ...(name === 'state' ? { city: '' } : {}) };
+      const err = validateSingleField(name, value, currentValues);
+      setErrors(prev => {
+        const next = { ...prev };
+        if (err) {
+          next[name] = err;
+        } else {
+          delete next[name];
+        }
+        if (name === 'state') delete next.city;
+        if (name === 'deviceCategory' && value !== 'Other') delete next.customDeviceCategory;
+        if (name === 'brand' && value !== 'Other') delete next.customBrand;
+        if (name === 'problemType' && value !== 'Other') delete next.customProblemType;
+        if (name === 'serviceType' && value !== 'Other') delete next.customServiceType;
         return next;
       });
     }
@@ -453,97 +740,70 @@ export default function RepairInquiryForm() {
 
   const validateForm = () => {
     const tempErrors: Record<string, string> = {};
+    const fieldOrder = [
+      'customerName',
+      'mobile',
+      'email',
+      'address',
+      'state',
+      'city',
+      'zipCode',
+      'deviceCategory',
+      'customDeviceCategory',
+      'brand',
+      'customBrand',
+      'modelNumber',
+      'serialNumber',
+      'deviceConfiguration',
+      'problemType',
+      'customProblemType',
+      'problemDescription',
+      'serviceType',
+      'customServiceType'
+    ];
 
-    // Customer Info
-    const nameVal = validateName(formData.customerName, 'Full Name');
-    if (!nameVal.isValid) {
-      tempErrors.customerName = nameVal.error || 'Full Name is required.';
-    }
+    let firstFieldKey: string | undefined = undefined;
 
-    if (!formData.mobile.trim()) {
-      tempErrors.mobile = 'Mobile Number is required.';
-    } else {
-      const { country, nationalNumber } = parsePhoneNumber(formData.mobile, DEFAULT_COUNTRY);
-      const phoneRes = validatePhoneNumber(nationalNumber, country);
-      if (!phoneRes.isValid) {
-        tempErrors.mobile = phoneRes.error || 'Please enter a valid phone number with country code.';
+    for (const key of fieldOrder) {
+      const err = validateSingleField(key, (formData as any)[key], formData);
+      if (err) {
+        tempErrors[key] = err;
+        if (!firstFieldKey) {
+          firstFieldKey = key;
+        }
       }
-    }
-
-    if (!formData.email.trim()) {
-      tempErrors.email = 'Email Address is required.';
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(formData.email.trim())) {
-      tempErrors.email = 'Invalid email address. Please enter a valid email address.';
-    }
-
-    if (formData.address && formData.address.length > 100) tempErrors.address = 'Address cannot exceed 100 characters.';
-
-    if (!formData.city.trim()) tempErrors.city = 'City / Location is required.';
-    else if (formData.city.length > 50) tempErrors.city = 'City cannot exceed 50 characters.';
-
-    if (formData.state && formData.state.length > 50) tempErrors.state = 'State cannot exceed 50 characters.';
-
-    if (formData.zipCode && !/^\d{6}$/.test(formData.zipCode)) tempErrors.zipCode = 'Postal / PIN code must be a 6-digit number.';
-
-    // Device Info
-    if (!formData.deviceCategory) {
-      tempErrors.deviceCategory = 'Device Category is required.';
-    } else if (formData.deviceCategory === 'Other') {
-      const trimmedCat = formData.customDeviceCategory ? formData.customDeviceCategory.trim() : '';
-      if (!trimmedCat) {
-        tempErrors.customDeviceCategory = 'Please specify your device category.';
-      } else if (trimmedCat.length < 2) {
-        tempErrors.customDeviceCategory = 'Device category must be at least 2 characters.';
-      } else if (trimmedCat.length > 100) {
-        tempErrors.customDeviceCategory = 'Device category cannot exceed 100 characters.';
-      } else if (!/^[a-zA-Z0-9\s/&'()\-]+$/.test(trimmedCat)) {
-        tempErrors.customDeviceCategory = 'Device category contains invalid characters.';
-      }
-    }
-
-    if (!formData.brand) {
-      tempErrors.brand = 'Brand is required.';
-    } else if (formData.brand === 'Other' && !formData.customBrand.trim()) {
-      tempErrors.customBrand = 'Custom Brand name is required.';
-    }
-
-    if (formData.serialNumber && formData.serialNumber.length > 50) tempErrors.serialNumber = 'Serial Number cannot exceed 50 characters.';
-    if (formData.modelNumber && formData.modelNumber.length > 50) tempErrors.modelNumber = 'Model Number cannot exceed 50 characters.';
-    if (formData.deviceConfiguration && formData.deviceConfiguration.length > 100) tempErrors.deviceConfiguration = 'Configuration cannot exceed 100 characters.';
-
-    // Issue Details
-    if (!formData.problemType) {
-      tempErrors.problemType = 'Problem Type is required.';
-    } else if (formData.problemType === 'Other' && !formData.customProblemType.trim()) {
-      tempErrors.customProblemType = 'Custom Problem Type is required.';
-    } else if (formData.problemType === 'Other' && formData.customProblemType.trim().length > 150) {
-      tempErrors.customProblemType = 'Custom Problem Type cannot exceed 150 characters.';
-    }
-    const descVal = validateProblemDescription(formData.problemDescription, 20, 500);
-    if (!descVal.isValid) {
-      tempErrors.problemDescription = descVal.error || 'Description must be between 20 and 500 characters long.';
     }
 
     setErrors(tempErrors);
-    return Object.keys(tempErrors).length === 0;
+    return {
+      isValid: Object.keys(tempErrors).length === 0,
+      firstFieldKey,
+      errors: tempErrors
+    };
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setSubmitError('');
 
-    if (!validateForm()) {
-      const firstError = Object.keys(errors)[0];
-      const element = document.getElementsByName(firstError)[0];
-      if (element) {
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const { isValid, firstFieldKey } = validateForm();
+    if (!isValid) {
+      if (firstFieldKey) {
+        const element = document.getElementsByName(firstFieldKey)[0] || document.getElementById(firstFieldKey);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          if ('focus' in element && typeof (element as any).focus === 'function') {
+            (element as any).focus();
+          }
+        }
       }
       return;
     }
 
     setIsSubmitting(true);
 
-    // Prepare Multipart FormData
+    // Prepare Multipart FormData with trimmed values
     const submissionData = new FormData();
     submissionData.append('clientSubmissionId', clientSubmissionId);
     Object.entries(formData).forEach(([key, value]) => {
@@ -561,8 +821,13 @@ export default function RepairInquiryForm() {
         if (formData.problemType === 'Other' && value) {
           submissionData.append(key, (value as string).trim());
         }
+      } else if (key === 'customServiceType') {
+        if (formData.serviceType === 'Other' && value) {
+          submissionData.append(key, (value as string).trim());
+        }
       } else {
-        submissionData.append(key, value as string);
+        const strVal = typeof value === 'string' ? value.trim() : (Array.isArray(value) ? value.join(', ') : String(value ?? ''));
+        submissionData.append(key, strVal);
       }
     });
 
@@ -619,13 +884,15 @@ export default function RepairInquiryForm() {
           const tNum = response.data?.ticketNumber || '';
           setSubmitTicketId(tNum);
           setDuplicateMessage(errMsg || `You have already submitted this repair request. Ticket ID: ${tNum}`);
-        } else if (errMsg.toLowerCase().includes('problem')) {
-          setErrors(prev => ({ ...prev, problemType: errMsg }));
+        } else if (response.errors && typeof response.errors === 'object' && Object.keys(response.errors).length > 0) {
+          setErrors(prev => ({ ...prev, ...response.errors }));
           setSubmitError(errMsg);
-        } else if (errMsg.toLowerCase().includes('phone') || errMsg.toLowerCase().includes('mobile')) {
-          setErrors(prev => ({ ...prev, mobile: errMsg }));
-        } else if (errMsg.toLowerCase().includes('email')) {
-          setErrors(prev => ({ ...prev, email: errMsg }));
+          const firstErrKey = Object.keys(response.errors)[0];
+          const el = document.getElementsByName(firstErrKey)[0] || document.getElementById(firstErrKey);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            if ('focus' in el && typeof (el as any).focus === 'function') (el as any).focus();
+          }
         } else {
           setSubmitError(errMsg);
         }
@@ -825,6 +1092,7 @@ export default function RepairInquiryForm() {
               customProblemType: '',
               problemDescription: '',
               serviceType: 'Bring to Service Center',
+              customServiceType: '',
               priority: 'Standard',
               preferredContactMethod: ['WhatsApp'],
             });
@@ -898,16 +1166,19 @@ export default function RepairInquiryForm() {
               <div className="relative">
                 <input
                   type="text"
-                  maxLength={50}
+                  maxLength={30}
                   id="customerName"
                   name="customerName"
                   value={formData.customerName}
                   onChange={handleInputChange}
+                  onBlur={handleBlur}
+                  aria-invalid={Boolean(errors.customerName)}
+                  aria-describedby={errors.customerName ? "customerName-error" : undefined}
                   placeholder="e.g. Vivek Kumar"
                   className={`w-full bg-zinc-950/60 border ${errors.customerName ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all`}
                 />
               </div>
-              {errors.customerName && <p className="text-red-400 text-xs mt-1 font-mono">{errors.customerName}</p>}
+              {errors.customerName && <p id="customerName-error" className="text-red-400 text-xs mt-1 font-mono">{errors.customerName}</p>}
             </div>
 
             <div>
@@ -927,6 +1198,7 @@ export default function RepairInquiryForm() {
                     });
                   }
                 }}
+                onBlur={() => handleBlur({ target: { name: 'mobile', value: formData.mobile } } as any)}
                 error={errors.mobile}
               />
             </div>
@@ -938,90 +1210,89 @@ export default function RepairInquiryForm() {
                   type="email"
                   id="email"
                   name="email"
+                  maxLength={255}
                   value={formData.email}
                   onChange={handleInputChange}
+                  onBlur={handleBlur}
+                  aria-invalid={Boolean(errors.email)}
+                  aria-describedby={errors.email ? "email-error" : undefined}
                   placeholder="e.g. you@example.com"
                   className={`w-full bg-zinc-950/60 border ${errors.email ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all`}
                 />
               </div>
-              {errors.email && <p className="text-red-400 text-xs mt-1 font-mono">{errors.email}</p>}
+              {errors.email && <p id="email-error" className="text-red-400 text-xs mt-1 font-mono">{errors.email}</p>}
             </div>
 
             <div>
-              <label htmlFor="address" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Address</label>
+              <label htmlFor="address" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Address (Optional)</label>
               <div className="relative">
                 <input
                   type="text"
-                  maxLength={100}
+                  maxLength={150}
                   id="address"
                   name="address"
                   value={formData.address}
                   onChange={handleInputChange}
-                  placeholder="Street / Landmark"
+                  onBlur={handleBlur}
+                  aria-invalid={Boolean(errors.address)}
+                  aria-describedby={errors.address ? "address-error" : undefined}
+                  placeholder="Street / Landmark (Max 150 chars)"
                   className={`w-full bg-zinc-950/60 border ${errors.address ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all`}
                 />
               </div>
-              {errors.address && <p className="text-red-400 text-xs mt-1 font-mono">{errors.address}</p>}
+              {errors.address && <p id="address-error" className="text-red-400 text-xs mt-1 font-mono">{errors.address}</p>}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-5 md:col-span-2">
               <div>
-                <label htmlFor="city" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">City *</label>
-                <div className="relative">
-                  <select
-                    id="city"
-                    name="city"
-                    value={formData.city}
-                    onChange={handleInputChange}
-                    className={`w-full bg-zinc-950/60 border ${errors.city ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all cursor-pointer`}
-                  >
-                    <option value="" className="bg-zinc-900 text-zinc-400">
-                      {loadingPincode ? 'Detecting city from PIN...' : 'Select City / Location'}
-                    </option>
-                    {formData.city && !pincodePlaces.includes(formData.city) && !(formData.state && STATE_CITIES[formData.state]?.includes(formData.city)) && !POPULAR_CITIES.includes(formData.city) && (
-                      <option value={formData.city} className="bg-zinc-900 text-white font-medium">{formData.city}</option>
-                    )}
-                    {pincodePlaces.length > 0 && (
-                      <optgroup label="📍 Detected for this PIN Code" className="bg-zinc-900 text-neon-cyan font-bold">
-                        {pincodePlaces.map((c) => (
-                          <option key={`pin-${c}`} value={c} className="bg-zinc-900 text-white font-normal">{c}</option>
-                        ))}
-                      </optgroup>
-                    )}
-                    {formData.state && STATE_CITIES[formData.state] && (
-                      <optgroup label={`🏙️ Major Cities in ${formData.state}`} className="bg-zinc-900 text-zinc-300 font-bold">
-                        {STATE_CITIES[formData.state].map((c) => (
-                          <option key={`st-${c}`} value={c} className="bg-zinc-900 text-white font-normal">{c}</option>
-                        ))}
-                      </optgroup>
-                    )}
-                    <optgroup label="Popular Cities" className="bg-zinc-900 text-zinc-400 font-bold">
-                      {POPULAR_CITIES.filter(c => !pincodePlaces.includes(c) && !(formData.state && STATE_CITIES[formData.state]?.includes(c))).map((c) => (
-                        <option key={`pop-${c}`} value={c} className="bg-zinc-900 text-white font-normal">{c}</option>
-                      ))}
-                    </optgroup>
-                  </select>
-                </div>
-                {errors.city && <p className="text-red-400 text-xs mt-1 font-mono">{errors.city}</p>}
-              </div>
-
-              <div>
-                <label htmlFor="state" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">State</label>
+                <label htmlFor="state" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">State / UT *</label>
                 <div className="relative">
                   <select
                     id="state"
                     name="state"
                     value={formData.state}
                     onChange={handleInputChange}
+                    onBlur={handleBlur}
+                    aria-invalid={Boolean(errors.state)}
+                    aria-describedby={errors.state ? "state-error" : undefined}
                     className={`w-full bg-zinc-950/60 border ${errors.state ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all cursor-pointer`}
                   >
-                    <option value="" className="bg-zinc-900 text-zinc-400">Select State</option>
+                    <option value="" className="bg-zinc-900 text-zinc-400">Select State / UT</option>
                     {INDIAN_STATES.map((st) => (
                       <option key={st} value={st} className="bg-zinc-900 text-white">{st}</option>
                     ))}
                   </select>
                 </div>
-                {errors.state && <p className="text-red-400 text-xs mt-1 font-mono">{errors.state}</p>}
+                {errors.state && <p id="state-error" className="text-red-400 text-xs mt-1 font-mono">{errors.state}</p>}
+              </div>
+
+              <div>
+                <label htmlFor="city" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">District / City *</label>
+                <div className="relative">
+                  <select
+                    id="city"
+                    name="city"
+                    disabled={!formData.state}
+                    value={formData.city}
+                    onChange={handleInputChange}
+                    onBlur={handleBlur}
+                    aria-invalid={Boolean(errors.city)}
+                    aria-describedby={errors.city ? "city-error" : undefined}
+                    className={`w-full bg-zinc-950/60 border ${
+                      errors.city ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'
+                    } rounded-lg p-3 text-sm text-white focus:outline-none transition-all ${
+                      !formData.state ? 'opacity-50 cursor-not-allowed text-zinc-500' : 'cursor-pointer'
+                    }`}
+                  >
+                    <option value="" className="bg-zinc-900 text-zinc-400">
+                      {!formData.state ? '← First select a State / UT' : 'Select District / City'}
+                    </option>
+                    {formData.state && (STATES_DISTRICTS[formData.state] || []).map((d) => (
+                      <option key={d} value={d} className="bg-zinc-900 text-white font-normal">{d}</option>
+                    ))}
+                  </select>
+                </div>
+                {errors.city && <p id="city-error" className="text-red-400 text-xs mt-1 font-mono">{errors.city}</p>}
               </div>
 
               <div>
@@ -1046,6 +1317,9 @@ export default function RepairInquiryForm() {
                         target: { name: e.target.name, value: onlyNums }
                       } as any);
                     }}
+                    onBlur={handleBlur}
+                    aria-invalid={Boolean(errors.zipCode)}
+                    aria-describedby={errors.zipCode ? "zipCode-error" : undefined}
                     placeholder="e.g. 560001 (6 digits)"
                     className={`w-full bg-zinc-950/60 border ${errors.zipCode ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all pr-9`}
                   />
@@ -1055,7 +1329,7 @@ export default function RepairInquiryForm() {
                     </div>
                   )}
                 </div>
-                {errors.zipCode && <p className="text-red-400 text-xs mt-1 font-mono">{errors.zipCode}</p>}
+                {errors.zipCode && <p id="zipCode-error" className="text-red-400 text-xs mt-1 font-mono">{errors.zipCode}</p>}
               </div>
             </div>
           </div>
@@ -1105,6 +1379,9 @@ export default function RepairInquiryForm() {
                 disabled={isRebookMode}
                 value={formData.deviceCategory}
                 onChange={handleInputChange}
+                onBlur={handleBlur}
+                aria-invalid={Boolean(errors.deviceCategory)}
+                aria-describedby={errors.deviceCategory ? "deviceCategory-error" : undefined}
                 className={`w-full bg-black border ${errors.deviceCategory ? 'border-red-500/50' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-zinc-300 focus:outline-none transition-all appearance-none ${
                   isRebookMode ? 'opacity-70 cursor-not-allowed bg-zinc-950/80 border-zinc-700' : 'cursor-pointer'
                 }`}
@@ -1114,7 +1391,7 @@ export default function RepairInquiryForm() {
                   <option key={category} value={category}>{category}</option>
                 ))}
               </select>
-              {errors.deviceCategory && <p className="text-red-400 text-xs mt-1 font-mono">{errors.deviceCategory}</p>}
+              {errors.deviceCategory && <p id="deviceCategory-error" className="text-red-400 text-xs mt-1 font-mono">{errors.deviceCategory}</p>}
             </div>
 
             {formData.deviceCategory === 'Other' && (
@@ -1131,13 +1408,16 @@ export default function RepairInquiryForm() {
                   maxLength={100}
                   value={formData.customDeviceCategory}
                   onChange={handleInputChange}
+                  onBlur={handleBlur}
+                  aria-invalid={Boolean(errors.customDeviceCategory)}
+                  aria-describedby={errors.customDeviceCategory ? "customDeviceCategory-error" : undefined}
                   placeholder="e.g. Medical Monitor, VR Headset, Smart Watch"
                   className={`w-full bg-black border ${errors.customDeviceCategory ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all ${
                     isRebookMode ? 'opacity-70 cursor-not-allowed bg-zinc-950/80 border-zinc-700' : ''
                   }`}
                 />
                 {errors.customDeviceCategory && (
-                  <p className="text-red-400 text-xs mt-1 font-mono">{errors.customDeviceCategory}</p>
+                  <p id="customDeviceCategory-error" className="text-red-400 text-xs mt-1 font-mono">{errors.customDeviceCategory}</p>
                 )}
               </div>
             )}
@@ -1150,6 +1430,9 @@ export default function RepairInquiryForm() {
                 disabled={isRebookMode}
                 value={formData.brand}
                 onChange={handleInputChange}
+                onBlur={handleBlur}
+                aria-invalid={Boolean(errors.brand)}
+                aria-describedby={errors.brand ? "brand-error" : undefined}
                 className={`w-full bg-black border ${errors.brand ? 'border-red-500/50' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-zinc-300 focus:outline-none transition-all appearance-none ${
                   isRebookMode ? 'opacity-70 cursor-not-allowed bg-zinc-950/80 border-zinc-700' : 'cursor-pointer'
                 }`}
@@ -1159,7 +1442,7 @@ export default function RepairInquiryForm() {
                   <option key={brand} value={brand}>{brand}</option>
                 ))}
               </select>
-              {errors.brand && <p className="text-red-400 text-xs mt-1 font-mono">{errors.brand}</p>}
+              {errors.brand && <p id="brand-error" className="text-red-400 text-xs mt-1 font-mono">{errors.brand}</p>}
             </div>
 
             {formData.brand === 'Other' && (
@@ -1169,16 +1452,20 @@ export default function RepairInquiryForm() {
                   type="text"
                   id="customBrand"
                   name="customBrand"
+                  maxLength={30}
                   disabled={isRebookMode}
                   readOnly={isRebookMode}
                   value={formData.customBrand}
                   onChange={handleInputChange}
-                  placeholder="e.g. Acer or MSI"
+                  onBlur={handleBlur}
+                  aria-invalid={Boolean(errors.customBrand)}
+                  aria-describedby={errors.customBrand ? "customBrand-error" : undefined}
+                  placeholder="e.g. Acer or MSI (Max 30 chars)"
                   className={`w-full bg-black border ${errors.customBrand ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all ${
                     isRebookMode ? 'opacity-70 cursor-not-allowed bg-zinc-950/80 border-zinc-700' : ''
                   }`}
                 />
-                {errors.customBrand && <p className="text-red-400 text-xs mt-1 font-mono">{errors.customBrand}</p>}
+                {errors.customBrand && <p id="customBrand-error" className="text-red-400 text-xs mt-1 font-mono">{errors.customBrand}</p>}
               </div>
             )}
 
@@ -1189,16 +1476,19 @@ export default function RepairInquiryForm() {
                 id="modelNumber"
                 disabled={isRebookMode}
                 readOnly={isRebookMode}
-                maxLength={50}
+                maxLength={30}
                 name="modelNumber"
                 value={formData.modelNumber}
                 onChange={handleInputChange}
-                placeholder="e.g. Latitude 5420"
+                onBlur={handleBlur}
+                aria-invalid={Boolean(errors.modelNumber)}
+                aria-describedby={errors.modelNumber ? "modelNumber-error" : undefined}
+                placeholder="e.g. Latitude 5420 (Max 30 chars)"
                 className={`w-full bg-black border ${errors.modelNumber ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all ${
                   isRebookMode ? 'opacity-70 cursor-not-allowed bg-zinc-950/80 border-zinc-700' : ''
                 }`}
               />
-              {errors.modelNumber && <p className="text-red-400 text-xs mt-1 font-mono">{errors.modelNumber}</p>}
+              {errors.modelNumber && <p id="modelNumber-error" className="text-red-400 text-xs mt-1 font-mono">{errors.modelNumber}</p>}
             </div>
 
             <div>
@@ -1208,16 +1498,19 @@ export default function RepairInquiryForm() {
                 id="serialNumber"
                 disabled={isRebookMode}
                 readOnly={isRebookMode}
-                maxLength={50}
+                maxLength={30}
                 name="serialNumber"
                 value={formData.serialNumber}
                 onChange={handleInputChange}
-                placeholder="e.g. SN123456789"
+                onBlur={handleBlur}
+                aria-invalid={Boolean(errors.serialNumber)}
+                aria-describedby={errors.serialNumber ? "serialNumber-error" : undefined}
+                placeholder="e.g. SN123456789 (Max 30 chars)"
                 className={`w-full bg-black border ${errors.serialNumber ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all ${
                   isRebookMode ? 'opacity-70 cursor-not-allowed bg-zinc-950/80 border-zinc-700' : ''
                 }`}
               />
-              {errors.serialNumber && <p className="text-red-400 text-xs mt-1 font-mono">{errors.serialNumber}</p>}
+              {errors.serialNumber && <p id="serialNumber-error" className="text-red-400 text-xs mt-1 font-mono">{errors.serialNumber}</p>}
             </div>
 
             <div className="md:col-span-2">
@@ -1227,16 +1520,19 @@ export default function RepairInquiryForm() {
                 name="deviceConfiguration"
                 disabled={isRebookMode}
                 readOnly={isRebookMode}
-                maxLength={100}
+                maxLength={200}
                 value={formData.deviceConfiguration}
                 onChange={handleInputChange}
+                onBlur={handleBlur}
+                aria-invalid={Boolean(errors.deviceConfiguration)}
+                aria-describedby={errors.deviceConfiguration ? "deviceConfiguration-error" : undefined}
                 rows={2}
-                placeholder="e.g. Core i7, 16GB RAM, 512GB SSD, Windows 11"
+                placeholder="e.g. Core i7, 16GB RAM, 512GB SSD, Windows 11 (Max 200 chars)"
                 className={`w-full bg-black border ${errors.deviceConfiguration ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all ${
                   isRebookMode ? 'opacity-70 cursor-not-allowed bg-zinc-950/80 border-zinc-700' : ''
                 }`}
               />
-              {errors.deviceConfiguration && <p className="text-red-400 text-xs mt-1 font-mono">{errors.deviceConfiguration}</p>}
+              {errors.deviceConfiguration && <p id="deviceConfiguration-error" className="text-red-400 text-xs mt-1 font-mono">{errors.deviceConfiguration}</p>}
             </div>
           </div>
         </div>
@@ -1261,6 +1557,9 @@ export default function RepairInquiryForm() {
                 name="problemType"
                 value={formData.problemType}
                 onChange={handleInputChange}
+                onBlur={handleBlur}
+                aria-invalid={Boolean(errors.problemType)}
+                aria-describedby={errors.problemType ? "problemType-error" : undefined}
                 className={`w-full bg-black border ${errors.problemType ? 'border-red-500/50' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-zinc-300 focus:outline-none transition-all appearance-none cursor-pointer`}
               >
                 <option value="">-- Select Problem Type --</option>
@@ -1272,7 +1571,7 @@ export default function RepairInquiryForm() {
                   <option disabled value="">Please select device category first</option>
                 )}
               </select>
-              {errors.problemType && <p className="text-red-400 text-xs mt-1 font-mono">{errors.problemType}</p>}
+              {errors.problemType && <p id="problemType-error" className="text-red-400 text-xs mt-1 font-mono">{errors.problemType}</p>}
             </div>
 
             {formData.problemType === 'Other' && (
@@ -1282,23 +1581,30 @@ export default function RepairInquiryForm() {
                   type="text"
                   id="customProblemType"
                   name="customProblemType"
+                  maxLength={150}
                   value={formData.customProblemType}
                   onChange={handleInputChange}
-                  placeholder="e.g. Broken screen hinge, motherboard short circuit"
+                  onBlur={handleBlur}
+                  aria-invalid={Boolean(errors.customProblemType)}
+                  aria-describedby={errors.customProblemType ? "customProblemType-error" : undefined}
+                  placeholder="e.g. Broken screen hinge, motherboard short circuit (Max 150 chars)"
                   className={`w-full bg-black border ${errors.customProblemType ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all`}
                 />
-                {errors.customProblemType && <p className="text-red-400 text-xs mt-1 font-mono">{errors.customProblemType}</p>}
+                {errors.customProblemType && <p id="customProblemType-error" className="text-red-400 text-xs mt-1 font-mono">{errors.customProblemType}</p>}
               </div>
             )}
 
             <div>
-              <label htmlFor="problemDescription" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Detailed Problem Description * (20 - 500 chars)</label>
+              <label htmlFor="problemDescription" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Detailed Problem Description * (10 - 500 chars)</label>
               <div className="relative">
                 <textarea
                   id="problemDescription"
                   name="problemDescription"
                   value={formData.problemDescription}
                   onChange={handleInputChange}
+                  onBlur={handleBlur}
+                  aria-invalid={Boolean(errors.problemDescription)}
+                  aria-describedby={errors.problemDescription ? "problemDescription-error" : undefined}
                   maxLength={500}
                   rows={4}
                   placeholder="Please describe the symptoms, when it started happening, and what troubleshooting steps you've already attempted..."
@@ -1308,14 +1614,13 @@ export default function RepairInquiryForm() {
                   {formData.problemDescription.length} / 500
                 </div>
               </div>
-              {errors.problemDescription && <p className="text-red-400 text-xs mt-1 font-mono">{errors.problemDescription}</p>}
               <div className="flex justify-between items-center mt-1">
                 {errors.problemDescription ? (
-                  <p className="text-red-400 text-xs font-mono">{errors.problemDescription}</p>
+                  <p id="problemDescription-error" className="text-red-400 text-xs font-mono">{errors.problemDescription}</p>
                 ) : (
                   <span className="text-zinc-500 text-[10px] uppercase tracking-wider">Describe symptoms clearly</span>
                 )}
-                <span className={`text-[10px] font-mono ${formData.problemDescription.trim().length >= 20 ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                <span className={`text-[10px] font-mono ${formData.problemDescription.trim().length >= 10 ? 'text-emerald-400' : 'text-zinc-500'}`}>
                   {formData.problemDescription.trim().length} chars
                 </span>
               </div>
@@ -1339,7 +1644,7 @@ export default function RepairInquiryForm() {
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-3">Service Type</label>
               <div className="flex flex-col gap-2.5">
-                {['Bring to Service Center', 'Home Visit', 'Pickup & Drop'].map(type => (
+                {['Bring to Service Center', 'Home Visit', 'Pickup & Drop', 'Other'].map(type => (
                   <label key={type} className="flex items-center gap-3 cursor-pointer group text-sm text-zinc-300">
                     <input
                       type="radio"
@@ -1353,6 +1658,7 @@ export default function RepairInquiryForm() {
                   </label>
                 ))}
               </div>
+              {errors.serviceType && <p id="serviceType-error" className="text-red-400 text-xs mt-1 font-mono">{errors.serviceType}</p>}
             </div>
 
             <div>
@@ -1398,6 +1704,30 @@ export default function RepairInquiryForm() {
                 ))}
               </div>
             </div>
+
+            {formData.serviceType === 'Other' && (
+              <div className="md:col-span-3 pt-2">
+                <label htmlFor="customServiceType" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">
+                  Please specify the service *
+                </label>
+                <input
+                  type="text"
+                  id="customServiceType"
+                  name="customServiceType"
+                  maxLength={150}
+                  value={formData.customServiceType}
+                  onChange={handleInputChange}
+                  onBlur={handleBlur}
+                  aria-invalid={Boolean(errors.customServiceType)}
+                  aria-describedby={errors.customServiceType ? "customServiceType-error" : undefined}
+                  placeholder="e.g. Remote Diagnostic, Annual Maintenance Contract, Bulk Enterprise Repair"
+                  className={`w-full bg-zinc-950/60 border ${errors.customServiceType ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all`}
+                />
+                {errors.customServiceType && (
+                  <p id="customServiceType-error" className="text-red-400 text-xs mt-1 font-mono">{errors.customServiceType}</p>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const config = require('../config/app.config');
 
@@ -455,12 +456,90 @@ const verifyInvoiceAuthorization = async (req, { ticket, invoice }, dbConnection
   };
 };
 
+/**
+ * Generate a cryptographically secure 6-digit numeric OTP code.
+ * @returns {string} 6-digit OTP code string
+ */
+const generateOtpCode = () => {
+  return crypto.randomInt(100000, 1000000).toString();
+};
+
+/**
+ * Hash an OTP code with SHA-256 for secure storage at rest.
+ * @param {string|number} otp - Plaintext OTP
+ * @returns {string} Hex-encoded SHA-256 hash
+ */
+const hashOtp = (otp) => {
+  return crypto.createHash('sha256').update(String(otp).trim()).digest('hex');
+};
+
+/**
+ * Timing-safe comparison of an input OTP against the stored SHA-256 hash.
+ * @param {string|number} inputOtp - User-supplied OTP
+ * @param {string} storedHash - Stored hex hash from DB
+ * @returns {boolean}
+ */
+const verifyOtpHash = (inputOtp, storedHash) => {
+  if (!inputOtp || !storedHash) return false;
+  const inputHash = crypto.createHash('sha256').update(String(inputOtp).trim()).digest('hex');
+  if (inputHash.length !== storedHash.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(inputHash), Buffer.from(storedHash));
+};
+
+/**
+ * Generate a short-lived restricted JWT for the pending MFA state.
+ * @param {Object} user - User object with { id, email, role }
+ * @returns {string} Signed pending JWT valid for 5 minutes
+ */
+const generatePendingAuthToken = (user) => {
+  return jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      type: 'admin_login_pending'
+    },
+    config.jwt.secret,
+    { expiresIn: '5m' }
+  );
+};
+
+/**
+ * Verify and decode a pending MFA token.
+ * @param {string} token - Signed pending JWT
+ * @returns {Object} Decoded payload
+ */
+const verifyPendingAuthToken = (token) => {
+  return jwt.verify(token, config.jwt.secret);
+};
+
+/**
+ * Partially mask an email address for safe display in UI/logs.
+ * Example: 'vkvseri@gmail.com' -> 'vk***@gmail.com'
+ * @param {string} email
+ * @returns {string} Masked email
+ */
+const maskEmail = (email) => {
+  if (!email || typeof email !== 'string' || !email.includes('@')) return email || '';
+  const [userPart, domainPart] = email.split('@');
+  if (userPart.length <= 2) {
+    return `${userPart.charAt(0)}*@${domainPart}`;
+  }
+  return `${userPart.slice(0, 2)}${'*'.repeat(Math.min(5, userPart.length - 2))}@${domainPart}`;
+};
+
 module.exports = {
   generateToken,
   generateEstimateActionToken,
   verifyEstimateAuthorization,
   canTechnicianAccessTicket,
   generateGuestInvoiceAccessToken,
-  verifyInvoiceAuthorization
+  verifyInvoiceAuthorization,
+  generateOtpCode,
+  hashOtp,
+  verifyOtpHash,
+  generatePendingAuthToken,
+  verifyPendingAuthToken,
+  maskEmail
 };
 

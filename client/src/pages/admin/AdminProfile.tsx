@@ -152,8 +152,8 @@ export default function AdminProfile() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
                 {/* Profile Info */}
-                <div className="border border-zinc-900 bg-zinc-900/20 rounded-xl sm:rounded-2xl overflow-hidden self-start">
-                    <div className="p-4 sm:p-5 border-b border-zinc-900 flex items-center gap-2">
+                <div className="border border-zinc-900 bg-zinc-900/20 rounded-xl sm:rounded-2xl self-start relative z-20">
+                    <div className="p-4 sm:p-5 border-b border-zinc-900 flex items-center gap-2 rounded-t-xl sm:rounded-t-2xl">
                         <UserCircle size={16} className="text-white" />
                         <span className="text-sm font-bold text-white uppercase tracking-wider font-outfit">Personal Info</span>
                     </div>
@@ -213,8 +213,8 @@ export default function AdminProfile() {
                 </div>
 
                 {/* Change Password */}
-                <div className="border border-zinc-900 bg-zinc-900/20 rounded-xl sm:rounded-2xl overflow-hidden self-start">
-                    <div className="p-4 sm:p-5 border-b border-zinc-900 flex items-center gap-2">
+                <div className="border border-zinc-900 bg-zinc-900/20 rounded-xl sm:rounded-2xl self-start relative z-10">
+                    <div className="p-4 sm:p-5 border-b border-zinc-900 flex items-center gap-2 rounded-t-xl sm:rounded-t-2xl">
                         <Shield size={16} className="text-neon-cyan" />
                         <span className="text-sm font-bold text-white uppercase tracking-wider font-outfit">Change Password</span>
                     </div>

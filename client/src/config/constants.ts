@@ -19,7 +19,7 @@ export const VALIDATION = {
   },
   REPAIR: {
     NAME_MIN_LENGTH: 2,
-    NAME_MAX_LENGTH: 50,
+    NAME_MAX_LENGTH: 30,
     DESCRIPTION_MIN_LENGTH: 10,
     DESCRIPTION_MAX_LENGTH: 500,
   },
@@ -73,8 +73,8 @@ export const validateEmail = (email: string): { isValid: boolean; error?: string
   if (!REGEX.EMAIL.test(trimmed)) {
     return { isValid: false, error: 'Invalid email address. Please enter a valid email format.' };
   }
-  if (trimmed.length > 100) {
-    return { isValid: false, error: 'Email address cannot exceed 100 characters.' };
+  if (trimmed.length > 255) {
+    return { isValid: false, error: 'Email address cannot exceed 255 characters.' };
   }
   return { isValid: true };
 };
@@ -120,22 +120,21 @@ export const DUPLICATE_ERRORS = {
 } as const;
 
 /**
- * Validates personal, corporate, or contact names (max 50 chars).
+ * Validates personal, corporate, or contact names (min 2, max 50 chars by default).
  * Rejects numbers and unusual special characters.
  */
 export const validateName = (
   name: string,
-  fieldLabel = 'Name'
+  fieldLabel = 'Name',
+  minLength = 2,
+  maxLength = 50
 ): { isValid: boolean; error?: string } => {
   const trimmed = (name || '').trim();
   if (!trimmed) {
     return { isValid: false, error: `${fieldLabel} is required.` };
   }
-  if (trimmed.length < 2) {
-    return { isValid: false, error: `${fieldLabel} must be at least 2 characters.` };
-  }
-  if (trimmed.length > 50) {
-    return { isValid: false, error: `${fieldLabel} cannot exceed 50 characters.` };
+  if (trimmed.length < minLength || trimmed.length > maxLength) {
+    return { isValid: false, error: `${fieldLabel} must be between ${minLength} and ${maxLength} characters.` };
   }
   if (/\d/.test(trimmed)) {
     return { isValid: false, error: `Invalid ${fieldLabel.toLowerCase()}. Names cannot contain numbers.` };
@@ -280,28 +279,9 @@ export const POPULAR_CITIES = [
   'Mysore', 'Gurgaon', 'Noida', 'Dehradun'
 ];
 
-export const STATE_CITIES: Record<string, string[]> = {
-  'Maharashtra': ['Mumbai', 'Pune', 'Nagpur', 'Thane', 'Nashik', 'Aurangabad', 'Solapur', 'Navi Mumbai', 'Kolhapur', 'Amravati'],
-  'Delhi': ['New Delhi', 'Central Delhi', 'North Delhi', 'South Delhi', 'East Delhi', 'West Delhi'],
-  'Karnataka': ['Bengaluru', 'Mysore', 'Hubli-Dharwad', 'Mangalore', 'Belgaum', 'Gulbarga', 'Davanagere', 'Bellary'],
-  'Tamil Nadu': ['Chennai', 'Coimbatore', 'Madurai', 'Tiruchirappalli', 'Salem', 'Tirunelveli', 'Erode', 'Vellore'],
-  'Telangana': ['Hyderabad', 'Warangal', 'Nizamabad', 'Karimnagar', 'Ramagundam', 'Khammam'],
-  'Gujarat': ['Ahmedabad', 'Surat', 'Vadodara', 'Rajkot', 'Bhavnagar', 'Jamnagar', 'Gandhinagar', 'Junagadh'],
-  'Uttar Pradesh': ['Lucknow', 'Kanpur', 'Ghaziabad', 'Agra', 'Meerut', 'Varanasi', 'Allahabad', 'Bareilly', 'Noida'],
-  'West Bengal': ['Kolkata', 'Howrah', 'Durgapur', 'Asansol', 'Siliguri', 'Kharagpur'],
-  'Rajasthan': ['Jaipur', 'Jodhpur', 'Kota', 'Bikaner', 'Ajmer', 'Udaipur', 'Bhilwara'],
-  'Madhya Pradesh': ['Indore', 'Bhopal', 'Jabalpur', 'Gwalior', 'Ujjain', 'Sagar'],
-  'Bihar': ['Patna', 'Gaya', 'Bhagalpur', 'Muzaffarpur', 'Purnia', 'Darbhanga'],
-  'Punjab': ['Ludhiana', 'Amritsar', 'Jalandhar', 'Patiala', 'Bathinda', 'Mohali'],
-  'Haryana': ['Gurgaon', 'Faridabad', 'Panipat', 'Ambala', 'Yamunanagar', 'Rohtak', 'Hisar', 'Karnal'],
-  'Kerala': ['Thiruvananthapuram', 'Kochi', 'Kozhikode', 'Kollam', 'Thrissur', 'Kannur', 'Alappuzha'],
-  'Andhra Pradesh': ['Visakhapatnam', 'Vijayawada', 'Guntur', 'Nellore', 'Kurnool', 'Rajahmundry', 'Tirupati'],
-  'Odisha': ['Bhubaneswar', 'Cuttack', 'Rourkela', 'Berhampur', 'Sambalpur', 'Puri'],
-  'Jharkhand': ['Ranchi', 'Jamshedpur', 'Dhanbad', 'Bokaro', 'Deoghar'],
-  'Assam': ['Guwahati', 'Silchar', 'Dibrugarh', 'Jorhat', 'Nagaon'],
-  'Chhattisgarh': ['Raipur', 'Bhilai', 'Bilaspur', 'Korba', 'Durg'],
-  'Uttarakhand': ['Dehradun', 'Haridwar', 'Roorkee', 'Haldwani', 'Rishikesh'],
-  'Goa': ['Panaji', 'Margao', 'Vasco da Gama', 'Mapusa'],
-  'Chandigarh': ['Chandigarh'],
-  'Himachal Pradesh': ['Shimla', 'Dharamshala', 'Mandi', 'Solan']
-};
+import indiaStatesDistricts from '@/data/indiaStatesDistricts.json';
+
+export const STATES_DISTRICTS: Record<string, string[]> = indiaStatesDistricts;
+
+// Backward-compatible alias for existing consumers
+export const STATE_CITIES: Record<string, string[]> = indiaStatesDistricts;

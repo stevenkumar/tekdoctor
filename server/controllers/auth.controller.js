@@ -6,8 +6,8 @@ const config = require('../config/app.config');
 const { formatResponse } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const { logActivity } = require('../utils/activity.logger');
-const { generateToken } = require('../utils/auth.helpers');
-const { sendCustomerNotification } = require('../utils/email.utils');
+const { generateToken, generateOtpCode, hashOtp, verifyOtpHash, generatePendingAuthToken, verifyPendingAuthToken, maskEmail } = require('../utils/auth.helpers');
+const { sendCustomerNotification, sendOtpEmail } = require('../utils/email.utils');
 const { verifyGoogleIdentity, getGoogleConfig } = require('../utils/google.auth');
 const { normalizePhoneNumber } = require('../middleware/validate.middleware');
 
@@ -126,6 +126,46 @@ const signin = async (req, res, next) => {
       return res.status(403).json(formatResponse(false, 'Your account has been deactivated. Please contact support.'));
     }
 
+    // Admin Role: Mandatory Email OTP Verification
+    if (user.role === 'admin') {
+      const otp = generateOtpCode();
+      const otpHash = hashOtp(otp);
+
+      // Invalidate any active, unused login OTPs for this admin
+      await connection.query(
+        'UPDATE auth_otps SET is_used = 1 WHERE user_id = ? AND purpose = "admin_login" AND is_used = 0',
+        [user.id]
+      );
+
+      // Insert new OTP record valid for 5 minutes
+      await connection.query(
+        'INSERT INTO auth_otps (user_id, otp_hash, purpose, expires_at, attempts_count, max_attempts, resend_count, last_sent_at) VALUES (?, ?, "admin_login", DATE_ADD(NOW(), INTERVAL 5 MINUTE), 0, 5, 0, NOW())',
+        [user.id, otpHash]
+      );
+
+      // Dispatch OTP to registered Admin email
+      await sendOtpEmail({
+        toEmail: user.email,
+        otpCode: otp,
+        purpose: 'login',
+        expiresInMinutes: 5
+      });
+
+      if (config.env === 'development' || config.env === 'test') {
+        logger.info(`[DEV ADMIN LOGIN OTP] User: ${user.email} | OTP: ${otp}`);
+      }
+
+      await logActivity(user.id, 'security', 'admin_otp_dispatched', 'users', user.id, { email: user.email }, req.ip);
+
+      const pendingToken = generatePendingAuthToken(user);
+
+      return res.status(200).json(formatResponse(true, 'A 6-digit verification code has been sent to your registered Admin email.', {
+        requiresOtp: true,
+        pendingToken,
+        maskedEmail: maskEmail(user.email)
+      }));
+    }
+
     const token = generateToken(user);
 
     logger.info(`User logged in: ${email} (ID: ${user.id})`);
@@ -155,6 +195,169 @@ const signin = async (req, res, next) => {
       avatar_url: avatarUrl,
       token
     }));
+
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
+ * Verify Admin Login OTP and complete authentication
+ * POST /api/auth/admin/verify-login-otp
+ */
+const verifyLoginOtp = async (req, res, next) => {
+  const { pendingToken, otp } = req.body;
+  let connection;
+
+  try {
+    let decoded;
+    try {
+      decoded = verifyPendingAuthToken(pendingToken);
+    } catch (err) {
+      return res.status(400).json(formatResponse(false, 'Invalid or expired login session. Please sign in again.'));
+    }
+
+    if (decoded.type !== 'admin_login_pending' || decoded.role !== 'admin') {
+      return res.status(400).json(formatResponse(false, 'Invalid login session token.'));
+    }
+
+    connection = await pool.getConnection();
+
+    const [otpRows] = await connection.query(
+      'SELECT id, otp_hash, attempts_count, max_attempts, expires_at FROM auth_otps WHERE user_id = ? AND purpose = "admin_login" AND is_used = 0 ORDER BY id DESC LIMIT 1',
+      [decoded.id]
+    );
+
+    if (otpRows.length === 0) {
+      return res.status(400).json(formatResponse(false, 'Verification code has expired or was not requested. Please log in again.'));
+    }
+
+    const otpRecord = otpRows[0];
+
+    // Check expiration
+    if (new Date() > new Date(otpRecord.expires_at)) {
+      await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+      return res.status(400).json(formatResponse(false, 'Verification code has expired. Please request a new code.'));
+    }
+
+    // Check attempt limits
+    if (otpRecord.attempts_count >= otpRecord.max_attempts) {
+      await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+      return res.status(400).json(formatResponse(false, 'Maximum verification attempts exceeded. Please log in again.'));
+    }
+
+    // Verify OTP timing-safe
+    const isValid = verifyOtpHash(otp, otpRecord.otp_hash);
+    if (!isValid) {
+      const newAttempts = otpRecord.attempts_count + 1;
+      const remaining = Math.max(0, otpRecord.max_attempts - newAttempts);
+      await connection.query('UPDATE auth_otps SET attempts_count = ? WHERE id = ?', [newAttempts, otpRecord.id]);
+
+      if (remaining === 0) {
+        await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+        return res.status(400).json(formatResponse(false, 'Too many incorrect attempts. This code has been invalidated. Please log in again.'));
+      }
+
+      return res.status(400).json(formatResponse(false, `Invalid verification code. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`));
+    }
+
+    // Mark OTP as used (single-use)
+    await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+
+    // Fetch user details for real JWT
+    const [userRows] = await connection.query('SELECT * FROM users WHERE id = ? AND is_active = 1 LIMIT 1', [decoded.id]);
+    if (userRows.length === 0) {
+      return res.status(400).json(formatResponse(false, 'Account not found or has been deactivated.'));
+    }
+
+    const user = userRows[0];
+    const token = generateToken(user);
+
+    logger.info(`Admin OTP verified successfully: ${user.email} (ID: ${user.id})`);
+    await logActivity(user.id, 'security', 'login', 'users', user.id, { name: user.name, role: user.role, mfa: 'email_otp' }, req.ip);
+
+    return res.status(200).json(formatResponse(true, 'Login successful.', {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      avatar_url: user.avatar_url,
+      token
+    }));
+
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
+ * Resend Admin Login OTP
+ * POST /api/auth/admin/resend-otp
+ */
+const resendOtp = async (req, res, next) => {
+  const { pendingToken } = req.body;
+  let connection;
+
+  try {
+    let decoded;
+    try {
+      decoded = verifyPendingAuthToken(pendingToken);
+    } catch (err) {
+      return res.status(400).json(formatResponse(false, 'Invalid or expired login session. Please sign in again.'));
+    }
+
+    connection = await pool.getConnection();
+
+    const [otpRows] = await connection.query(
+      'SELECT id, resend_count, last_sent_at FROM auth_otps WHERE user_id = ? AND purpose = "admin_login" AND is_used = 0 ORDER BY id DESC LIMIT 1',
+      [decoded.id]
+    );
+
+    if (otpRows.length === 0) {
+      return res.status(400).json(formatResponse(false, 'No active verification session found. Please sign in again.'));
+    }
+
+    const otpRecord = otpRows[0];
+
+    // Cooldown check: 60 seconds
+    const secondsSinceLastSent = (Date.now() - new Date(otpRecord.last_sent_at).getTime()) / 1000;
+    if (secondsSinceLastSent < 60) {
+      const waitSecs = Math.ceil(60 - secondsSinceLastSent);
+      return res.status(429).json(formatResponse(false, `Please wait ${waitSecs} second${waitSecs === 1 ? '' : 's'} before requesting a new code.`));
+    }
+
+    if (otpRecord.resend_count >= 3) {
+      return res.status(400).json(formatResponse(false, 'Maximum resend limit reached. Please sign in again.'));
+    }
+
+    // Invalidate prior OTP
+    await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+
+    // Generate new OTP
+    const newOtp = generateOtpCode();
+    const newOtpHash = hashOtp(newOtp);
+
+    await connection.query(
+      'INSERT INTO auth_otps (user_id, otp_hash, purpose, expires_at, attempts_count, max_attempts, resend_count, last_sent_at) VALUES (?, ?, "admin_login", DATE_ADD(NOW(), INTERVAL 5 MINUTE), 0, 5, ?, NOW())',
+      [decoded.id, newOtpHash, otpRecord.resend_count + 1]
+    );
+
+    await sendOtpEmail({
+      toEmail: decoded.email,
+      otpCode: newOtp,
+      purpose: 'login',
+      expiresInMinutes: 5
+    });
+
+    if (config.env === 'development' || config.env === 'test') {
+      logger.info(`[DEV ADMIN LOGIN OTP RESEND] User: ${decoded.email} | OTP: ${newOtp}`);
+    }
+
+    return res.status(200).json(formatResponse(true, 'A new verification code has been sent to your registered Admin email.'));
 
   } catch (error) {
     next(error);
@@ -295,7 +498,7 @@ const forgotPassword = async (req, res, next) => {
     connection = await pool.getConnection();
 
     const [rows] = await connection.query(
-      'SELECT id, name, email, token_version FROM users WHERE LOWER(email) = ? AND is_active = 1 LIMIT 1',
+      'SELECT id, name, email, role, token_version FROM users WHERE LOWER(email) = ? AND is_active = 1 LIMIT 1',
       [normalizedEmail]
     );
 
@@ -307,7 +510,42 @@ const forgotPassword = async (req, res, next) => {
 
     const user = rows[0];
 
-    // Generate short-lived reset token (1 hour)
+    // Admin Role: Dispatch OTP instead of direct URL link
+    if (user.role === 'admin') {
+      const otp = generateOtpCode();
+      const otpHash = hashOtp(otp);
+
+      await connection.query(
+        'UPDATE auth_otps SET is_used = 1 WHERE user_id = ? AND purpose = "admin_reset_password" AND is_used = 0',
+        [user.id]
+      );
+
+      await connection.query(
+        'INSERT INTO auth_otps (user_id, otp_hash, purpose, expires_at, attempts_count, max_attempts, resend_count, last_sent_at) VALUES (?, ?, "admin_reset_password", DATE_ADD(NOW(), INTERVAL 15 MINUTE), 0, 5, 0, NOW())',
+        [user.id, otpHash]
+      );
+
+      await sendOtpEmail({
+        toEmail: user.email,
+        otpCode: otp,
+        purpose: 'password_reset',
+        expiresInMinutes: 15
+      });
+
+      if (config.env === 'development' || config.env === 'test') {
+        logger.info(`[DEV ADMIN PASSWORD RESET OTP] User: ${user.email} | OTP: ${otp}`);
+      }
+
+      await logActivity(user.id, 'security', 'admin_reset_otp_dispatched', 'users', user.id, { email: user.email }, req.ip);
+
+      return res.status(200).json(formatResponse(true, 'If an active account exists with that email, a verification code has been sent.', {
+        requiresOtp: true,
+        email: user.email,
+        maskedEmail: maskEmail(user.email)
+      }));
+    }
+
+    // Generate short-lived reset token (1 hour) for non-admin roles
     const resetToken = jwt.sign(
       {
         id: user.id,
@@ -358,6 +596,93 @@ const forgotPassword = async (req, res, next) => {
     await logActivity(user.id, 'security', 'forgot_password_request', 'users', user.id, { email: user.email }, req.ip);
 
     return res.status(200).json(formatResponse(true, 'If an active account exists with that email, a password reset link has been sent.'));
+
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
+ * Verify OTP for Admin Password Reset and issue a secure short-lived reset token
+ * POST /api/auth/admin/verify-reset-otp
+ */
+const verifyResetOtp = async (req, res, next) => {
+  const { email, otp } = req.body;
+  let connection;
+
+  try {
+    const cleanEmail = email ? email.trim().toLowerCase() : '';
+    connection = await pool.getConnection();
+
+    const [users] = await connection.query(
+      'SELECT id, name, email, role, token_version, is_active FROM users WHERE LOWER(email) = ? AND role = "admin" AND is_active = 1 LIMIT 1',
+      [cleanEmail]
+    );
+
+    if (users.length === 0) {
+      return res.status(400).json(formatResponse(false, 'Invalid verification code or email address.'));
+    }
+
+    const user = users[0];
+
+    const [otpRows] = await connection.query(
+      'SELECT id, otp_hash, attempts_count, max_attempts, expires_at FROM auth_otps WHERE user_id = ? AND purpose = "admin_reset_password" AND is_used = 0 ORDER BY id DESC LIMIT 1',
+      [user.id]
+    );
+
+    if (otpRows.length === 0) {
+      return res.status(400).json(formatResponse(false, 'Verification code has expired or was not requested. Please request a new code.'));
+    }
+
+    const otpRecord = otpRows[0];
+
+    if (new Date() > new Date(otpRecord.expires_at)) {
+      await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+      return res.status(400).json(formatResponse(false, 'Verification code has expired. Please request a new code.'));
+    }
+
+    if (otpRecord.attempts_count >= otpRecord.max_attempts) {
+      await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+      return res.status(400).json(formatResponse(false, 'Maximum verification attempts exceeded. Please request a new code.'));
+    }
+
+    const isValid = verifyOtpHash(otp, otpRecord.otp_hash);
+    if (!isValid) {
+      const newAttempts = otpRecord.attempts_count + 1;
+      const remaining = Math.max(0, otpRecord.max_attempts - newAttempts);
+      await connection.query('UPDATE auth_otps SET attempts_count = ? WHERE id = ?', [newAttempts, otpRecord.id]);
+
+      if (remaining === 0) {
+        await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+        return res.status(400).json(formatResponse(false, 'Too many incorrect attempts. This code has been invalidated. Please request a new code.'));
+      }
+
+      return res.status(400).json(formatResponse(false, `Invalid verification code. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`));
+    }
+
+    // Invalidate OTP on success
+    await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+
+    // Issue short-lived reset token (10 minutes)
+    const resetToken = jwt.sign(
+      {
+        id: user.id,
+        email: user.email,
+        type: 'password_reset',
+        token_version: user.token_version || 1
+      },
+      config.jwt.secret,
+      { expiresIn: '10m' }
+    );
+
+    logger.info(`Admin password reset OTP verified for: ${user.email} (ID: ${user.id})`);
+    await logActivity(user.id, 'security', 'admin_reset_otp_verified', 'users', user.id, { email: user.email }, req.ip);
+
+    return res.status(200).json(formatResponse(true, 'Code verified successfully. Please enter your new password.', {
+      resetToken
+    }));
 
   } catch (error) {
     next(error);
@@ -577,6 +902,42 @@ const googleSignIn = async (req, res, next) => {
         user.avatar_url = avatarUrl;
       }
 
+      if (user.role === 'admin') {
+        const otp = generateOtpCode();
+        const otpHash = hashOtp(otp);
+
+        await connection.query(
+          'UPDATE auth_otps SET is_used = 1 WHERE user_id = ? AND purpose = "admin_login" AND is_used = 0',
+          [user.id]
+        );
+
+        await connection.query(
+          'INSERT INTO auth_otps (user_id, otp_hash, purpose, expires_at, attempts_count, max_attempts, resend_count, last_sent_at) VALUES (?, ?, "admin_login", DATE_ADD(NOW(), INTERVAL 5 MINUTE), 0, 5, 0, NOW())',
+          [user.id, otpHash]
+        );
+
+        await sendOtpEmail({
+          toEmail: user.email,
+          otpCode: otp,
+          purpose: 'login',
+          expiresInMinutes: 5
+        });
+
+        if (config.env === 'development' || config.env === 'test') {
+          logger.info(`[DEV ADMIN GOOGLE LOGIN OTP] User: ${user.email} | OTP: ${otp}`);
+        }
+
+        await logActivity(user.id, 'security', 'admin_otp_dispatched', 'users', user.id, { email: user.email, authProvider: 'google' }, req.ip);
+
+        const pendingToken = generatePendingAuthToken(user);
+
+        return res.status(200).json(formatResponse(true, 'Google authentication verified. A 6-digit verification code has been sent to your registered Admin email.', {
+          requiresOtp: true,
+          pendingToken,
+          maskedEmail: maskEmail(user.email)
+        }));
+      }
+
       const token = generateToken(user);
       logger.info(`Google Sign-In successful for linked user: ${email} (ID: ${user.id}, Role: ${user.role})`);
       await logActivity(user.id, 'security', 'google_login', 'users', user.id, { email, role: user.role }, req.ip);
@@ -625,6 +986,42 @@ const googleSignIn = async (req, res, next) => {
       // Refresh user object for token & response
       user.google_id = googleId;
       if (!user.avatar_url && avatarUrl) user.avatar_url = avatarUrl;
+
+      if (user.role === 'admin') {
+        const otp = generateOtpCode();
+        const otpHash = hashOtp(otp);
+
+        await connection.query(
+          'UPDATE auth_otps SET is_used = 1 WHERE user_id = ? AND purpose = "admin_login" AND is_used = 0',
+          [user.id]
+        );
+
+        await connection.query(
+          'INSERT INTO auth_otps (user_id, otp_hash, purpose, expires_at, attempts_count, max_attempts, resend_count, last_sent_at) VALUES (?, ?, "admin_login", DATE_ADD(NOW(), INTERVAL 5 MINUTE), 0, 5, 0, NOW())',
+          [user.id, otpHash]
+        );
+
+        await sendOtpEmail({
+          toEmail: user.email,
+          otpCode: otp,
+          purpose: 'login',
+          expiresInMinutes: 5
+        });
+
+        if (config.env === 'development' || config.env === 'test') {
+          logger.info(`[DEV ADMIN GOOGLE LOGIN OTP] User: ${user.email} | OTP: ${otp}`);
+        }
+
+        await logActivity(user.id, 'security', 'admin_otp_dispatched', 'users', user.id, { email: user.email, authProvider: 'google' }, req.ip);
+
+        const pendingToken = generatePendingAuthToken(user);
+
+        return res.status(200).json(formatResponse(true, 'Google authentication verified. A 6-digit verification code has been sent to your registered Admin email.', {
+          requiresOtp: true,
+          pendingToken,
+          maskedEmail: maskEmail(user.email)
+        }));
+      }
 
       const token = generateToken(user);
       logger.info(`Existing account ${email} securely linked to Google ID ${googleId} (ID: ${user.id}, Role: ${user.role})`);
@@ -695,8 +1092,11 @@ const googleSignIn = async (req, res, next) => {
 module.exports = {
   signup,
   signin,
+  verifyLoginOtp,
+  resendOtp,
   setPassword,
   forgotPassword,
+  verifyResetOtp,
   resetPassword,
   googleSignIn,
   logout,

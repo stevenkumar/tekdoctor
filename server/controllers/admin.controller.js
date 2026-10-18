@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const { pool } = require('../config/db.config');
-const { formatResponse } = require('../utils/helpers');
+const { formatResponse, generateCompanyId } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const nodemailer = require('nodemailer');
 const { sendCustomerNotification, resolveTlsConfig } = require('../utils/email.utils');
@@ -239,15 +239,15 @@ const getCustomers = async (req, res, next) => {
         const role = req.query.role || '';
         const status = req.query.status || '';
 
-        // Strictly exclude corporate/B2B company accounts (role = 'company') from individual customer lists
-        let baseQuery = ' FROM users u WHERE u.role != "company"';
+        const allowedRoles = ['customer', 'technician', 'admin', 'company'];
+        let baseQuery = ' FROM users u LEFT JOIN company_profiles cp ON u.id = cp.user_id WHERE 1=1';
         const params = [];
 
-        if (role && ['customer', 'technician', 'admin'].includes(role)) {
+        if (role && allowedRoles.includes(role)) {
             baseQuery += ' AND u.role = ?';
             params.push(role);
-        } else {
-            baseQuery += ' AND u.role IN ("customer", "technician", "admin")';
+        } else if (!role) {
+            baseQuery += ' AND u.role IN ("customer", "technician", "admin", "company")';
         }
 
         if (status === 'active') {
@@ -259,13 +259,67 @@ const getCustomers = async (req, res, next) => {
         if (search) {
             const rawSearch = search.trim();
             const customerIdMatch = rawSearch.match(/^TD-?0*(\d+)$/i);
-            const rawId = customerIdMatch ? parseInt(customerIdMatch[1], 10) : (!isNaN(rawSearch) && rawSearch.length <= 6 && !rawSearch.startsWith('+') ? parseInt(rawSearch, 10) : null);
-            if (rawId) {
-                baseQuery += ' AND (u.id = ? OR u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR u.id IN (SELECT user_id FROM service_requests WHERE ticket_number LIKE ?))';
-                params.push(rawId, `%${rawSearch}%`, `%${rawSearch}%`, `%${rawSearch}%`, `%${rawSearch}%`);
+            const isSearchAdmin = rawSearch.toUpperCase() === 'ADMIN';
+            const rawCustId = customerIdMatch ? parseInt(customerIdMatch[1], 10) : null;
+            const rawId = !rawCustId && !isNaN(rawSearch) && rawSearch.length <= 6 && !rawSearch.startsWith('+') ? parseInt(rawSearch, 10) : null;
+            const searchPattern = `%${rawSearch}%`;
+
+            if (isSearchAdmin) {
+                baseQuery += ` AND (
+                    u.role = 'admin'
+                    OR u.name LIKE ? 
+                    OR cp.company_name LIKE ?
+                    OR u.email LIKE ? 
+                    OR u.phone LIKE ? 
+                    OR cp.phone_number LIKE ?
+                )`;
+                params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
+            } else if (rawCustId) {
+                // TD-XXX customer ID format search - MUST ONLY match customers, NEVER admin
+                baseQuery += ` AND (
+                    (u.role = 'customer' AND u.id = ?)
+                    OR u.name LIKE ? 
+                    OR cp.company_name LIKE ?
+                    OR u.email LIKE ? 
+                    OR u.phone LIKE ? 
+                    OR cp.phone_number LIKE ?
+                    OR u.technician_id LIKE ? 
+                    OR cp.company_id LIKE ? 
+                    OR u.company_id LIKE ? 
+                    OR u.id IN (SELECT user_id FROM service_requests WHERE ticket_number LIKE ?)
+                    OR (u.role = 'company' AND u.id IN (SELECT company_id FROM service_requests WHERE ticket_number LIKE ?))
+                )`;
+                params.push(rawCustId, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
+            } else if (rawId) {
+                // Numeric ID search - do not expose or match admin via internal primary key
+                baseQuery += ` AND (
+                    (u.role != 'admin' AND u.id = ?)
+                    OR u.name LIKE ? 
+                    OR cp.company_name LIKE ?
+                    OR u.email LIKE ? 
+                    OR u.phone LIKE ? 
+                    OR cp.phone_number LIKE ?
+                    OR u.technician_id LIKE ? 
+                    OR cp.company_id LIKE ? 
+                    OR u.company_id LIKE ? 
+                    OR u.id IN (SELECT user_id FROM service_requests WHERE ticket_number LIKE ?)
+                    OR (u.role = 'company' AND u.id IN (SELECT company_id FROM service_requests WHERE ticket_number LIKE ?))
+                )`;
+                params.push(rawId, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
             } else {
-                baseQuery += ' AND (u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR u.id IN (SELECT user_id FROM service_requests WHERE ticket_number LIKE ?))';
-                params.push(`%${rawSearch}%`, `%${rawSearch}%`, `%${rawSearch}%`, `%${rawSearch}%`);
+                baseQuery += ` AND (
+                    u.name LIKE ? 
+                    OR cp.company_name LIKE ?
+                    OR u.email LIKE ? 
+                    OR u.phone LIKE ? 
+                    OR cp.phone_number LIKE ?
+                    OR u.technician_id LIKE ? 
+                    OR cp.company_id LIKE ? 
+                    OR u.company_id LIKE ? 
+                    OR u.id IN (SELECT user_id FROM service_requests WHERE ticket_number LIKE ?)
+                    OR (u.role = 'company' AND u.id IN (SELECT company_id FROM service_requests WHERE ticket_number LIKE ?))
+                )`;
+                params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
             }
         }
 
@@ -289,15 +343,26 @@ const getCustomers = async (req, res, next) => {
         const [[{ total }]] = await connection.query(`SELECT COUNT(*) as total${baseQuery}`, params);
         const [rows] = await connection.query(
             `SELECT u.id, 
-                    CONCAT('TD-', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0')) as permanent_customer_id,
-                    u.name, u.email, u.phone, u.role, u.is_active, 
+                    u.technician_id,
+                    COALESCE(cp.company_id, u.company_id) AS company_id,
+                    CASE 
+                        WHEN u.role = 'admin' THEN 'ADMIN'
+                        WHEN u.role = 'technician' THEN u.technician_id
+                        WHEN u.role = 'company' THEN COALESCE(cp.company_id, u.company_id)
+                        ELSE CONCAT('TD-', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0'))
+                    END as permanent_customer_id,
+                    COALESCE(cp.company_name, u.name) as name, 
+                    u.email, 
+                    COALESCE(u.phone, cp.phone_number) as phone, 
+                    u.role, 
+                    u.is_active, 
                     u.deactivated_at, u.deactivated_by, u.deactivation_reason, 
                     u.created_at, u.updated_at,
-                    (SELECT COUNT(*) FROM service_requests sr WHERE sr.user_id = u.id) as total_tickets,
-                    (SELECT COUNT(*) FROM service_requests sr WHERE sr.user_id = u.id AND sr.status IN ('pending', 'in_progress')) as active_tickets,
-                    (SELECT COUNT(*) FROM service_requests sr WHERE sr.user_id = u.id AND sr.status IN ('completed', 'delivered')) as completed_tickets,
-                    (SELECT COUNT(*) FROM service_requests sr WHERE sr.user_id = u.id AND sr.status = 'cancelled') as cancelled_tickets,
-                    (SELECT MAX(sr.created_at) FROM service_requests sr WHERE sr.user_id = u.id) as last_ticket_date
+                    (SELECT COUNT(*) FROM service_requests sr WHERE sr.user_id = u.id OR (u.role = 'company' AND sr.company_id = u.id)) as total_tickets,
+                    (SELECT COUNT(*) FROM service_requests sr WHERE (sr.user_id = u.id OR (u.role = 'company' AND sr.company_id = u.id)) AND sr.status IN ('pending', 'in_progress')) as active_tickets,
+                    (SELECT COUNT(*) FROM service_requests sr WHERE (sr.user_id = u.id OR (u.role = 'company' AND sr.company_id = u.id)) AND sr.status IN ('completed', 'delivered')) as completed_tickets,
+                    (SELECT COUNT(*) FROM service_requests sr WHERE (sr.user_id = u.id OR (u.role = 'company' AND sr.company_id = u.id)) AND sr.status = 'cancelled') as cancelled_tickets,
+                    (SELECT MAX(sr.created_at) FROM service_requests sr WHERE sr.user_id = u.id OR (u.role = 'company' AND sr.company_id = u.id)) as last_ticket_date
              ${baseQuery} 
              ORDER BY u.created_at DESC LIMIT ? OFFSET ?`,
             [...params, limit, offset]
@@ -321,7 +386,7 @@ const updateCustomer = async (req, res, next) => {
         const { id } = req.params;
         const { name, email, phone } = req.body;
 
-        const [existing] = await connection.query('SELECT id FROM users WHERE id = ? AND role IN ("customer", "technician", "admin") LIMIT 1', [id]);
+        const [existing] = await connection.query('SELECT id, role FROM users WHERE id = ? AND role IN ("customer", "technician", "admin", "company") LIMIT 1', [id]);
         if (existing.length === 0) return res.status(404).json(formatResponse(false, 'Customer not found.'));
 
         const cleanEmail = email ? email.trim().toLowerCase() : '';
@@ -346,6 +411,9 @@ const updateCustomer = async (req, res, next) => {
         }
 
         await connection.query('UPDATE users SET name = ?, email = ?, phone = ? WHERE id = ?', [name, cleanEmail, cleanPhone, id]);
+        if (existing[0].role === 'company') {
+            await connection.query('UPDATE company_profiles SET company_name = ?, phone_number = ? WHERE user_id = ?', [name, cleanPhone || '', id]);
+        }
         await logActivity(connection, req.user.id, 'update_customer', 'user', id, { name, email: cleanEmail }, req.ip);
 
         return res.json(formatResponse(true, 'Customer updated successfully.'));
@@ -415,9 +483,22 @@ const getCustomerHistory = async (req, res, next) => {
 
         // Fetch customer profile
         const [customerRows] = await connection.query(
-            `SELECT id, CONCAT('TD-', LPAD(id, GREATEST(3, CHAR_LENGTH(id)), '0')) as permanent_customer_id,
-                    name, email, phone, role, is_active, created_at, updated_at
-             FROM users WHERE id = ? LIMIT 1`,
+            `SELECT u.id, 
+                    u.technician_id,
+                    COALESCE(cp.company_id, u.company_id) AS company_id,
+                    CASE 
+                        WHEN u.role = 'admin' THEN 'ADMIN'
+                        WHEN u.role = 'technician' THEN u.technician_id
+                        WHEN u.role = 'company' THEN COALESCE(cp.company_id, u.company_id)
+                        ELSE CONCAT('TD-', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0'))
+                    END as permanent_customer_id,
+                    COALESCE(cp.company_name, u.name) as name, 
+                    u.email, 
+                    COALESCE(u.phone, cp.phone_number) as phone, 
+                    u.role, u.is_active, u.created_at, u.updated_at
+             FROM users u
+             LEFT JOIN company_profiles cp ON u.id = cp.user_id
+             WHERE u.id = ? LIMIT 1`,
             [id]
         );
         const customer = customerRows[0] || null;
@@ -440,9 +521,9 @@ const getCustomerHistory = async (req, res, next) => {
              FROM service_requests sr
              LEFT JOIN users t ON sr.assigned_technician_id = t.id
              LEFT JOIN invoices inv ON inv.ticket_id = sr.id
-             WHERE sr.user_id = ? 
+             WHERE sr.user_id = ? OR sr.company_id = ?
              ORDER BY sr.created_at DESC`,
-            [id]
+            [id, id]
         );
 
         const stats = {
@@ -558,23 +639,24 @@ const createCompany = async (req, res, next) => {
         }
 
         const hashedPassword = await bcrypt.hash(password, 12);
+        const companyCode = await generateCompanyId(connection);
 
         // Insert Company User
         const [userResult] = await connection.query(
-            'INSERT INTO users (name, email, password, phone, role) VALUES (?, ?, ?, ?, "company")',
-            [name, cleanEmail, hashedPassword, cleanPhone]
+            'INSERT INTO users (name, email, password, phone, role, company_id) VALUES (?, ?, ?, ?, "company", ?)',
+            [name, cleanEmail, hashedPassword, cleanPhone, companyCode]
         );
-        const companyId = userResult.insertId;
+        const companyUserId = userResult.insertId;
 
         // Scaffold company_profiles to prevent auth crashes
         await connection.query(
-            'INSERT INTO company_profiles (user_id, company_name, contact_person, phone_number, address) VALUES (?, ?, ?, ?, ?)',
-            [companyId, name, 'Admin Created', cleanPhone || '', '']
+            'INSERT INTO company_profiles (user_id, company_id, company_name, contact_person, phone_number, address) VALUES (?, ?, ?, ?, ?, ?)',
+            [companyUserId, companyCode, name, 'Admin Created', cleanPhone || '', '']
         );
 
-        await logActivity(connection, req.user.id, 'create_company', 'user', companyId, { name, email: cleanEmail }, req.ip);
+        await logActivity(connection, req.user.id, 'create_company', 'user', companyUserId, { name, email: cleanEmail }, req.ip);
 
-        return res.status(201).json(formatResponse(true, 'Company account created successfully.', { id: companyId }));
+        return res.status(201).json(formatResponse(true, 'Company account created successfully.', { id: companyUserId }));
     } catch (error) {
         next(error);
     } finally {

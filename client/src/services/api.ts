@@ -137,7 +137,13 @@ export interface NotificationItem {
 export interface AuthApiResponse {
   success: boolean;
   message: string;
-  data: UserResponseData & { token: string };
+  data: Partial<UserResponseData> & {
+    token?: string;
+    requiresOtp?: boolean;
+    pendingToken?: string;
+    maskedEmail?: string;
+    email?: string;
+  };
 }
 
 export const authApi = {
@@ -233,7 +239,7 @@ export const authApi = {
     });
   },
 
-  forgotPassword: async (email: string, recaptchaToken?: string | null): Promise<SafeResponse<{ success: boolean; message: string }>> => {
+  forgotPassword: async (email: string, recaptchaToken?: string | null): Promise<SafeResponse<{ success: boolean; message: string; data?: { requiresOtp?: boolean; email?: string; maskedEmail?: string }; requiresOtp?: boolean; email?: string; maskedEmail?: string }>> => {
     let token = recaptchaToken;
     if (!token) {
       try {
@@ -251,10 +257,34 @@ export const authApi = {
     if (token) {
       body.recaptchaToken = token;
     }
-    return safeFetch<{ success: boolean; message: string }>(getUrl('/api/auth/forgot-password'), {
+    return safeFetch<{ success: boolean; message: string; data?: { requiresOtp?: boolean; email?: string; maskedEmail?: string }; requiresOtp?: boolean; email?: string; maskedEmail?: string }>(getUrl('/api/auth/forgot-password'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+    });
+  },
+
+  verifyLoginOtp: async (pendingToken: string, otp: string): Promise<SafeResponse<AuthApiResponse>> => {
+    return safeFetch<AuthApiResponse>(getUrl('/api/auth/admin/verify-login-otp'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pendingToken, otp }),
+    });
+  },
+
+  resendLoginOtp: async (pendingToken: string): Promise<SafeResponse<{ success: boolean; message: string }>> => {
+    return safeFetch<{ success: boolean; message: string }>(getUrl('/api/auth/admin/resend-otp'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pendingToken }),
+    });
+  },
+
+  verifyResetOtp: async (email: string, otp: string): Promise<SafeResponse<{ success: boolean; message: string; data?: { resetToken: string } }>> => {
+    return safeFetch<{ success: boolean; message: string; data?: { resetToken: string } }>(getUrl('/api/auth/admin/verify-reset-otp'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, otp }),
     });
   },
 
@@ -1464,6 +1494,8 @@ export interface DashboardStats {
 export interface Customer {
   id: number;
   permanent_customer_id?: string;
+  technician_id?: string | null;
+  company_id?: string | null;
   name: string;
   email: string;
   phone: string | null;

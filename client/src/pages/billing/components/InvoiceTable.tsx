@@ -6,6 +6,7 @@ import { Link } from 'react-router-dom';
 import PaymentStatusBadge from './PaymentStatusBadge';
 import InvoiceShareMenu from './InvoiceShareMenu';
 import { PaymentReceiptModal } from '@/components/PaymentReceiptModal';
+import { ConfirmModal } from '@/components/ConfirmModal';
 
 interface LineItem {
   id?: number | string;
@@ -84,6 +85,7 @@ export default function InvoiceTable({
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
   const [finalizingInvoiceId, setFinalizingInvoiceId] = useState<string | null>(null);
   const [previewInvoiceId, setPreviewInvoiceId] = useState<string | null>(null);
+  const [invoiceToFinalize, setInvoiceToFinalize] = useState<{ id: string; targetId: string } | null>(null);
 
   // Expanded form states
   const [editInvoiceNumber, setEditInvoiceNumber] = useState('');
@@ -260,14 +262,14 @@ export default function InvoiceTable({
     setEditLineItems(editLineItems.filter((_, idx) => idx !== index));
   };
 
-  const handleFullInvoiceUpdate = async (invoiceId: string) => {
+  const handleFullInvoiceUpdate = async (invoiceId: string): Promise<boolean> => {
     try {
-      if (!onUpdateInvoice) return;
+      if (!onUpdateInvoice) return true;
 
       const current = invoices.find(inv => inv.id === invoiceId);
       if (!current) {
         console.error('Invoice not found for update:', invoiceId);
-        return;
+        return false;
       }
 
       const subtotal = editLineItems.reduce((sum, item) => sum + item.total, 0);
@@ -315,8 +317,32 @@ export default function InvoiceTable({
 
       await onUpdateInvoice(invoiceId, updateData);
       setEditingInvoiceId(null);
+      return true;
     } catch (error) {
       console.error('Failed to update invoice details:', error);
+      return false;
+    }
+  };
+
+  const handleConfirmFinalize = async () => {
+    if (!invoiceToFinalize || !onFinalizeInvoice || finalizingInvoiceId) return;
+
+    const { id, targetId } = invoiceToFinalize;
+    setFinalizingInvoiceId(id);
+    try {
+      if (editingInvoiceId === id) {
+        const updateOk = await handleFullInvoiceUpdate(id);
+        if (!updateOk) {
+          setInvoiceToFinalize(null);
+          return;
+        }
+      }
+      await onFinalizeInvoice(targetId || id);
+      setInvoiceToFinalize(null);
+    } catch (error) {
+      console.error('Finalization failed:', error);
+    } finally {
+      setFinalizingInvoiceId(null);
     }
   };
 
@@ -891,17 +917,12 @@ export default function InvoiceTable({
                                 {invoice.status === 'Draft' && onFinalizeInvoice && (
                                   <button
                                     type="button"
-                                    disabled={finalizingInvoiceId === invoice.id}
-                                    onClick={async () => {
-                                      if (window.confirm(`Finalize invoice ${invoice.id}? Once finalized, it becomes the authoritative commercial invoice and releases it to the customer.`)) {
-                                        setFinalizingInvoiceId(invoice.id);
-                                        try {
-                                          await handleFullInvoiceUpdate(invoice.id);
-                                          await onFinalizeInvoice(editInvoiceNumber.trim() || invoice.id);
-                                        } finally {
-                                          setFinalizingInvoiceId(null);
-                                        }
-                                      }
+                                    disabled={Boolean(finalizingInvoiceId)}
+                                    onClick={() => {
+                                      setInvoiceToFinalize({
+                                        id: invoice.id,
+                                        targetId: editInvoiceNumber.trim() || invoice.id,
+                                      });
                                     }}
                                     className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase font-mono tracking-wider transition-all cursor-pointer disabled:opacity-50"
                                   >
@@ -959,6 +980,22 @@ export default function InvoiceTable({
           invoiceId={previewInvoiceId}
         />
       )}
+
+      <ConfirmModal
+        isOpen={Boolean(invoiceToFinalize)}
+        title="Finalize Commercial Invoice"
+        message={`Finalize invoice ${invoiceToFinalize?.targetId || invoiceToFinalize?.id}? Once finalized, it becomes the authoritative commercial invoice and releases it to the customer.`}
+        confirmText={finalizingInvoiceId ? "Finalizing..." : "Finalize & Release"}
+        cancelText="Cancel"
+        variant="primary"
+        isLoading={Boolean(finalizingInvoiceId)}
+        onConfirm={handleConfirmFinalize}
+        onCancel={() => {
+          if (!finalizingInvoiceId) {
+            setInvoiceToFinalize(null);
+          }
+        }}
+      />
     </div>
   );
 }

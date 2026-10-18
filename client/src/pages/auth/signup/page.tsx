@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { User, Mail, Lock, ArrowRight, Loader2, AlertCircle, CheckCircle2, Eye, EyeOff } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
-import type { AuthUser } from '@/context/AuthContext';
+import type { AuthUser, UserRole } from '@/context/AuthContext';
 import { useSiteContext } from '@/context/SiteContext';
 import { getMediaUrl } from '@/utils/media';
 import { authApi } from '@/services/api';
@@ -143,7 +143,10 @@ export default function SignUp() {
 
       // ✅ Correctly read from result.data.data (the nested `data` object in the response)
       const { id, name, email, role, token } = result.data.data;
-      login(token, { id, name, email, role });
+      if (!token || !id || !name || !email || !role) {
+        throw new Error('Authentication token or user profile missing from response.');
+      }
+      login(token, { id, name, email, role: role as UserRole });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to create account.';
       if (msg.toLowerCase().includes('email')) {

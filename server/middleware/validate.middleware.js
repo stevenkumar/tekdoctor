@@ -32,6 +32,120 @@ const validate = (validations) => {
   };
 };
 
+// ── Geographic Dataset & State-District Validation ─────────────────────────
+const indiaStatesDistricts = require('../data/indiaStatesDistricts.json');
+
+/**
+ * Resolves canonical State or Union Territory name case-insensitively.
+ */
+function findStateKey(stateName) {
+  if (!stateName || typeof stateName !== 'string') return null;
+  const clean = stateName.trim().toLowerCase();
+  return Object.keys(indiaStatesDistricts).find(s => s.toLowerCase() === clean) || null;
+}
+
+/**
+ * Common city/district aliases mapping to canonical district names in the official dataset.
+ * Supports legacy tests and customer-familiar metropolitan identifiers.
+ */
+const DISTRICT_ALIASES = {
+  'karnataka': {
+    'bangalore': 'Bengaluru Urban',
+    'bangalore urban': 'Bengaluru Urban',
+    'bangalore rural': 'Bengaluru Rural',
+    'bengaluru': 'Bengaluru Urban',
+    'mysore': 'Mysuru',
+    'mangalore': 'Dakshina Kannada',
+    'belgaum': 'Belagavi',
+    'gulbarga': 'Kalaburagi',
+    'bellary': 'Ballari',
+    'bijapur': 'Vijayapura',
+    'shimoga': 'Shivamogga',
+    'hubli': 'Dharwad',
+    'hubli-dharwad': 'Dharwad',
+  },
+  'maharashtra': {
+    'mumbai': 'Mumbai City',
+    'bombay': 'Mumbai City',
+    'aurangabad': 'Chhatrapati Sambhajinagar (Aurangabad)',
+    'osmanabad': 'Dharashiv (Osmanabad)',
+    'ahmednagar': 'Ahilyanagar (Ahmednagar)',
+  },
+  'delhi': {
+    'delhi': 'New Delhi',
+  },
+  'uttar pradesh': {
+    'noida': 'Gautam Buddha Nagar',
+    'greater noida': 'Gautam Buddha Nagar',
+    'allahabad': 'Prayagraj',
+    'faizabad': 'Ayodhya',
+  },
+  'haryana': {
+    'gurgaon': 'Gurugram',
+  },
+  'tamil nadu': {
+    'madras': 'Chennai',
+  },
+  'west bengal': {
+    'calcutta': 'Kolkata',
+  },
+  'kerala': {
+    'cochin': 'Ernakulam',
+    'kochi': 'Ernakulam',
+    'trivandrum': 'Thiruvananthapuram',
+  },
+  'odisha': {
+    'bhubaneswar': 'Khordha',
+    'bhubaneshwar': 'Khordha',
+  },
+  'puducherry': {
+    'pondicherry': 'Puducherry',
+  },
+};
+
+function normalizeDistrictName(str) {
+  return String(str || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[().]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * Validates whether a district/city belongs to the specified State/UT.
+ */
+function isValidDistrictForState(stateName, districtName) {
+  if (!districtName || typeof districtName !== 'string') return false;
+  const canonicalState = findStateKey(stateName);
+  if (!canonicalState) return false;
+
+  const stateDistricts = indiaStatesDistricts[canonicalState] || [];
+  const cleanDistrict = districtName.trim();
+  const lowerDistrict = cleanDistrict.toLowerCase();
+  const normDistrict = normalizeDistrictName(cleanDistrict);
+
+  // 1. Direct or normalized match in canonical districts
+  if (stateDistricts.some(d => d.toLowerCase() === lowerDistrict || normalizeDistrictName(d) === normDistrict)) {
+    return true;
+  }
+
+  // 2. Check alias dictionary
+  const stateAliases = DISTRICT_ALIASES[canonicalState.toLowerCase()];
+  if (stateAliases && stateAliases[lowerDistrict]) {
+    return true;
+  }
+
+  // 3. Substring match for compound district names (length >= 4)
+  if (normDistrict.length >= 4 && stateDistricts.some(d => {
+    const nd = normalizeDistrictName(d);
+    return nd.includes(normDistrict) || normDistrict.includes(nd);
+  })) {
+    return true;
+  }
+
+  return false;
+}
+
 // ── Reusable Custom Validators ─────────────────────────────────────────────
 
 const isValidName = (value) => {
@@ -67,7 +181,7 @@ const isValidPhone = (value) => {
 
   // Must match either + followed by 7-15 digits, or standard 10-digit number
   if (!/^(\+[1-9]\d{6,14}|\d{10})$/.test(clean)) {
-    throw new Error('Please enter a valid 10-digit phone number (or international number with country code).');
+    throw new Error('Enter a valid 10-digit mobile number.');
   }
 
   // Extract digits only
@@ -75,17 +189,18 @@ const isValidPhone = (value) => {
 
   // Reject repeated single digits like 0000000000, 1111111111, 9999999999
   if (/^(\d)\1+$/.test(digitsOnly)) {
-    throw new Error('Please enter a valid 10-digit phone number.');
+    throw new Error('Enter a valid 10-digit mobile number.');
   }
 
-  // If Indian 10-digit or +91 number, national part must start with 6, 7, 8, 9
-  if (clean.startsWith('+91') && clean.length === 13) {
-    if (!/^[6-9]/.test(clean.substring(3))) {
-      throw new Error('Please enter a valid 10-digit phone number.');
+  // If Indian 10-digit or +91 number, national part must start with 6, 7, 8, 9 and be exactly 10 digits
+  if (clean.startsWith('+91')) {
+    const nationalPart = clean.substring(3);
+    if (!/^[6-9]\d{9}$/.test(nationalPart)) {
+      throw new Error('Enter a valid 10-digit mobile number.');
     }
   } else if (/^\d{10}$/.test(clean)) {
-    if (!/^[6-9]/.test(clean)) {
-      throw new Error('Please enter a valid 10-digit phone number.');
+    if (!/^[6-9]\d{9}$/.test(clean)) {
+      throw new Error('Enter a valid 10-digit mobile number.');
     }
   }
 
@@ -271,6 +386,36 @@ const validateChangePassword = validate([
     })
 ]);
 
+const validateVerifyLoginOtp = validate([
+  body('pendingToken')
+    .trim()
+    .notEmpty().withMessage('Pending authentication token is required.'),
+  body('otp')
+    .trim()
+    .notEmpty().withMessage('Verification code is required.')
+    .isLength({ min: 6, max: 6 }).withMessage('Verification code must be 6 digits.')
+    .isNumeric().withMessage('Verification code must contain digits only.')
+]);
+
+const validateResendOtp = validate([
+  body('pendingToken')
+    .trim()
+    .notEmpty().withMessage('Pending authentication token is required.')
+]);
+
+const validateVerifyResetOtp = validate([
+  body('email')
+    .trim()
+    .notEmpty().withMessage('Email address is required.')
+    .isEmail().withMessage('Please provide a valid email address.')
+    .normalizeEmail(),
+  body('otp')
+    .trim()
+    .notEmpty().withMessage('Verification code is required.')
+    .isLength({ min: 6, max: 6 }).withMessage('Verification code must be 6 digits.')
+    .isNumeric().withMessage('Verification code must contain digits only.')
+]);
+
 const validateGoogleSignIn = (req, res, next) => {
   const { credential, code } = req.body || {};
   if (!credential && !code) {
@@ -368,15 +513,19 @@ const ALLOWED_CONTACT_METHODS = [
 const validateRepairRequest = validate([
   body('customerName')
     .trim()
-    .notEmpty().withMessage('Customer name is required.')
-    .custom((val, { req }) => {
-      if (req.body.deviceId || req.user?.role === 'company') {
-        if (typeof val !== 'string' || val.trim().length < 2 || val.trim().length > 50) {
-          throw new Error('Customer name must be between 2 and 50 characters.');
-        }
-        return true;
+    .notEmpty().withMessage('Name must be between 2 and 30 characters.')
+    .custom((val) => {
+      const trimmed = typeof val === 'string' ? val.trim() : '';
+      if (!trimmed || trimmed.length < 2 || trimmed.length > 30) {
+        throw new Error('Name must be between 2 and 30 characters.');
       }
-      return isValidName(val);
+      if (/\d/.test(trimmed)) {
+        throw new Error('Name cannot contain numbers or special characters.');
+      }
+      if (!/^[a-zA-Z\s.'-]+$/.test(trimmed)) {
+        throw new Error('Name cannot contain numbers or special characters.');
+      }
+      return true;
     }),
   body('mobile')
     .trim()
@@ -397,12 +546,29 @@ const validateRepairRequest = validate([
     .trim()
     .notEmpty().withMessage('City is required.')
     .isLength({ min: 2, max: 100 }).withMessage('City must be between 2 and 100 characters.')
-    .matches(/^[a-zA-Z\s'-]+$/).withMessage('City can only contain letters, spaces, and hyphens.'),
+    .matches(/^[a-zA-Z0-9\s.'()\-]+$/).withMessage('City can only contain letters, numbers, spaces, and hyphens.')
+    .custom((val, { req }) => {
+      const state = req.body && req.body.state;
+      if (state && typeof state === 'string' && state.trim().length <= 50) {
+        const canonicalState = findStateKey(state);
+        if (canonicalState && !isValidDistrictForState(canonicalState, val)) {
+          throw new Error(`The selected district is not valid for ${canonicalState}.`);
+        }
+      }
+      return true;
+    }),
   body('state')
     .optional({ checkFalsy: true })
     .trim()
-    .isLength({ min: 2, max: 100 }).withMessage('State must be between 2 and 100 characters.')
-    .matches(/^[a-zA-Z\s'-]+$/).withMessage('State can only contain letters, spaces, and hyphens.'),
+    .isLength({ min: 2, max: 50 }).withMessage('State name cannot exceed 50 characters.')
+    .matches(/^[a-zA-Z\s.'()\-]+$/).withMessage('State can only contain letters, spaces, and hyphens.')
+    .custom((val) => {
+      if (!val) return true;
+      if (!findStateKey(val)) {
+        throw new Error('Please select a valid Indian State or Union Territory.');
+      }
+      return true;
+    }),
   body('zipCode')
     .optional({ checkFalsy: true })
     .trim()
@@ -410,15 +576,15 @@ const validateRepairRequest = validate([
   body('deviceCategory')
     .custom((val, { req }) => {
       if (req.body.deviceId) return true;
-      if (!val) throw new Error('Device category is required.');
-      if (!ALLOWED_DEVICE_CATEGORIES.includes(val.toLowerCase())) {
+      if (!val || typeof val !== 'string' || !val.trim()) throw new Error('Device category is required.');
+      if (!ALLOWED_DEVICE_CATEGORIES.includes(val.toLowerCase().trim())) {
         throw new Error('Invalid device category selected.');
       }
       return true;
     }),
   body('customDeviceCategory')
     .custom((value, { req }) => {
-      const isOther = req.body.deviceCategory && req.body.deviceCategory.toLowerCase() === 'other';
+      const isOther = req.body.deviceCategory && req.body.deviceCategory.toLowerCase().trim() === 'other';
       const trimmed = value ? String(value).trim() : '';
       if (isOther) {
         if (!trimmed) {
@@ -436,19 +602,23 @@ const validateRepairRequest = validate([
   body('brand')
     .custom((val, { req }) => {
       if (req.body.deviceId) return true;
-      if (!val) throw new Error('Brand is required.');
-      if (val.length < 1 || val.length > 50) {
-        throw new Error('Brand must be between 1 and 50 characters.');
+      if (!val || typeof val !== 'string' || !val.trim()) throw new Error('Brand is required.');
+      const trimmed = val.trim();
+      if (trimmed.length < 1 || trimmed.length > 30) {
+        throw new Error('Brand must be between 1 and 30 characters.');
       }
       return true;
     }),
   body('customBrand')
-    .optional({ checkFalsy: true })
-    .trim()
     .custom((value, { req }) => {
-      if (req.body.brand && req.body.brand.toLowerCase() === 'other') {
-        if (!value || value.length < 2 || value.length > 50) {
-          throw new Error('Please specify your custom brand (2-50 characters).');
+      const isOtherBrand = req.body.brand && req.body.brand.toLowerCase().trim() === 'other';
+      if (isOtherBrand) {
+        const trimmed = value ? String(value).trim() : '';
+        if (!trimmed) {
+          throw new Error('Please specify your brand name.');
+        }
+        if (trimmed.length < 2 || trimmed.length > 30) {
+          throw new Error('Custom brand must be between 2 and 30 characters.');
         }
       }
       return true;
@@ -480,12 +650,15 @@ const validateRepairRequest = validate([
       return true;
     }),
   body('customProblemType')
-    .optional({ checkFalsy: true })
-    .trim()
     .custom((value, { req }) => {
-      if (req.body.problemType && req.body.problemType.toLowerCase() === 'other') {
-        if (!value || value.length < 2 || value.length > 150) {
-          throw new Error('Please specify your custom problem type (2-150 characters).');
+      const isOther = req.body.problemType && req.body.problemType.toLowerCase().trim() === 'other';
+      if (isOther) {
+        const trimmed = value ? String(value).trim() : '';
+        if (!trimmed) {
+          throw new Error('Please specify your problem type.');
+        }
+        if (trimmed.length < 2 || trimmed.length > 150) {
+          throw new Error('Custom problem type must be between 2 and 150 characters.');
         }
       }
       return true;
@@ -493,24 +666,27 @@ const validateRepairRequest = validate([
   body('problemDescription')
     .trim()
     .notEmpty().withMessage('Problem description is required.')
-    .isLength({ min: 10, max: 500 }).withMessage('Problem description cannot exceed 500 characters.'),
+    .isLength({ min: 10, max: 500 }).withMessage('Problem description must be between 10 and 500 characters.'),
   body('serviceType')
     .optional({ checkFalsy: true })
     .trim()
     .custom((value) => {
       if (!value) return true;
-      if (!ALLOWED_SERVICE_TYPES.includes(value.toLowerCase())) {
+      if (!ALLOWED_SERVICE_TYPES.includes(value.toLowerCase().trim())) {
         throw new Error('Invalid service type selected.');
       }
       return true;
     }),
   body('customServiceType')
-    .optional({ checkFalsy: true })
-    .trim()
     .custom((value, { req }) => {
-      if (req.body.serviceType && req.body.serviceType.toLowerCase() === 'other') {
-        if (!value || value.length < 2 || value.length > 150) {
-          throw new Error('Please specify your custom service preference (2-150 characters).');
+      const isOther = req.body.serviceType && req.body.serviceType.toLowerCase().trim() === 'other';
+      if (isOther) {
+        const trimmed = value ? String(value).trim() : '';
+        if (!trimmed) {
+          throw new Error('Please specify the service when Other is selected.');
+        }
+        if (trimmed.length < 2 || trimmed.length > 150) {
+          throw new Error('Custom service preference must be between 2 and 150 characters.');
         }
       }
       return true;
@@ -633,6 +809,54 @@ const validateCustomerDescription = validate([
 
 // ── Company & B2B Validations ──────────────────────────────────────────────
 
+const GSTN_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+const isValidGstinChecksum = (gstin) => {
+  if (!gstin || typeof gstin !== 'string') return false;
+  const g = gstin.trim().toUpperCase();
+  if (g.length !== 15) return false;
+  const mod = 36;
+  let factor = 2;
+  let sum = 0;
+  for (let i = 13; i >= 0; i--) {
+    const codePoint = GSTN_CHARS.indexOf(g[i]);
+    if (codePoint === -1) return false;
+    let digit = factor * codePoint;
+    factor = (factor === 2) ? 1 : 2;
+    digit = Math.floor(digit / mod) + (digit % mod);
+    sum += digit;
+  }
+  const checkCodePoint = (mod - (sum % mod)) % mod;
+  return g[14] === GSTN_CHARS[checkCodePoint];
+};
+
+const isValidUrl = (value) => {
+  if (!value || typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 255) return false;
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
+  if (hasScheme && !/^https?:\/\//i.test(trimmed)) {
+    return false;
+  }
+  const toTest = hasScheme ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(toTest);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+    const host = parsed.hostname;
+    if (!host || host.length < 3) return false;
+    if (host !== 'localhost' && !host.includes('.')) return false;
+    if (/[\s<>{}|\\^~\[\]`]/g.test(trimmed)) return false;
+    if (host !== 'localhost') {
+      const parts = host.split('.');
+      const tld = parts[parts.length - 1];
+      if (!/^[a-zA-Z]{2,}$/.test(tld)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const validateCompanyRegister = validate([
   body('companyName')
     .trim()
@@ -642,6 +866,7 @@ const validateCompanyRegister = validate([
     .trim()
     .notEmpty().withMessage('Corporate email is required.')
     .isEmail().withMessage('Please provide a valid corporate email.')
+    .isLength({ max: 255 }).withMessage('Email cannot exceed 255 characters.')
     .normalizeEmail(),
   body('password')
     .notEmpty().withMessage('Password is required.')
@@ -651,16 +876,58 @@ const validateCompanyRegister = validate([
   body('phone')
     .optional({ checkFalsy: true })
     .trim()
-    .custom(isValidPhone)
+    .custom((value) => {
+      if (!value) return true;
+      const str = String(value).trim();
+      const clean = str.replace(/[\s\-()]/g, '');
+      let national = clean;
+      if (clean.startsWith('+91') && clean.length === 13) {
+        national = clean.slice(3);
+      }
+      if (!/^[6-9]\d{9}$/.test(national) || /^(\d)\1{9}$/.test(national)) {
+        throw new Error('Enter a valid 10-digit mobile number.');
+      }
+      return true;
+    })
     .customSanitizer(normalizePhoneNumber),
   body('contactPerson')
     .optional({ checkFalsy: true })
     .trim()
     .isLength({ min: 2, max: 50 }).withMessage('Contact person name must be between 2 and 50 characters.'),
+  body('gstNumber')
+    .optional({ checkFalsy: true })
+    .trim()
+    .custom((value) => {
+      if (!value) return true;
+      const g = String(value).trim().toUpperCase();
+      if (g.length !== 15) {
+        throw new Error('Enter a valid 15-character GSTIN.');
+      }
+      const gstinRegex = /^(0[1-9]|[1-2][0-9]|3[0-8]|97|99)[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+      if (!gstinRegex.test(g)) {
+        throw new Error('Enter a valid 15-character GSTIN.');
+      }
+      if (!isValidGstinChecksum(g)) {
+        throw new Error('Enter a valid 15-character GSTIN.');
+      }
+      return true;
+    })
+    .customSanitizer(value => (value ? String(value).trim().toUpperCase() : null)),
+  body('websiteUrl')
+    .optional({ checkFalsy: true })
+    .trim()
+    .isLength({ max: 255 }).withMessage('Website URL is too long.')
+    .custom((value) => {
+      if (!value) return true;
+      if (!isValidUrl(value)) {
+        throw new Error('Enter a valid website URL.');
+      }
+      return true;
+    }),
   body('address')
     .optional({ checkFalsy: true })
     .trim()
-    .custom(isValidAddress)
+    .isLength({ max: 250 }).withMessage('Address is too long.')
 ]);
 
 const validateBranch = validate([
@@ -1104,6 +1371,9 @@ module.exports = {
   validateForgotPassword,
   validateResetPassword,
   validateChangePassword,
+  validateVerifyLoginOtp,
+  validateResendOtp,
+  validateVerifyResetOtp,
   validateGoogleSignIn,
   validateContact,
   validateContactReply,
@@ -1130,5 +1400,10 @@ module.exports = {
   validateCreateOrder,
   validateUpdateCustomer,
   validateAdminProfile,
-  validateUpdateProfile
+  validateUpdateProfile,
+  isValidGstinChecksum,
+  isValidUrl,
+  findStateKey,
+  isValidDistrictForState,
+  indiaStatesDistricts
 };
