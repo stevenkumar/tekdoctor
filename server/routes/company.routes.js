@@ -33,6 +33,7 @@ const {
     exportCompanyEmployeesCsv,
     importBulkBranches,
     exportCompanyBranchesCsv,
+    downloadCompanyTemplate,
     getActivityLogs
 } = require('../controllers/company.controller');
 const { authenticate, authorize } = require('../middleware/auth.middleware');
@@ -117,6 +118,9 @@ router.post('/bulk-employees', authenticate, authorize('company', 'admin'), csvI
 router.post('/bulk-branches', authenticate, authorize('company', 'admin'), csvImportUpload, verifyUploadSignatures, importBulkBranches);
 router.post('/bulk-devices', authenticate, authorize('company', 'admin'), csvImportUpload, verifyUploadSignatures, importBulkDevices);
 router.post('/bulk-requests', authenticate, authorize('company', 'admin'), csvImportUpload, verifyUploadSignatures, importBulkRequests);
+
+// ── Templates ──
+router.get('/templates/:module', authenticate, authorize('company', 'admin'), downloadCompanyTemplate);
 
 // ── Activity Logs ──
 router.get('/activity-logs', authenticate, authorize('company', 'admin'), getActivityLogs);

@@ -178,6 +178,7 @@ export default function CompanyRepairs() {
     const [clientSubmissionId, setClientSubmissionId] = useState(() => 'SUB-' + Math.random().toString(36).substring(2, 9) + '-' + Date.now());
     const [submittedTicket, setSubmittedTicket] = useState<{ ticketNumber: string; isDuplicate?: boolean } | null>(null);
     const [bulkError, setBulkError] = useState('');
+    const [bulkErrors, setBulkErrors] = useState<Array<{ row: number; field: string; error: string; suggestion?: string }>>([]);
     const [cancelError, setCancelError] = useState('');
 
     // Bulk Upload state
@@ -485,18 +486,23 @@ export default function CompanyRepairs() {
 
         setUploading(true);
         setBulkError('');
+        setBulkErrors([]);
 
         try {
             const res = await companyApi.importBulkRequests(token, csvFile);
             if (res.ok && res.data?.success) {
                 const imported = res.data.data?.imported || res.data.data?.count || 0;
-                setSuccess(`Bulk tickets created! Registered ${imported} B2B repair tickets.`);
+                toast.success(`Bulk tickets created! Registered ${imported} B2B repair tickets.`);
                 setIsBulkOpen(false);
                 setCsvFile(null);
                 setBulkError('');
+                setBulkErrors([]);
                 fetchData();
             } else {
                 setBulkError(res.error || res.data?.message || 'Failed to process bulk tickets file.');
+                if (Array.isArray(res.data?.errors)) {
+                    setBulkErrors(res.data.errors);
+                }
             }
         } catch {
             setBulkError('Failed to process bulk tickets file. Ensure device serial tags match records.');
@@ -505,14 +511,18 @@ export default function CompanyRepairs() {
         }
     };
 
-    const handleBulkExport = async () => {
+    const handleBulkExport = async (format: 'xlsx' | 'csv' = 'xlsx') => {
         if (!token || exporting) return;
         setExporting(true);
         try {
-            await companyApi.exportRepairs(token);
-            toast.success('Repair tickets CSV exported successfully.');
+            await companyApi.exportRepairs(token, {
+                format,
+                search: searchQuery.trim() || undefined,
+                status: statusFilter || undefined,
+            });
+            toast.success(`Repair tickets ${format.toUpperCase()} exported successfully.`);
         } catch {
-            toast.error('Failed to export repair tickets.');
+            toast.error(`Failed to export repair tickets as ${format.toUpperCase()}.`);
         } finally {
             setExporting(false);
         }
@@ -521,24 +531,20 @@ export default function CompanyRepairs() {
     const handleSingleExport = async (ticketId: number, ticketNo: string) => {
         if (!token) return;
         try {
-            await companyApi.exportRepairs(token, ticketId);
+            await companyApi.exportRepairs(token, { id: ticketId, format: 'xlsx' });
             toast.success(`Exported ticket: ${ticketNo}`);
         } catch {
             toast.error('Failed to export repair ticket.');
         }
     };
 
-    const handleDownloadSample = () => {
-        // Generate dummy template file for bulk repairs
-        const headers = 'device_serial,employee_email,problem_type,problem_description,priority,service_preference,preferred_contact\n';
-        const row = 'C02F12345678,john.doe@company.com,Hardware,Screen replacement request,Urgent,carry_in,email\n';
-        const csvContent = 'data:text/csv;charset=utf-8,' + encodeURIComponent(headers + row);
-        const link = document.createElement('a');
-        link.setAttribute('href', csvContent);
-        link.setAttribute('download', `${(flattenedSettings.company_name || 'tekdoctor').toLowerCase().replace(/\s+/g, '_')}_bulk_tickets_template.csv`);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    const handleDownloadTemplate = async (format: 'xlsx' | 'csv') => {
+        if (!token) return;
+        try {
+            await companyApi.downloadTemplate(token, 'tickets', format, true);
+        } catch {
+            toast.error(`Failed to download ${format.toUpperCase()} template.`);
+        }
     };
 
     const handlePayTicket = async (ticket: RepairRequest) => {
@@ -771,22 +777,33 @@ export default function CompanyRepairs() {
                     </div>
 
                     <button
-                        onClick={() => { setBulkError(''); setIsBulkOpen(true); }}
+                        onClick={() => { setBulkError(''); setBulkErrors([]); setIsBulkOpen(true); }}
                         className="border border-zinc-800 hover:border-zinc-700 bg-zinc-950 text-zinc-300 text-sm font-semibold px-3.5 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer"
                     >
                         <Upload size={15} className="text-indigo-400" />
                         <span>Bulk Tickets</span>
                     </button>
 
-                    <button
-                        onClick={handleBulkExport}
-                        disabled={exporting || repairs.length === 0}
-                        className="border border-zinc-800 hover:border-zinc-700 bg-zinc-950 text-zinc-300 text-sm font-semibold px-3.5 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50"
-                        title="Export all tickets to CSV"
-                    >
-                        <Download size={15} className="text-emerald-400" />
-                        <span>Export CSV</span>
-                    </button>
+                    <div className="flex items-center gap-1 bg-zinc-950 border border-zinc-800 p-0.5 rounded-xl">
+                        <button
+                            onClick={() => handleBulkExport('xlsx')}
+                            disabled={exporting || repairs.length === 0}
+                            className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-emerald-400 hover:bg-zinc-900 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            title="Export filtered repair tickets as Excel (.xlsx)"
+                        >
+                            <Download size={13} />
+                            <span>Excel</span>
+                        </button>
+                        <div className="w-[1px] h-3.5 bg-zinc-800" />
+                        <button
+                            onClick={() => handleBulkExport('csv')}
+                            disabled={exporting || repairs.length === 0}
+                            className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            title="Export filtered repair tickets as CSV"
+                        >
+                            <span>CSV</span>
+                        </button>
+                    </div>
 
                     <button
                         onClick={handleOpenCreateModel}
@@ -1360,12 +1377,12 @@ export default function CompanyRepairs() {
                 </div>
             )}
 
-            {/* CSV Bulk Tickets Import Drawer */}
+            {/* Bulk Tickets Import Drawer */}
             <SideDrawer
                 isOpen={isBulkOpen}
                 onClose={() => setIsBulkOpen(false)}
                 title="Bulk Upload Repair Tickets"
-                subtitle="Submit multiple tickets in batch via CSV spreadsheet"
+                subtitle="Submit multiple tickets in batch via Excel (.xlsx) or CSV"
                 size="lg"
             >
                 <form onSubmit={handleBulkUpload} className="p-6 space-y-6">
@@ -1376,18 +1393,43 @@ export default function CompanyRepairs() {
                                 </div>
                             )}
 
-                            <div className="text-xs text-zinc-500 leading-relaxed space-y-2">
-                                <p>Submit numerous repair tickets in a single batch. Use a CSV document with the column headers below.</p>
-                                <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-800/40 font-mono text-[10px] text-zinc-405 overflow-x-auto select-all">
-                                    device_serial,employee_email,problem_type,problem_description,priority,service_preference,preferred_contact
+                            {bulkErrors.length > 0 && (
+                                <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-xs space-y-2 max-h-48 overflow-y-auto">
+                                    <div className="font-semibold text-red-300 flex items-center gap-1.5">
+                                        <AlertCircle size={14} /> Validation Errors ({bulkErrors.length})
+                                    </div>
+                                    <div className="space-y-1 divide-y divide-red-500/10 text-red-400">
+                                        {bulkErrors.map((err, idx) => (
+                                            <div key={idx} className="pt-1.5 first:pt-0">
+                                                <span className="font-mono font-semibold text-white">Row {err.row}</span> ({err.field}): {err.error}
+                                                {err.suggestion && <span className="block text-[11px] text-zinc-400 mt-0.5">💡 {err.suggestion}</span>}
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={handleDownloadSample}
-                                    className="text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1.5 cursor-pointer pt-1"
-                                >
-                                    <FileDown size={14} /> Download Reference Ticket Template (.csv)
-                                </button>
+                            )}
+
+                            <div className="text-xs text-zinc-500 leading-relaxed space-y-2">
+                                <p>Submit numerous repair tickets in a single batch. Devices must already be registered in fleet. Required headers: <code className="text-indigo-300 font-mono">device_serial</code>, <code className="text-indigo-300 font-mono">problem_description</code>.</p>
+                                <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-800/40 font-mono text-[10px] text-zinc-400 overflow-x-auto select-all">
+                                    device_serial, employee_email, problem_type, problem_description, priority, service_preference, preferred_contact
+                                </div>
+                                <div className="flex items-center gap-4 pt-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => handleDownloadTemplate('xlsx')}
+                                        className="text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1.5 cursor-pointer text-xs"
+                                    >
+                                        <FileDown size={14} /> Download Excel Template (.xlsx)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleDownloadTemplate('csv')}
+                                        className="text-indigo-400 hover:text-indigo-300 font-medium flex items-center gap-1.5 cursor-pointer text-xs"
+                                    >
+                                        <FileDown size={14} /> Download CSV Template (.csv)
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Drag/Drop Box */}
@@ -1398,18 +1440,18 @@ export default function CompanyRepairs() {
                                 <input
                                     type="file"
                                     ref={fileInputRef}
-                                    accept=".csv"
+                                    accept=".csv, .xlsx, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/csv"
                                     className="hidden"
                                     onChange={e => {
                                         const files = e.target.files;
                                         if (files && files[0]) setCsvFile(files[0]);
                                     }}
                                 />
-                                <Upload size={32} className="mx-auto text-zinc-650" />
+                                <Upload size={32} className="mx-auto text-zinc-500" />
                                 <div className="text-sm font-semibold text-zinc-300">
-                                    {csvFile ? csvFile.name : 'Select or drop CSV file'}
+                                    {csvFile ? csvFile.name : 'Select or drop Excel (.xlsx) or CSV file'}
                                 </div>
-                                <div className="text-xs text-zinc-600">CSV files only up to 2MB allowed</div>
+                                <div className="text-xs text-zinc-600">Excel (.xlsx) or CSV up to 5MB allowed</div>
                             </div>
 
                             <div className="pt-4 border-t border-zinc-800/40 flex justify-end gap-3">

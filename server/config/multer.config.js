@@ -32,12 +32,34 @@ const imageFileFilter = (req, file, cb) => {
   }
 };
 
-const csvMimeTypes = ['text/csv', 'application/csv', 'application/vnd.ms-excel'];
+const spreadsheetMimeTypes = [
+  'text/csv',
+  'application/csv',
+  'text/plain',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+];
+const spreadsheetExtensions = ['.csv', '.xlsx'];
+
 const csvFileFilter = (req, file, cb) => {
-  if (csvMimeTypes.includes(file.mimetype) || path.extname(file.originalname).toLowerCase() === '.csv') {
+  const ext = path.extname(file.originalname).toLowerCase();
+
+  // Explicitly reject legacy binary .xls files with actionable explanation
+  if (ext === '.xls') {
+    const err = new Error('Legacy Excel 97-2003 (.xls) files are not supported. Please save or export your spreadsheet as an Excel Workbook (.xlsx) or CSV (.csv).');
+    err.statusCode = 400;
+    return cb(err, false);
+  }
+
+  // Windows sometimes associates application/vnd.ms-excel with CSV files
+  const isAllowedMime = spreadsheetMimeTypes.includes(file.mimetype) || (file.mimetype === 'application/vnd.ms-excel' && ext === '.csv');
+  const isAllowedExt = spreadsheetExtensions.includes(ext);
+
+  if (isAllowedMime || isAllowedExt) {
     cb(null, true);
   } else {
-    cb(new Error('Invalid file type. Upload a CSV file.'), false);
+    const err = new Error('Invalid file type. Upload an Excel (.xlsx) or CSV (.csv) file.');
+    err.statusCode = 400;
+    cb(err, false);
   }
 };
 

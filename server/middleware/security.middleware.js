@@ -136,6 +136,11 @@ const verifyFileSignature = (filePath) => {
     if (ext === '.webp') return MAGIC_SIGNATURES.webp(buffer);
     if (ext === '.pdf') return MAGIC_SIGNATURES.pdf(buffer);
 
+    // XLSX / ZIP OpenXML format: 50 4B 03 04 (PK\x03\x04)
+    if (ext === '.xlsx') {
+        return buffer[0] === 0x50 && buffer[1] === 0x4B;
+    }
+
     // For CSV and plain text, verify no binary control bytes (NUL, etc.)
     if (ext === '.csv' || ext === '.txt') {
         for (let i = 0; i < buffer.length; i++) {
@@ -169,6 +174,16 @@ const verifyUploadSignatures = (req, res, next) => {
 
     for (const file of filesToVerify) {
         if (file && file.path) {
+            const ext = path.extname(file.originalname || file.path).toLowerCase();
+            if (ext === '.xls') {
+                try {
+                    if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+                } catch (err) {
+                    logger.error(`Failed to clean up rejected .xls file: ${err.message}`);
+                }
+                return res.status(400).json(formatResponse(false, 'Legacy Excel 97-2003 (.xls) files are not supported. Please save or export your spreadsheet as an Excel Workbook (.xlsx) or CSV (.csv).'));
+            }
+
             const isValid = verifyFileSignature(file.path);
             if (!isValid) {
                 // Delete the malicious or corrupted file immediately
@@ -191,5 +206,6 @@ module.exports = {
     sanitizeRequestPayload,
     sanitizeText,
     stripProtectedFields,
-    verifyUploadSignatures
+    verifyUploadSignatures,
+    verifyFileSignature
 };

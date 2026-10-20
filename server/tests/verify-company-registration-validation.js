@@ -299,7 +299,7 @@ async function runTests() {
     email: testEmail,
     password: 'SecurePassword123',
     contactPerson: 'Aditya Sharma',
-    phone: '9876543210',
+    phone: `98${uniqueSuffix}10`.slice(0, 10),
     gstNumber: '27AAPFU0939F1ZV',
     websiteUrl: 'https://valitech.example.com',
     address: 'Plot 42, Silicon Valley Park, Bengaluru'

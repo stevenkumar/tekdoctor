@@ -77,6 +77,7 @@ export default function CompanyDevices() {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [formErrors, setFormErrors] = useState<{ brand?: string; modelNumber?: string; serialNumber?: string; purchaseDate?: string; warrantyExpiry?: string; general?: string }>({});
     const [bulkError, setBulkError] = useState('');
+    const [bulkErrors, setBulkErrors] = useState<Array<{ row: number; field: string; error: string; suggestion?: string }>>([]);
     const [decommissionModal, setDecommissionModal] = useState<{ id: number; model: string } | null>(null);
     const [decommissionLoading, setDecommissionLoading] = useState(false);
 
@@ -274,18 +275,24 @@ export default function CompanyDevices() {
 
         setUploading(true);
         setBulkError('');
+        setBulkErrors([]);
 
         try {
             const res = await companyApi.importBulkDevices(token, csvFile);
             if (res.ok && res.data?.success) {
-                const imported = res.data.data?.imported || res.data.data?.count || 0;
-                setSuccess(`Bulk upload successful! Imported ${imported} assets.`);
+                const inserted = res.data.data?.inserted ?? res.data.data?.imported ?? 0;
+                const updated = res.data.data?.updated ?? 0;
+                toast.success(`Device import completed: ${inserted} created, ${updated} updated.`);
                 setIsBulkOpen(false);
                 setCsvFile(null);
                 setBulkError('');
+                setBulkErrors([]);
                 fetchData();
             } else {
                 setBulkError(res.error || res.data?.message || 'Failed to process bulk import. Check file format.');
+                if (Array.isArray(res.data?.errors)) {
+                    setBulkErrors(res.data.errors);
+                }
             }
         } catch {
             setBulkError('Failed to process bulk import. Check file format.');
@@ -294,14 +301,18 @@ export default function CompanyDevices() {
         }
     };
 
-    const handleBulkExport = async () => {
+    const handleBulkExport = async (format: 'xlsx' | 'csv' = 'xlsx') => {
         if (!token || exporting) return;
         setExporting(true);
         try {
-            await companyApi.exportDevices(token);
-            toast.success('Fleet devices CSV exported successfully.');
+            await companyApi.exportDevices(token, {
+                format,
+                search: searchQuery.trim() || undefined,
+                status: statusFilter || undefined,
+            });
+            toast.success(`Fleet devices ${format.toUpperCase()} exported successfully.`);
         } catch {
-            toast.error('Failed to export devices.');
+            toast.error(`Failed to export devices as ${format.toUpperCase()}.`);
         } finally {
             setExporting(false);
         }
@@ -310,24 +321,20 @@ export default function CompanyDevices() {
     const handleSingleExport = async (devId: number, devName: string) => {
         if (!token) return;
         try {
-            await companyApi.exportDevices(token, devId);
+            await companyApi.exportDevices(token, { id: devId, format: 'xlsx' });
             toast.success(`Exported device: ${devName}`);
         } catch {
             toast.error('Failed to export device record.');
         }
     };
 
-    const handleDownloadSample = () => {
-        // Generate dummy template file
-        const headers = 'category,brand,model_number,serial_number,asset_tag,purchase_date,warranty_expiry\n';
-        const row = 'Laptop,Apple,MacBook Pro M3,C02F12345678,ASSET-99211,2024-01-15,2027-01-15\n';
-        const csvContent = 'data:text/csv;charset=utf-8,' + encodeURIComponent(headers + row);
-        const link = document.createElement('a');
-        link.setAttribute('href', csvContent);
-        link.setAttribute('download', 'company_device_template.csv');
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    const handleDownloadTemplate = async (format: 'xlsx' | 'csv') => {
+        if (!token) return;
+        try {
+            await companyApi.downloadTemplate(token, 'devices', format, true);
+        } catch {
+            toast.error(`Failed to download ${format.toUpperCase()} template.`);
+        }
     };
 
     const filteredDevices = devices.filter(dev => {
@@ -373,21 +380,32 @@ export default function CompanyDevices() {
                         ))}
                     </div>
                     <button
-                        onClick={() => { setBulkError(''); setIsBulkOpen(true); }}
+                        onClick={() => { setBulkError(''); setBulkErrors([]); setIsBulkOpen(true); }}
                         className="border border-zinc-800 hover:border-zinc-700 bg-zinc-950 text-zinc-300 text-sm font-semibold px-3.5 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer"
                     >
                         <Upload size={15} className="text-indigo-400" />
-                        <span>CSV Import</span>
+                        <span>Bulk Import</span>
                     </button>
-                    <button
-                        onClick={handleBulkExport}
-                        disabled={exporting || devices.length === 0}
-                        className="border border-zinc-800 hover:border-zinc-700 bg-zinc-950 text-zinc-300 text-sm font-semibold px-3.5 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50"
-                        title="Export all fleet devices to CSV"
-                    >
-                        <Download size={15} className="text-emerald-400" />
-                        <span>Export CSV</span>
-                    </button>
+                    <div className="flex items-center gap-1 bg-zinc-950 border border-zinc-800 p-0.5 rounded-xl">
+                        <button
+                            onClick={() => handleBulkExport('xlsx')}
+                            disabled={exporting || devices.length === 0}
+                            className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-emerald-400 hover:bg-zinc-900 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            title="Export filtered fleet devices as Excel (.xlsx)"
+                        >
+                            <Download size={13} />
+                            <span>Excel</span>
+                        </button>
+                        <div className="w-[1px] h-3.5 bg-zinc-800" />
+                        <button
+                            onClick={() => handleBulkExport('csv')}
+                            disabled={exporting || devices.length === 0}
+                            className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            title="Export filtered fleet devices as CSV"
+                        >
+                            <span>CSV</span>
+                        </button>
+                    </div>
                     <button
                         onClick={handleOpenCreateModel}
                         className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer shadow-lg"
@@ -840,7 +858,7 @@ export default function CompanyDevices() {
                         <div className="px-6 py-4 border-b border-zinc-900/80 flex justify-between items-center">
                             <h2 className="text-lg font-bold text-white flex items-center gap-2">
                                 <Upload size={18} className="text-indigo-400" />
-                                <span>Bulk CSV Asset Importer</span>
+                                <span>Bulk Asset Importer (Excel & CSV)</span>
                             </h2>
                             <button
                                 onClick={() => setIsBulkOpen(false)}
@@ -858,18 +876,43 @@ export default function CompanyDevices() {
                                 </div>
                             )}
 
-                            <div className="text-xs text-zinc-500 leading-relaxed space-y-2">
-                                <p>Import many devices at once. Use a CSV document with the column headers below.</p>
-                                <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-900 font-mono text-[10px] text-zinc-405 overflow-x-auto select-all">
-                                    category,brand,model_number,serial_number,asset_tag,purchase_date,warranty_expiry
+                            {bulkErrors.length > 0 && (
+                                <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-xs space-y-2 max-h-48 overflow-y-auto">
+                                    <div className="font-semibold text-red-300 flex items-center gap-1.5">
+                                        <AlertCircle size={14} /> Validation Errors ({bulkErrors.length})
+                                    </div>
+                                    <div className="space-y-1 divide-y divide-red-500/10 text-red-400">
+                                        {bulkErrors.map((err, idx) => (
+                                            <div key={idx} className="pt-1.5 first:pt-0">
+                                                <span className="font-mono font-semibold text-white">Row {err.row}</span> ({err.field}): {err.error}
+                                                {err.suggestion && <span className="block text-[11px] text-zinc-400 mt-0.5">💡 {err.suggestion}</span>}
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={handleDownloadSample}
-                                    className="text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1.5 cursor-pointer pt-1"
-                                >
-                                    <FileDown size={14} /> Download Reference Pattern Template (.csv)
-                                </button>
+                            )}
+
+                            <div className="text-xs text-zinc-500 leading-relaxed space-y-2">
+                                <p>Import or update fleet devices using Excel (.xlsx) or CSV. Required headers: <code className="text-indigo-300 font-mono">device_type</code>, <code className="text-indigo-300 font-mono">brand</code>, <code className="text-indigo-300 font-mono">model</code>, <code className="text-indigo-300 font-mono">serial_number</code>.</p>
+                                <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-900 font-mono text-[10px] text-zinc-400 overflow-x-auto select-all">
+                                    device_type, brand, model, serial_number, asset_tag, branch, employee_email, purchase_date, warranty_expiry
+                                </div>
+                                <div className="flex items-center gap-4 pt-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => handleDownloadTemplate('xlsx')}
+                                        className="text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1.5 cursor-pointer text-xs"
+                                    >
+                                        <FileDown size={14} /> Download Excel Template (.xlsx)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleDownloadTemplate('csv')}
+                                        className="text-indigo-400 hover:text-indigo-300 font-medium flex items-center gap-1.5 cursor-pointer text-xs"
+                                    >
+                                        <FileDown size={14} /> Download CSV Template (.csv)
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Drag/Drop Box */}
@@ -880,18 +923,18 @@ export default function CompanyDevices() {
                                 <input
                                     type="file"
                                     ref={fileInputRef}
-                                    accept=".csv"
+                                    accept=".csv, .xlsx, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/csv"
                                     className="hidden"
                                     onChange={e => {
                                         const files = e.target.files;
                                         if (files && files[0]) setCsvFile(files[0]);
                                     }}
                                 />
-                                <Upload size={32} className="mx-auto text-zinc-650" />
+                                <Upload size={32} className="mx-auto text-zinc-500" />
                                 <div className="text-sm font-semibold text-zinc-300">
-                                    {csvFile ? csvFile.name : 'Select or drop CSV file'}
+                                    {csvFile ? csvFile.name : 'Select or drop Excel (.xlsx) or CSV file'}
                                 </div>
-                                <div className="text-xs text-zinc-600">CSV files only up to 2MB allowed</div>
+                                <div className="text-xs text-zinc-600">Excel (.xlsx) or CSV up to 5MB allowed</div>
                             </div>
 
                             <div className="pt-4 border-t border-zinc-900/60 flex justify-end gap-3">

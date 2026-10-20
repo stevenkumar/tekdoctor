@@ -106,6 +106,7 @@ export const ENDPOINTS = {
     EXPORT_EMPLOYEES: '/api/company/employees/export',
     EXPORT_DEVICES: '/api/company/devices/export',
     EXPORT_REPAIRS: '/api/company/repairs/export',
+    TEMPLATES: '/api/company/templates',
     ACTIVITY_LOGS: '/api/company/activity-logs',
   }
 } as const;
@@ -2295,10 +2296,16 @@ export const companyApi = {
     });
   },
 
-  exportBranches: async (token: string, id?: number): Promise<void> => {
-    const url = id
-      ? getUrl(`${ENDPOINTS.COMPANY.EXPORT_BRANCHES}?id=${id}`)
-      : getUrl(ENDPOINTS.COMPANY.EXPORT_BRANCHES);
+  exportBranches: async (token: string, optionsOrId?: number | { id?: number; format?: 'csv' | 'xlsx'; search?: string; status?: string }): Promise<void> => {
+    const opts = typeof optionsOrId === 'number' ? { id: optionsOrId } : (optionsOrId || {});
+    const params = new URLSearchParams();
+    if (opts.id) params.set('id', String(opts.id));
+    if (opts.format) params.set('format', opts.format);
+    if (opts.search) params.set('search', opts.search);
+    if (opts.status) params.set('status', opts.status);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+
+    const url = getUrl(`${ENDPOINTS.COMPANY.EXPORT_BRANCHES}${qs}`);
     const headers: Record<string, string> = { 'Authorization': `Bearer ${token}` };
     const compId = getApiCompanyContext();
     if (compId) headers['X-Company-ID'] = String(compId);
@@ -2308,17 +2315,25 @@ export const companyApi = {
     const downloadUrl = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = downloadUrl;
-    a.download = id ? `company_branch_${id}_export.csv` : 'company_branches_export.csv';
+    const ext = opts.format === 'xlsx' ? 'xlsx' : 'csv';
+    a.download = opts.id ? `company_branch_${opts.id}_export.${ext}` : `company_branches_export.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     window.URL.revokeObjectURL(downloadUrl);
   },
 
-  exportEmployees: async (token: string, id?: number): Promise<void> => {
-    const url = id
-      ? getUrl(`${ENDPOINTS.COMPANY.EXPORT_EMPLOYEES}?id=${id}`)
-      : getUrl(ENDPOINTS.COMPANY.EXPORT_EMPLOYEES);
+  exportEmployees: async (token: string, optionsOrId?: number | { id?: number; format?: 'csv' | 'xlsx'; search?: string; status?: string; branch?: string }): Promise<void> => {
+    const opts = typeof optionsOrId === 'number' ? { id: optionsOrId } : (optionsOrId || {});
+    const params = new URLSearchParams();
+    if (opts.id) params.set('id', String(opts.id));
+    if (opts.format) params.set('format', opts.format);
+    if (opts.search) params.set('search', opts.search);
+    if (opts.status) params.set('status', opts.status);
+    if (opts.branch) params.set('branch', opts.branch);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+
+    const url = getUrl(`${ENDPOINTS.COMPANY.EXPORT_EMPLOYEES}${qs}`);
     const headers: Record<string, string> = { 'Authorization': `Bearer ${token}` };
     const compId = getApiCompanyContext();
     if (compId) headers['X-Company-ID'] = String(compId);
@@ -2328,17 +2343,26 @@ export const companyApi = {
     const downloadUrl = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = downloadUrl;
-    a.download = id ? `company_employee_${id}_export.csv` : 'company_employees_export.csv';
+    const ext = opts.format === 'xlsx' ? 'xlsx' : 'csv';
+    a.download = opts.id ? `company_employee_${opts.id}_export.${ext}` : `company_employees_export.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     window.URL.revokeObjectURL(downloadUrl);
   },
 
-  exportDevices: async (token: string, id?: number): Promise<void> => {
-    const url = id
-      ? getUrl(`${ENDPOINTS.COMPANY.EXPORT_DEVICES}?id=${id}`)
-      : getUrl(ENDPOINTS.COMPANY.EXPORT_DEVICES);
+  exportDevices: async (token: string, optionsOrId?: number | { id?: number; format?: 'csv' | 'xlsx'; search?: string; status?: string; branch?: string; category?: string }): Promise<void> => {
+    const opts = typeof optionsOrId === 'number' ? { id: optionsOrId } : (optionsOrId || {});
+    const params = new URLSearchParams();
+    if (opts.id) params.set('id', String(opts.id));
+    if (opts.format) params.set('format', opts.format);
+    if (opts.search) params.set('search', opts.search);
+    if (opts.status) params.set('status', opts.status);
+    if (opts.branch) params.set('branch', opts.branch);
+    if (opts.category) params.set('category', opts.category);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+
+    const url = getUrl(`${ENDPOINTS.COMPANY.EXPORT_DEVICES}${qs}`);
     const headers: Record<string, string> = { 'Authorization': `Bearer ${token}` };
     const compId = getApiCompanyContext();
     if (compId) headers['X-Company-ID'] = String(compId);
@@ -2348,17 +2372,25 @@ export const companyApi = {
     const downloadUrl = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = downloadUrl;
-    a.download = id ? `company_device_${id}_export.csv` : 'company_devices_export.csv';
+    const ext = opts.format === 'xlsx' ? 'xlsx' : 'csv';
+    a.download = opts.id ? `company_device_${opts.id}_export.${ext}` : `company_devices_export.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     window.URL.revokeObjectURL(downloadUrl);
   },
 
-  exportRepairs: async (token: string, id?: number): Promise<void> => {
-    const url = id
-      ? getUrl(`${ENDPOINTS.COMPANY.EXPORT_REPAIRS}?id=${id}`)
-      : getUrl(ENDPOINTS.COMPANY.EXPORT_REPAIRS);
+  exportRepairs: async (token: string, optionsOrId?: number | { id?: number; format?: 'csv' | 'xlsx'; search?: string; status?: string; priority?: string }): Promise<void> => {
+    const opts = typeof optionsOrId === 'number' ? { id: optionsOrId } : (optionsOrId || {});
+    const params = new URLSearchParams();
+    if (opts.id) params.set('id', String(opts.id));
+    if (opts.format) params.set('format', opts.format);
+    if (opts.search) params.set('search', opts.search);
+    if (opts.status) params.set('status', opts.status);
+    if (opts.priority) params.set('priority', opts.priority);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+
+    const url = getUrl(`${ENDPOINTS.COMPANY.EXPORT_REPAIRS}${qs}`);
     const headers: Record<string, string> = { 'Authorization': `Bearer ${token}` };
     const compId = getApiCompanyContext();
     if (compId) headers['X-Company-ID'] = String(compId);
@@ -2368,7 +2400,26 @@ export const companyApi = {
     const downloadUrl = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = downloadUrl;
-    a.download = id ? `company_repair_ticket_${id}_export.csv` : 'company_repairs_export.csv';
+    const ext = opts.format === 'xlsx' ? 'xlsx' : 'csv';
+    a.download = opts.id ? `company_repair_ticket_${opts.id}_export.${ext}` : `company_repairs_export.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(downloadUrl);
+  },
+
+  downloadTemplate: async (token: string, module: 'branches' | 'employees' | 'devices' | 'repairs' | 'tickets', format: 'csv' | 'xlsx' = 'csv', samples: boolean = true): Promise<void> => {
+    const url = getUrl(`${ENDPOINTS.COMPANY.TEMPLATES}/${module}?format=${format}&samples=${samples}`);
+    const headers: Record<string, string> = { 'Authorization': `Bearer ${token}` };
+    const compId = getApiCompanyContext();
+    if (compId) headers['X-Company-ID'] = String(compId);
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new Error(`Failed to download ${module} template.`);
+    const blob = await res.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = `company_${module}_template.${format}`;
     document.body.appendChild(a);
     a.click();
     a.remove();

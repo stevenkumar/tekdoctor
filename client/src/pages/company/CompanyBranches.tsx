@@ -45,11 +45,13 @@ export default function CompanyBranches() {
     const [deactivateModal, setDeactivateModal] = useState<{ id: number; branchName: string } | null>(null);
     const [deactivateLoading, setDeactivateLoading] = useState(false);
     const [bulkError, setBulkError] = useState('');
+    const [bulkErrors, setBulkErrors] = useState<Array<{ row: number; field: string; error: string; suggestion?: string }>>([]);
 
     // Bulk Import state
     const [csvFile, setCsvFile] = useState<File | null>(null);
     const [uploading, setUploading] = useState(false);
     const [exporting, setExporting] = useState(false);
+    const [exportFormat, setExportFormat] = useState<'xlsx' | 'csv'>('xlsx');
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const fetchBranches = async () => {
@@ -203,45 +205,61 @@ export default function CompanyBranches() {
 
         setUploading(true);
         setBulkError('');
+        setBulkErrors([]);
 
         try {
             const res = await companyApi.importBulkBranches(token, csvFile);
             if (res.ok && res.data?.success) {
-                const importedCount = res.data.data?.imported || res.data.data?.count || 0;
-                setSuccess(`Bulk import complete! Successfully processed ${importedCount} branch(es).`);
-                setIsBulkOpen(false);
-                setCsvFile(null);
-                setBulkError('');
-                fetchBranches();
+                const importedCount = res.data.data?.imported || 0;
+                const updatedCount = res.data.data?.updated || 0;
+                const failedCount = res.data.data?.failed || 0;
+                const errors = res.data.data?.errors || [];
+
+                if (failedCount > 0 && errors.length > 0) {
+                    setBulkErrors(errors);
+                    setBulkError(`Import completed with ${failedCount} errors (${importedCount} created, ${updatedCount} updated). Please review the errors below.`);
+                    fetchBranches();
+                } else {
+                    setSuccess(`Bulk import complete! Successfully processed: ${importedCount} created, ${updatedCount} updated.`);
+                    setIsBulkOpen(false);
+                    setCsvFile(null);
+                    setBulkError('');
+                    setBulkErrors([]);
+                    fetchBranches();
+                }
             } else {
-                setBulkError(res.error || res.data?.message || 'Failed to import branches from CSV.');
+                setBulkError(res.error || res.data?.message || 'Failed to import branches.');
+                if (res.data?.data?.errors) {
+                    setBulkErrors(res.data.data.errors);
+                }
             }
         } catch {
-            setBulkError('Failed to upload branches CSV.');
+            setBulkError('Failed to upload branches spreadsheet.');
         } finally {
             setUploading(false);
         }
     };
 
-    const handleDownloadSample = () => {
-        const headers = 'name,address,phone\n';
-        const sample1 = 'London Office,123 High Street London UK,+44 20 7946 0912\n';
-        const sample2 = 'Manchester Hub,45 Deansgate Manchester UK,+44 161 496 0234\n';
-        const csvContent = 'data:text/csv;charset=utf-8,' + encodeURIComponent(headers + sample1 + sample2);
-        const link = document.createElement('a');
-        link.setAttribute('href', csvContent);
-        link.setAttribute('download', 'company_branches_sample_template.csv');
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    const handleDownloadTemplate = async (format: 'csv' | 'xlsx') => {
+        if (!token) return;
+        try {
+            await companyApi.downloadTemplate(token, 'branches', format);
+            toast.success(`Downloaded ${format.toUpperCase()} branch template.`);
+        } catch {
+            toast.error('Failed to download template.');
+        }
     };
 
-    const handleBulkExport = async () => {
+    const handleBulkExport = async (format: 'csv' | 'xlsx' = exportFormat) => {
         if (!token || exporting) return;
         setExporting(true);
         try {
-            await companyApi.exportBranches(token);
-            toast.success('Branches CSV exported successfully.');
+            await companyApi.exportBranches(token, {
+                format,
+                search: searchQuery.trim() || undefined,
+                status: statusFilter || undefined
+            });
+            toast.success(`Branches ${format.toUpperCase()} exported successfully.`);
         } catch {
             toast.error('Failed to export branches.');
         } finally {
@@ -249,11 +267,11 @@ export default function CompanyBranches() {
         }
     };
 
-    const handleSingleExport = async (branchId: number, branchName: string) => {
+    const handleSingleExport = async (branchId: number, branchName: string, format: 'csv' | 'xlsx' = 'xlsx') => {
         if (!token) return;
         try {
-            await companyApi.exportBranches(token, branchId);
-            toast.success(`Exported branch: ${branchName}`);
+            await companyApi.exportBranches(token, { id: branchId, format });
+            toast.success(`Exported branch: ${branchName} (${format.toUpperCase()})`);
         } catch {
             toast.error('Failed to export branch record.');
         }
@@ -301,22 +319,34 @@ export default function CompanyBranches() {
                     </div>
 
                     <button
-                        onClick={() => { setBulkError(''); setIsBulkOpen(true); }}
+                        onClick={() => { setBulkError(''); setBulkErrors([]); setIsBulkOpen(true); }}
                         className="border border-zinc-800 hover:border-zinc-700 bg-zinc-950 text-zinc-300 text-sm font-semibold px-3.5 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer"
                     >
                         <Upload size={15} className="text-indigo-400" />
-                        <span>CSV Import</span>
+                        <span>Bulk Import</span>
                     </button>
 
-                    <button
-                        onClick={handleBulkExport}
-                        disabled={exporting || branches.length === 0}
-                        className="border border-zinc-800 hover:border-zinc-700 bg-zinc-950 text-zinc-300 text-sm font-semibold px-3.5 py-2 rounded-xl flex items-center gap-2 transform active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50"
-                        title="Export all branches to CSV"
-                    >
-                        <Download size={15} className="text-emerald-400" />
-                        <span>Export CSV</span>
-                    </button>
+                    <div className="flex items-center rounded-xl border border-zinc-800 bg-zinc-950 p-0.5">
+                        <button
+                            onClick={() => handleBulkExport('xlsx')}
+                            disabled={exporting || branches.length === 0}
+                            className="px-3 py-1.5 text-xs font-semibold text-emerald-400 hover:text-emerald-300 hover:bg-zinc-900 rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+                            title="Export filtered branches to Excel (.xlsx)"
+                        >
+                            <Download size={14} />
+                            <span>Excel</span>
+                        </button>
+                        <div className="w-[1px] h-4 bg-zinc-800"></div>
+                        <button
+                            onClick={() => handleBulkExport('csv')}
+                            disabled={exporting || branches.length === 0}
+                            className="px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-900 rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+                            title="Export filtered branches to CSV"
+                        >
+                            <Download size={14} />
+                            <span>CSV</span>
+                        </button>
+                    </div>
 
                     <button
                         onClick={handleOpenCreateModel}
@@ -596,15 +626,24 @@ export default function CompanyBranches() {
                                 </div>
                             )}
 
-                            <div className="flex justify-between items-center">
-                                <span className="text-xs text-zinc-400">Need the correct column format?</span>
-                                <button
-                                    type="button"
-                                    onClick={handleDownloadSample}
-                                    className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 cursor-pointer"
-                                >
-                                    <FileDown size={14} /> Download Sample CSV
-                                </button>
+                            <div className="flex flex-wrap justify-between items-center gap-2">
+                                <span className="text-xs text-zinc-400">Download formatted template:</span>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => handleDownloadTemplate('xlsx')}
+                                        className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer bg-zinc-900 hover:bg-zinc-800 px-2.5 py-1 rounded-lg border border-zinc-800 transition-colors"
+                                    >
+                                        <FileDown size={14} /> Excel (.xlsx)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleDownloadTemplate('csv')}
+                                        className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 cursor-pointer bg-zinc-900 hover:bg-zinc-800 px-2.5 py-1 rounded-lg border border-zinc-800 transition-colors"
+                                    >
+                                        <FileDown size={14} /> CSV (.csv)
+                                    </button>
+                                </div>
                             </div>
 
                             <div
@@ -615,15 +654,41 @@ export default function CompanyBranches() {
                                     type="file"
                                     ref={fileInputRef}
                                     onChange={e => setCsvFile(e.target.files?.[0] || null)}
-                                    accept=".csv"
+                                    accept=".csv, .xlsx, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/csv"
                                     className="hidden"
                                 />
                                 <Upload size={24} className="mx-auto text-zinc-600 mb-2" />
                                 <p className="text-sm font-medium text-zinc-300">
-                                    {csvFile ? csvFile.name : 'Click or drag CSV file to upload'}
+                                    {csvFile ? csvFile.name : 'Click or drag Excel (.xlsx) or CSV file to upload'}
                                 </p>
-                                <p className="text-[11px] text-zinc-500 mt-1">Accepts UTF-8 formatted .csv files</p>
+                                <p className="text-[11px] text-zinc-500 mt-1">Supports UTF-8 CSV and Excel (.xlsx) formats (max 500 rows)</p>
                             </div>
+
+                            {bulkErrors.length > 0 && (
+                                <div className="max-h-48 overflow-y-auto rounded-xl border border-red-500/20 bg-red-950/20 p-3 text-xs">
+                                    <div className="font-semibold text-red-300 mb-2">Detailed Row Errors ({bulkErrors.length}):</div>
+                                    <table className="w-full text-left text-zinc-300">
+                                        <thead>
+                                            <tr className="border-b border-zinc-800 text-zinc-400">
+                                                <th className="py-1 pr-2">Row</th>
+                                                <th className="py-1 pr-2">Field</th>
+                                                <th className="py-1 pr-2">Error</th>
+                                                <th className="py-1">Correction</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {bulkErrors.map((err, i) => (
+                                                <tr key={i} className="border-b border-zinc-900/60">
+                                                    <td className="py-1 pr-2 font-mono text-zinc-400">#{err.row}</td>
+                                                    <td className="py-1 pr-2 font-mono text-amber-300">{err.field || 'General'}</td>
+                                                    <td className="py-1 pr-2 text-red-300">{err.error}</td>
+                                                    <td className="py-1 text-zinc-400">{err.suggestion || '—'}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
 
                             <div className="pt-4 border-t border-zinc-900/60 flex justify-end gap-3">
                                 <button

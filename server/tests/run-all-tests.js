@@ -51,7 +51,10 @@ const testSuites = [
   'verify-notification-modal-ui.js',
 
   // 5. Phase 8B-1 Runtime Optimizations (Admin Polling, Bounded Notifications, Hold Scheduler)
-  'verify-phase8b1-optimizations.js'
+  'verify-phase8b1-optimizations.js',
+
+  // 6. Company Portal Bulk Import / Export & Sequence Integrity
+  'verify-company-bulk-import-export.js'
 ];
 
 function runSuite(suiteFile) {

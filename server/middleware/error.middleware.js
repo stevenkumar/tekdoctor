@@ -18,6 +18,9 @@ const errorHandler = (err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') {
     statusCode = 400;
     message = `File upload size limit exceeded. Max size allowed is ${config.uploads.maxSizeBytes / (1024 * 1024)}MB.`;
+  } else if (err.name === 'MulterError' || (err.message && (err.message.includes('not supported') || err.message.includes('file type') || err.message.includes('Invalid file')))) {
+    statusCode = 400;
+    message = err.message;
   }
 
   // Handle MySQL database errors
