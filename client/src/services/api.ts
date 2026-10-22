@@ -95,7 +95,7 @@ export const ENDPOINTS = {
     EMPLOYEE_BY_ID: (id: number) => `/api/company/employees/${id}`,
     DEVICES: '/api/company/devices',
     DEVICE_BY_ID: (id: number) => `/api/company/devices/${id}`,
-    DEVICE_HISTORY: (id: number) => `/api/company/devices/${id}/history`,
+    DEVICE_HISTORY: (id: number | string) => `/api/company/devices/${id}/history`,
     REPAIRS: '/api/company/repairs',
     MESSAGES: '/api/company/messages',
     BULK_DEVICES: '/api/company/bulk-devices',
@@ -1591,7 +1591,7 @@ export const adminApi = {
       { headers: adminHeaders(token) }
     ),
 
-  getDeviceRepairHistory: (token: string, deviceId: number) =>
+  getDeviceRepairHistory: (token: string, deviceId: number | string) =>
     safeFetch<{ data: any }>(getUrl(ENDPOINTS.COMPANY.DEVICE_HISTORY(deviceId)), {
       headers: adminHeaders(token),
     }),
@@ -2204,7 +2204,7 @@ export const companyApi = {
     });
   },
 
-  getDeviceRepairHistory: async (token: string, id: number): Promise<SafeResponse<any>> => {
+  getDeviceRepairHistory: async (token: string, id: number | string): Promise<SafeResponse<any>> => {
     return safeFetch<any>(getUrl(ENDPOINTS.COMPANY.DEVICE_HISTORY(id)), {
       method: 'GET',
       headers: { 'Authorization': `Bearer ${token}` },
@@ -2408,18 +2408,19 @@ export const companyApi = {
     window.URL.revokeObjectURL(downloadUrl);
   },
 
-  downloadTemplate: async (token: string, module: 'branches' | 'employees' | 'devices' | 'repairs' | 'tickets', format: 'csv' | 'xlsx' = 'csv', samples: boolean = true): Promise<void> => {
-    const url = getUrl(`${ENDPOINTS.COMPANY.TEMPLATES}/${module}?format=${format}&samples=${samples}`);
+  downloadTemplate: async (token: string, module: 'branches' | 'employees' | 'devices' | 'repairs', format: 'csv' | 'xlsx' = 'csv', samples: boolean = true): Promise<void> => {
+    const targetModule = (module as string) === 'tickets' ? 'repairs' : module;
+    const url = getUrl(`${ENDPOINTS.COMPANY.TEMPLATES}/${targetModule}?format=${format}&samples=${samples}`);
     const headers: Record<string, string> = { 'Authorization': `Bearer ${token}` };
     const compId = getApiCompanyContext();
     if (compId) headers['X-Company-ID'] = String(compId);
     const res = await fetch(url, { headers });
-    if (!res.ok) throw new Error(`Failed to download ${module} template.`);
+    if (!res.ok) throw new Error(`Failed to download ${targetModule} template.`);
     const blob = await res.blob();
     const downloadUrl = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = downloadUrl;
-    a.download = `company_${module}_template.${format}`;
+    a.download = `company_${targetModule}_template.${format}`;
     document.body.appendChild(a);
     a.click();
     a.remove();

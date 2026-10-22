@@ -8,8 +8,32 @@ const { generateToken } = require('../utils/auth.helpers');
 const { parseSpreadsheet, generateSpreadsheet, parseDateSafe, formatDateSafe } = require('../utils/spreadsheet.utils');
 const { parseCsv, generateCsv } = require('../utils/csv.utils');
 const { normalizePhoneNumber } = require('../middleware/validate.middleware');
+const { sendAdminNotification } = require('../utils/email.utils');
 
 const { logActivity } = require('../utils/activity.logger');
+
+const getFrontendBaseUrl = (req) => {
+    if (config.frontend && config.frontend.url) {
+        return config.frontend.url.replace(/\/+$/, '');
+    }
+    if (process.env.FRONTEND_URL && process.env.FRONTEND_URL.trim()) {
+        return process.env.FRONTEND_URL.trim().replace(/\/+$/, '');
+    }
+    const origin = req.get('origin');
+    if (origin && origin !== 'null' && !origin.includes(`localhost:${config.server?.port || 5000}`)) {
+        return origin.replace(/\/+$/, '');
+    }
+    const referer = req.get('referer');
+    if (referer) {
+        try {
+            const parsed = new URL(referer);
+            if (!parsed.host.includes(`localhost:${config.server?.port || 5000}`)) {
+                return `${parsed.protocol}//${parsed.host}`;
+            }
+        } catch (_) {}
+    }
+    return config.frontend?.url || 'http://localhost:3000';
+};
 
 // Helper for logging company activity
 const logCompanyActivity = async (connection, userId, action, targetType, targetId, details, ip) => {
@@ -174,8 +198,9 @@ const getCompanyProfile = async (req, res, next) => {
 
         const [rows] = await connection.query(
             `SELECT u.id, u.email, COALESCE(p.phone_number, u.phone) AS phone, u.is_active, 
-              COALESCE(p.company_id, u.company_id) AS company_id,
-              COALESCE(p.company_id, u.company_id) AS companyId,
+              COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) AS company_id,
+              COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) AS permanent_company_id,
+              COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) AS companyId,
               p.company_name, p.company_logo, p.contact_person, p.address, 
               p.gst_number, p.website_url, p.social_facebook, p.social_instagram, 
               p.social_twitter, p.social_linkedin 
@@ -973,12 +998,104 @@ const getDeviceRepairHistory = async (req, res, next) => {
         }
 
         const [devRows] = await connection.query(deviceQuery, deviceParams);
-        if (devRows.length === 0) {
+        let device = null;
+        let isCustomerDevice = false;
+        let ticketsWhereSql = 'WHERE sr.device_id = ?';
+        let ticketsParams = [id];
+
+        if (devRows.length > 0) {
+            device = devRows[0];
+        } else {
+            // If device was not found in company_devices, check if caller is admin (or authorized) requesting by ticket ID or customer device
+            const [ticketRows] = await connection.query(`
+                SELECT sr.*, 
+                       u.name as customer_account_name, 
+                       u.email as customer_account_email, 
+                       u.phone as customer_account_phone
+                FROM service_requests sr
+                LEFT JOIN users u ON sr.user_id = u.id
+                WHERE sr.id = ? OR sr.ticket_number = ?
+                LIMIT 1
+            `, [id, id]);
+
+            if (ticketRows.length > 0) {
+                const sourceTicket = ticketRows[0];
+
+                // If this ticket is tied to a company device, fetch that company device
+                if (sourceTicket.device_id) {
+                    let compDevQuery = `
+                        SELECT d.*, 
+                               cp.company_name,
+                               cp.company_logo,
+                               b.name as branch_name, 
+                               e.name as employee_name, 
+                               e.email as employee_email,
+                               e.phone as employee_phone
+                        FROM company_devices d
+                        INNER JOIN company_profiles cp ON d.company_id = cp.user_id
+                        LEFT JOIN company_branches b ON d.branch_id = b.id
+                        LEFT JOIN company_employees e ON d.employee_id = e.id
+                        WHERE d.id = ?
+                    `;
+                    const compDevParams = [sourceTicket.device_id];
+                    if (req.user.role !== 'admin') {
+                        compDevQuery += ' AND d.company_id = ?';
+                        compDevParams.push(targetCompanyId);
+                    }
+                    const [cRows] = await connection.query(compDevQuery, compDevParams);
+                    if (cRows.length > 0) {
+                        device = cRows[0];
+                        ticketsWhereSql = 'WHERE sr.device_id = ?';
+                        ticketsParams = [sourceTicket.device_id];
+                    }
+                }
+
+                // If not a company device, this is an individual customer's physical device
+                if (!device) {
+                    // Check authorization for customer
+                    if (req.user.role !== 'admin' && req.user.role !== 'technician') {
+                        if (sourceTicket.user_id !== req.user.id) {
+                            return res.status(403).json(formatResponse(false, 'Unauthorized to view this device history.'));
+                        }
+                    }
+
+                    isCustomerDevice = true;
+                    device = {
+                        id: sourceTicket.id,
+                        is_customer_device: true,
+                        brand: sourceTicket.brand || 'Device',
+                        model_number: sourceTicket.model_number || 'Standard',
+                        serial_number: sourceTicket.serial_number || 'N/A',
+                        device_category: sourceTicket.device_category || 'Hardware',
+                        device_type: sourceTicket.device_category || 'Hardware',
+                        customer_name: sourceTicket.customer_name || sourceTicket.customer_account_name || 'Customer',
+                        customer_email: sourceTicket.email || sourceTicket.customer_account_email || null,
+                        customer_phone: sourceTicket.mobile || sourceTicket.customer_account_phone || null,
+                        employee_name: null,
+                        branch_name: sourceTicket.city || null,
+                        is_active: 1,
+                        status: 'active',
+                        created_at: sourceTicket.created_at
+                    };
+
+                    // For an individual customer's device, match tickets for that customer device
+                    if (sourceTicket.serial_number && String(sourceTicket.serial_number).trim() !== '') {
+                        ticketsWhereSql = 'WHERE sr.company_id IS NULL AND (sr.serial_number = ? OR (sr.user_id = ? AND sr.model_number = ? AND sr.brand = ?))';
+                        ticketsParams = [sourceTicket.serial_number, sourceTicket.user_id, sourceTicket.model_number, sourceTicket.brand];
+                    } else {
+                        ticketsWhereSql = 'WHERE sr.company_id IS NULL AND sr.user_id = ? AND sr.model_number = ? AND sr.brand = ?';
+                        ticketsParams = [sourceTicket.user_id, sourceTicket.model_number, sourceTicket.brand];
+                    }
+                }
+            }
+        }
+
+        if (!device) {
             return res.status(404).json(formatResponse(false, 'Device not found or unauthorized.'));
         }
-        const device = devRows[0];
 
         // Fetch All Repair Tickets strictly for this device with joined technicians, invoices, quotations, and verified payments
+        // Using scalar subqueries for invoices, quotations, and payments to guarantee zero duplicate ticket rows
         const [tickets] = await connection.query(`
             SELECT 
                 sr.id,
@@ -996,6 +1113,7 @@ const getDeviceRepairHistory = async (req, res, next) => {
                 sr.required_parts,
                 sr.estimated_cost,
                 sr.repair_cost,
+                sr.repair_cost as cost_billed,
                 sr.payment_status,
                 sr.payment_id,
                 sr.paid_at,
@@ -1034,12 +1152,29 @@ const getDeviceRepairHistory = async (req, res, next) => {
             LEFT JOIN users tu ON sr.assigned_technician_id = tu.id
             LEFT JOIN company_employees ce ON sr.employee_id = ce.id
             LEFT JOIN company_branches cb ON ce.branch_id = cb.id
-            LEFT JOIN invoices inv ON inv.ticket_id = sr.id
-            LEFT JOIN quotations q ON q.request_id = sr.id
-            LEFT JOIN payments pmt ON pmt.ticket_id = sr.id AND pmt.status IN ('paid', 'success')
-            WHERE sr.device_id = ?
+            LEFT JOIN (
+                SELECT ticket_id, MAX(id) as max_inv_id
+                FROM invoices 
+                WHERE is_active = TRUE OR is_active IS NULL
+                GROUP BY ticket_id
+            ) latest_inv ON latest_inv.ticket_id = sr.id
+            LEFT JOIN invoices inv ON inv.id = latest_inv.max_inv_id
+            LEFT JOIN (
+                SELECT request_id, MAX(id) as max_q_id
+                FROM quotations
+                GROUP BY request_id
+            ) latest_q ON latest_q.request_id = sr.id
+            LEFT JOIN quotations q ON q.id = latest_q.max_q_id
+            LEFT JOIN (
+                SELECT ticket_id, MAX(id) as max_pmt_id
+                FROM payments 
+                WHERE status IN ('paid', 'success')
+                GROUP BY ticket_id
+            ) latest_pmt ON latest_pmt.ticket_id = sr.id
+            LEFT JOIN payments pmt ON pmt.id = latest_pmt.max_pmt_id
+            ${ticketsWhereSql}
             ORDER BY sr.created_at DESC
-        `, [id]);
+        `, ticketsParams);
 
         // Compute summary metrics from verified data
         const totalRepairs = tickets.length;
@@ -1291,14 +1426,15 @@ const createCompanyRepairRequest = async (req, res, next) => {
         const [profiles] = await connection.query('SELECT company_name, phone_number, address, amc_status, company_id FROM company_profiles WHERE user_id = ? LIMIT 1', [targetCompanyId]);
         const [companyUser] = await connection.query('SELECT name, email, phone, company_id FROM users WHERE id = ? LIMIT 1', [targetCompanyId]);
         const profile = profiles[0] || { company_name: companyUser[0]?.name || target.companyName, phone_number: companyUser[0]?.phone || '', address: '', amc_status: 'Inactive', company_id: companyUser[0]?.company_id };
+        const companyName = profile.company_name || target.companyName || companyUser[0]?.name || 'Corporate Client';
 
         // AMC Source of Truth Detection (Section 17):
         // Check company's profile amc_status OR specific device's is_amc
         const isCompanyAmc = (profile.amc_status || '').toLowerCase() === 'active' || (profile.company_type || '').toUpperCase() === 'AMC' || device.is_amc === 1;
 
-        // Generate authoritative per-company sequential ticket number (TD-Cxxx-01 or TD-AMC-Cxxx-01)
+        // Generate authoritative per-company sequential ticket number (CMP-xxx-xxx)
         const ticketNumber = await generateTicketNumber(connection, {
-            companyId: targetCompanyId,
+            companyId: profile.company_id || targetCompanyId,
             isAmc: isCompanyAmc
         });
 
@@ -1337,10 +1473,95 @@ const createCompanyRepairRequest = async (req, res, next) => {
             ]
         );
 
-        logger.info(`B2B repair ticket created: ${ticketNumber} (Type: ${ticketType}) for Company: ${targetCompanyId} by user: ${req.user.id}`);
+        logger.info(`B2B repair ticket created: ${ticketNumber} (Individual) for Company: ${targetCompanyId} by user: ${req.user.id}`);
 
         // Create background log
         await logCompanyActivity(connection, req.user.id, 'create_repair_request', 'service_requests', result.insertId, { ticketNumber });
+
+        const deviceSummary = [device.brand, device.model_number].filter(Boolean).join(' ') + 
+            (device.device_category ? ` (${device.device_category})` : '') + 
+            (device.serial_number ? ` [SN: ${device.serial_number}]` : '');
+
+        // Persist Admin Dashboard notification for active admins
+        try {
+            const [adminUsers] = await connection.query(
+                'SELECT id FROM users WHERE role = "admin" AND is_active = 1'
+            );
+            if (adminUsers.length > 0) {
+                const notifTitle = 'New Company Repair Request';
+                const notifMessage = `Company: ${companyName}\nTicket ID: ${ticketNumber}\nType: Individual\nDevice: ${deviceSummary}\nIssue: ${cleanDesc.length > 120 ? cleanDesc.substring(0, 117) + '...' : cleanDesc}\nStatus: Pending`;
+                const notifRows = adminUsers.map(a => [
+                    a.id,
+                    req.user.id,
+                    result.insertId,
+                    notifTitle,
+                    notifMessage,
+                    0
+                ]);
+                await connection.query(
+                    'INSERT INTO notifications (user_id, sender_id, ticket_id, title, message, is_read) VALUES ?',
+                    [notifRows]
+                );
+            }
+        } catch (notifErr) {
+            logger.error('Failed to create in-app notification for company ticket request:', notifErr);
+        }
+
+        // Asynchronously dispatch Admin email alert
+        const baseUrl = getFrontendBaseUrl(req);
+        const ticketUrl = `${baseUrl}/admin/tickets?id=${result.insertId}`;
+        const emailSubject = `New Company Repair Request [${ticketNumber}] - ${companyName}`;
+        const emailHtml = `
+          <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #0d0d12; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; overflow: hidden; padding: 32px 24px;">
+            <div style="margin-bottom: 24px;">
+              <span style="font-size: 20px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.5px; color: #ffffff;">TEK<span style="color: #00e5ff;">DOCTOR</span></span>
+            </div>
+            <h2 style="font-size: 20px; font-weight: 700; color: #ffffff; margin-top: 0; margin-bottom: 8px;">New Company Repair Request</h2>
+            <p style="font-size: 14px; color: #a1a1aa; margin-top: 0; margin-bottom: 20px;">A new B2B repair request has been submitted from the Company Portal.</p>
+            
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px; font-size: 14px;">
+              <tr>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a; width: 35%;">Company:</td>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #ffffff; font-weight: 600;">${companyName}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a;">Ticket ID:</td>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #00e5ff; font-weight: 700; font-family: monospace;">${ticketNumber}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a;">Type:</td>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #ffffff;">Individual</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a;">Device:</td>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #ffffff;">${deviceSummary}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a;">Problem:</td>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #ffffff;">${problemType}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a;">Issue Summary:</td>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #e4e4e7;">${cleanDesc}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a;">Priority:</td>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: ${priority === 'Urgent' ? '#f43f5e' : '#ffffff'}; font-weight: 600;">${priority || 'Standard'}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a;">Status:</td>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #fbbf24; font-weight: 600;">Pending</td>
+              </tr>
+            </table>
+
+            <div style="text-align: center; margin-top: 24px;">
+              <a href="${ticketUrl}" style="display: inline-block; background-color: #00e5ff; color: #000000; font-weight: 700; font-size: 14px; text-decoration: none; padding: 12px 28px; border-radius: 8px; text-transform: uppercase; letter-spacing: 0.5px;">View Ticket</a>
+            </div>
+          </div>
+        `;
+
+        sendAdminNotification(emailSubject, emailHtml)
+            .catch(err => logger.error(`Failed to send company ticket creation email notification to admin: ${err.message}`));
 
         return res.status(201).json(formatResponse(true, 'B2B Repair ticket submitted successfully.', {
             id: result.insertId,
@@ -1868,6 +2089,7 @@ const importBulkRequests = async (req, res, next) => {
             [targetCompanyId]
         );
         const profile = profiles[0] || { company_name: companyUser[0]?.name || target.companyName, phone_number: companyUser[0]?.phone || '' };
+        const companyName = profile.company_name || target.companyName || companyUser[0]?.name || 'Corporate Client';
 
         // Fetch company devices
         const [devs] = await connection.query(
@@ -2022,23 +2244,27 @@ const importBulkRequests = async (req, res, next) => {
         await connection.beginTransaction();
 
         const isCompanyAmc = (profile.amc_status || '').toLowerCase() === 'active' || (profile.company_type || '').toUpperCase() === 'AMC';
+        const batchKey = (req.body?.clientSubmissionId || req.headers['x-submission-id'] || '').trim();
+        const batchId = batchKey || `bulk_${Date.now()}_${targetCompanyId}_${Math.random().toString(36).substring(2, 7)}`;
         let importedCount = 0;
 
-        for (const item of validBatch) {
+        for (let idx = 0; idx < validBatch.length; idx++) {
+            const item = validBatch[idx];
             // Generate sequence only for fully validated records (zero sequence waste!)
             const ticketNumber = await generateTicketNumber(connection, {
-                companyId: targetCompanyId,
+                companyId: profile.company_id || targetCompanyId,
                 isAmc: isCompanyAmc
             });
             const slaHours = item.priority === 'Urgent' ? 48 : 120;
             const slaDeadline = new Date(Date.now() + slaHours * 60 * 60 * 1000);
+            const rowSubmissionId = `${batchId}_${idx + 1}`;
 
             await connection.query(
                 `INSERT INTO service_requests 
                  (user_id, company_id, employee_id, device_id, customer_name, mobile, email, city, 
                   device_category, brand, model_number, serial_number, status, service_type, priority, 
-                  preferred_contact_method, problem_type, problem_description, ticket_number, sla_deadline) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                  preferred_contact_method, problem_type, problem_description, ticket_number, sla_deadline, submission_id) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     targetCompanyId,
                     targetCompanyId,
@@ -2059,7 +2285,8 @@ const importBulkRequests = async (req, res, next) => {
                     item.problemType,
                     item.problemDescription,
                     ticketNumber,
-                    slaDeadline
+                    slaDeadline,
+                    rowSubmissionId
                 ]
             );
             importedCount++;
@@ -2069,8 +2296,87 @@ const importBulkRequests = async (req, res, next) => {
 
         await logCompanyActivity(connection, req.user.id, 'bulk_import_requests', 'service_requests', null, { 
             imported: importedCount, 
-            failed: errors.length 
+            failed: errors.length,
+            batchId
         }, req.ip);
+
+        // Notify Admin if at least one ticket was successfully created
+        if (importedCount > 0) {
+            const submissionTime = new Date().toLocaleString('en-US', {
+                dateStyle: 'medium',
+                timeStyle: 'short',
+                timeZone: 'Asia/Kolkata'
+            });
+
+            // Persist Admin Dashboard notification for active admins
+            try {
+                const [adminUsers] = await connection.query(
+                    'SELECT id FROM users WHERE role = "admin" AND is_active = 1'
+                );
+                if (adminUsers.length > 0) {
+                    const notifTitle = 'New Bulk Repair Request';
+                    const notifMessage = `Company: ${companyName}\nType: Bulk\nCreated: ${importedCount}\nFailed: ${errors.length}\nTime: ${submissionTime}`;
+                    const notifRows = adminUsers.map(a => [
+                        a.id,
+                        req.user.id,
+                        null,
+                        notifTitle,
+                        notifMessage,
+                        0
+                    ]);
+                    await connection.query(
+                        'INSERT INTO notifications (user_id, sender_id, ticket_id, title, message, is_read) VALUES ?',
+                        [notifRows]
+                    );
+                }
+            } catch (notifErr) {
+                logger.error('Failed to create in-app notification for bulk ticket request:', notifErr);
+            }
+
+            // Asynchronously dispatch Admin email alert
+            const baseUrl = getFrontendBaseUrl(req);
+            const bulkTicketsUrl = `${baseUrl}/admin/tickets?search=${encodeURIComponent(companyName)}`;
+            const emailSubject = `New Bulk Repair Request [${importedCount} Tickets] - ${companyName}`;
+            const emailHtml = `
+              <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #0d0d12; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; overflow: hidden; padding: 32px 24px;">
+                <div style="margin-bottom: 24px;">
+                  <span style="font-size: 20px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.5px; color: #ffffff;">TEK<span style="color: #00e5ff;">DOCTOR</span></span>
+                </div>
+                <h2 style="font-size: 20px; font-weight: 700; color: #ffffff; margin-top: 0; margin-bottom: 8px;">New Bulk Repair Request</h2>
+                <p style="font-size: 14px; color: #a1a1aa; margin-top: 0; margin-bottom: 20px;">A spreadsheet bulk repair import has been processed for corporate client <strong>${companyName}</strong>.</p>
+                
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px; font-size: 14px;">
+                  <tr>
+                    <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a; width: 35%;">Company:</td>
+                    <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #ffffff; font-weight: 600;">${companyName}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a;">Type:</td>
+                    <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #ffffff;">Bulk</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a;">Created:</td>
+                    <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #10b981; font-weight: 700;">${importedCount} tickets</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a;">Failed:</td>
+                    <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: ${errors.length > 0 ? '#f43f5e' : '#a1a1aa'}; font-weight: 600;">${errors.length} rows</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #71717a;">Submission Time:</td>
+                    <td style="padding: 8px 12px; border-bottom: 1px solid #27272a; color: #ffffff;">${submissionTime}</td>
+                  </tr>
+                </table>
+
+                <div style="text-align: center; margin-top: 24px;">
+                  <a href="${bulkTicketsUrl}" style="display: inline-block; background-color: #00e5ff; color: #000000; font-weight: 700; font-size: 14px; text-decoration: none; padding: 12px 28px; border-radius: 8px; text-transform: uppercase; letter-spacing: 0.5px;">View Tickets</a>
+                </div>
+              </div>
+            `;
+
+            sendAdminNotification(emailSubject, emailHtml)
+                .catch(err => logger.error(`Failed to send bulk repair import email notification to admin: ${err.message}`));
+        }
 
         try {
             if (fs.existsSync(filePath)) fs.unlinkSync(filePath);

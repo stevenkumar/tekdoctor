@@ -345,6 +345,7 @@ const getCustomers = async (req, res, next) => {
             `SELECT u.id, 
                     u.technician_id,
                     COALESCE(cp.company_id, u.company_id) AS company_id,
+                    COALESCE(cp.company_id, u.company_id) AS permanent_company_id,
                     CASE 
                         WHEN u.role = 'admin' THEN 'ADMIN'
                         WHEN u.role = 'technician' THEN u.technician_id
@@ -1744,8 +1745,9 @@ const getCompanies = async (req, res, next) => {
             const isIdFormat = /^(?:TD-AMC-C?|TD-C-?|CMP-)\d+$/i.test(rawSearch);
             if (compIdMatch && isIdFormat) {
                 const idValue = parseInt(compIdMatch[1], 10);
-                baseQuery += ' AND (u.id = ? OR p.company_id LIKE ? OR u.company_id LIKE ?)';
-                params.push(idValue, `%${rawSearch}%`, `%${rawSearch}%`);
+                const paddedCmp = `CMP-${String(idValue).padStart(3, '0')}`;
+                baseQuery += ' AND (u.id = ? OR p.company_id = ? OR u.company_id = ? OR p.company_id LIKE ? OR u.company_id LIKE ?)';
+                params.push(idValue, paddedCmp, paddedCmp, `%${rawSearch}%`, `%${rawSearch}%`);
             } else {
                 baseQuery += ' AND (p.company_name LIKE ? OR u.email LIKE ? OR p.contact_person LIKE ? OR u.phone LIKE ? OR p.phone_number LIKE ? OR COALESCE(p.company_id, u.company_id) LIKE ? OR CAST(u.id AS CHAR) = ?)';
                 params.push(`%${rawSearch}%`, `%${rawSearch}%`, `%${rawSearch}%`, `%${rawSearch}%`, `%${rawSearch}%`, `%${rawSearch}%`, rawSearch);
@@ -1755,18 +1757,8 @@ const getCompanies = async (req, res, next) => {
         const [[{ total }]] = await connection.query(`SELECT COUNT(*) as total${baseQuery}`, params);
         const [rows] = await connection.query(
             `SELECT u.id, 
-                    COALESCE(
-                        p.company_id, 
-                        u.company_id,
-                        CASE 
-                            WHEN p.amc_status = 'Active' OR p.company_type = 'AMC' THEN CONCAT('TD-AMC-C', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0'))
-                            ELSE CONCAT('TD-C', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0'))
-                        END
-                    ) as company_id,
-                    CASE 
-                        WHEN p.amc_status = 'Active' OR p.company_type = 'AMC' THEN CONCAT('TD-AMC-C', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0'))
-                        ELSE CONCAT('TD-C', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0'))
-                    END as permanent_company_id,
+                    COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) as company_id,
+                    COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) as permanent_company_id,
                     u.email, u.phone, u.is_active, u.deactivated_at, u.deactivated_by, u.deactivation_reason, u.created_at, 
                     p.company_name, p.company_logo, p.contact_person, p.address, 
                     p.gst_number, p.website_url, p.company_type, p.notes, p.amc_status, p.assigned_technician_id,
@@ -1980,18 +1972,8 @@ const getCompanyDetails = async (req, res, next) => {
         // Verify company exists
         const [companies] = await connection.query(`
             SELECT u.id, 
-                   COALESCE(
-                       p.company_id, 
-                       u.company_id,
-                       CASE 
-                           WHEN p.amc_status = 'Active' OR p.company_type = 'AMC' THEN CONCAT('TD-AMC-C', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0'))
-                           ELSE CONCAT('TD-C', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0'))
-                       END
-                   ) as company_id,
-                   CASE 
-                       WHEN p.amc_status = 'Active' OR p.company_type = 'AMC' THEN CONCAT('TD-AMC-C', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0'))
-                       ELSE CONCAT('TD-C', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0'))
-                   END as permanent_company_id,
+                   COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) as company_id,
+                   COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) as permanent_company_id,
                    u.email, u.phone, u.is_active, u.created_at, 
                    p.company_name, p.company_logo, p.contact_person, p.address, 
                    p.gst_number, p.website_url, p.company_type, p.notes, p.amc_status, p.assigned_technician_id,
@@ -2604,7 +2586,9 @@ const exportCompaniesToCsv = async (req, res, next) => {
         const status = req.query.status || '';
 
         let query = `
-            SELECT u.id, u.email, u.phone, u.is_active, u.created_at,
+            SELECT u.id, 
+                   COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) as company_id,
+                   u.email, u.phone, u.is_active, u.created_at,
                    p.company_name, p.contact_person, p.address, p.gst_number, p.website_url,
                    p.company_type, p.notes, p.amc_status,
                    tu.name as assigned_technician_name,
@@ -2626,8 +2610,8 @@ const exportCompaniesToCsv = async (req, res, next) => {
         }
 
         if (search) {
-            query += ' AND (p.company_name LIKE ? OR u.email LIKE ? OR p.contact_person LIKE ?)';
-            params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+            query += ' AND (p.company_name LIKE ? OR u.email LIKE ? OR p.contact_person LIKE ? OR COALESCE(p.company_id, u.company_id) LIKE ?)';
+            params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
         }
 
         query += ' ORDER BY u.created_at DESC';
@@ -2635,7 +2619,8 @@ const exportCompaniesToCsv = async (req, res, next) => {
         const [rows] = await connection.query(query, params);
 
         const headers = [
-            { label: 'Company ID', key: 'id' },
+            { label: 'Company ID', key: 'company_id' },
+            { label: 'Database ID', key: 'id' },
             { label: 'Company Name', key: 'company_name' },
             { label: 'Contact Person', key: 'contact_person' },
             { label: 'Email', key: 'email' },
@@ -2679,7 +2664,10 @@ const exportSingleCompanyDetails = async (req, res, next) => {
         const { id } = req.params;
 
         const [companies] = await connection.query(`
-            SELECT u.id, u.email, u.phone, u.is_active, u.created_at,
+            SELECT u.id, 
+                   COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) as company_id,
+                   COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) as permanent_company_id,
+                   u.email, u.phone, u.is_active, u.created_at,
                    p.company_name, p.contact_person, p.address, p.gst_number, p.website_url,
                    p.company_type, p.notes, p.amc_status,
                    tu.name as assigned_technician_name

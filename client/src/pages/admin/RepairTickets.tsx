@@ -51,13 +51,16 @@ export default function RepairTickets() {
     const [notifyModalId, setNotifyModalId] = useState<number | null>(null);
 
     // Filter states
-    const [searchQuery, setSearchQuery] = useState('');
-    const [debouncedSearch, setDebouncedSearch] = useState('');
+    const [searchQuery, setSearchQuery] = useState(() => searchParams.get('search') || '');
+    const [debouncedSearch, setDebouncedSearch] = useState(() => searchParams.get('search')?.trim() || '');
     const [activeFilter, setActiveFilter] = useState(() => searchParams.get('status') || 'all');
     const [priorityFilter, setPriorityFilter] = useState('all');
     const [paymentFilter, setPaymentFilter] = useState('all');
     const [technicianFilter, setTechnicianFilter] = useState('all');
-    const [customerTypeFilter, setCustomerTypeFilter] = useState<'all' | 'individual' | 'company'>('all');
+    const [customerTypeFilter, setCustomerTypeFilter] = useState<'all' | 'individual' | 'company'>(() => {
+        const ct = searchParams.get('clientType');
+        return (ct === 'company' || ct === 'individual') ? ct : 'all';
+    });
     const [startDate, setStartDate] = useState('');
     const [endDate, setEndDate] = useState('');
 
@@ -239,11 +242,19 @@ export default function RepairTickets() {
         };
     }, [showDatePicker, updatePopoverAlignment]);
 
-    // Sync status from URL search params if present on initial load
+    // Sync status, search, and clientType from URL search params if present
     useEffect(() => {
         const statusParam = searchParams.get('status');
         if (statusParam && statusParam !== activeFilter) {
             setActiveFilter(statusParam);
+        }
+        const searchParam = searchParams.get('search');
+        if (searchParam !== null && searchParam !== searchQuery) {
+            setSearchQuery(searchParam);
+        }
+        const clientTypeParam = searchParams.get('clientType');
+        if (clientTypeParam && (clientTypeParam === 'all' || clientTypeParam === 'individual' || clientTypeParam === 'company') && clientTypeParam !== customerTypeFilter) {
+            setCustomerTypeFilter(clientTypeParam);
         }
     }, [searchParams]);
 
@@ -596,8 +607,12 @@ export default function RepairTickets() {
             (r.mobile && r.mobile.includes(q)) ||
             (r.brand && r.brand.toLowerCase().includes(q)) ||
             (r.modelNumber && r.modelNumber.toLowerCase().includes(q)) ||
+            (r.serialNumber && r.serialNumber.toLowerCase().includes(q)) ||
+            ((r as any).device_serial && (r as any).device_serial.toLowerCase().includes(q)) ||
+            ((r as any).assetId && (r as any).assetId.toLowerCase().includes(q)) ||
             (r.deviceCategory && r.deviceCategory.toLowerCase().includes(q)) ||
-            (r.city && r.city.toLowerCase().includes(q));
+            (r.city && r.city.toLowerCase().includes(q)) ||
+            String(r.id) === q;
 
         return matchFilter && matchPriority && matchPayment && matchTechnician && matchCustomerType && matchStartDate && matchEndDate && matchSearch;
     });
@@ -1091,6 +1106,7 @@ export default function RepairTickets() {
                     ticket={selectedRequest}
                     role="admin"
                     technicians={technicians}
+                    onSelectTicket={(ticket) => openModal(ticket)}
                     onBack={() => {
                         setSelectedRequest(null);
                         searchParams.delete('id');
@@ -1601,12 +1617,12 @@ export default function RepairTickets() {
                                                         <td className="py-4 px-4">
                                                             <div className="text-zinc-200 flex items-center gap-1.5 font-medium">
                                                                 <span>{r.brand} {r.modelNumber || ''}</span>
-                                                                {(r.deviceId || (r as any).device_id) && (
+                                                                {(r.deviceId || (r as any).device_id || (r as any).repeatCount > 1 || r.serialNumber) && (
                                                                     <button
                                                                         type="button"
                                                                         onClick={(e) => {
                                                                             e.stopPropagation();
-                                                                            setHistoryModalDeviceId(r.deviceId || (r as any).device_id);
+                                                                            setHistoryModalDeviceId(r.deviceId || (r as any).device_id || r.id);
                                                                         }}
                                                                         className="p-1 text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors cursor-pointer"
                                                                         title="View Complete Device Repair History"
@@ -1623,9 +1639,17 @@ export default function RepairTickets() {
                                                             <div className="text-white font-medium flex items-center gap-1.5">
                                                                 <span>{r.customerName}</span>
                                                                 {(r as any).repeatCount > 1 && (
-                                                                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest bg-rose-500/10 text-rose-400 border border-rose-500/20" title="This device has been sent for repair multiple times">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            setHistoryModalDeviceId(r.deviceId || (r as any).device_id || r.id);
+                                                                        }}
+                                                                        className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20 transition-colors cursor-pointer"
+                                                                        title="View Complete Device Repair History"
+                                                                    >
                                                                         Repeat ({(r as any).repeatCount})
-                                                                    </span>
+                                                                    </button>
                                                                 )}
                                                             </div>
                                                             <div className="text-[10px] text-zinc-500 font-mono mt-0.5">
@@ -1900,6 +1924,10 @@ export default function RepairTickets() {
                         isDrawer={true}
                         role="admin"
                         technicians={technicians}
+                        onSelectTicket={(ticket) => {
+                            setDrawerRequest(null);
+                            openModal(ticket);
+                        }}
                         onBack={() => setDrawerRequest(null)}
                         onOpenFullWorkspace={() => {
                             const r = drawerRequest;
@@ -2245,6 +2273,11 @@ export default function RepairTickets() {
             {historyModalDeviceId && (
                 <DeviceRepairHistoryModal
                     deviceId={historyModalDeviceId}
+                    technicians={technicians}
+                    onSelectTicket={(ticket) => {
+                        setHistoryModalDeviceId(null);
+                        openModal(ticket);
+                    }}
                     onClose={() => setHistoryModalDeviceId(null)}
                 />
             )}

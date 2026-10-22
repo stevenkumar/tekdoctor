@@ -541,7 +541,7 @@ export default function CompanyRepairs() {
     const handleDownloadTemplate = async (format: 'xlsx' | 'csv') => {
         if (!token) return;
         try {
-            await companyApi.downloadTemplate(token, 'tickets', format, true);
+            await companyApi.downloadTemplate(token, 'repairs', format, true);
         } catch {
             toast.error(`Failed to download ${format.toUpperCase()} template.`);
         }
@@ -1485,6 +1485,10 @@ export default function CompanyRepairs() {
             {historyModalDeviceId && (
                 <DeviceRepairHistoryModal
                     deviceId={historyModalDeviceId}
+                    onSelectTicket={(ticket) => {
+                        setHistoryModalDeviceId(null);
+                        setQuickDrawerTicket(ticket);
+                    }}
                     onClose={() => setHistoryModalDeviceId(null)}
                 />
             )}
@@ -1529,6 +1533,9 @@ export default function CompanyRepairs() {
                         ticket={quickDrawerTicket}
                         isDrawer={true}
                         role="company"
+                        onSelectTicket={(ticket) => {
+                            setQuickDrawerTicket(ticket);
+                        }}
                         onBack={() => setQuickDrawerTicket(null)}
                         onOpenFullWorkspace={(tid) => {
                             setQuickDrawerTicket(null);

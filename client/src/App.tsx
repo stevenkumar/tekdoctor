@@ -96,6 +96,7 @@ function App() {
                   <Route path={ROUTES.ADMIN} element={<Navigate to={ROUTES.ADMIN_DASHBOARD} replace />} />
                   <Route path={ROUTES.ADMIN_DASHBOARD} element={<DashboardOverview />} />
                   <Route path={ROUTES.ADMIN_TICKETS} element={<RepairTickets />} />
+                  <Route path="/admin/repair-tickets" element={<RepairTickets />} />
                   <Route path={ROUTES.ADMIN_TRANSFERS} element={<TaskTransfers />} />
                   <Route path={ROUTES.ADMIN_TECHNICIANS} element={<TechnicianManagement />} />
                   <Route path={ROUTES.ADMIN_CUSTOMERS} element={<CustomerManagement />} />

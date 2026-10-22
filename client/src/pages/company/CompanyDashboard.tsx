@@ -350,7 +350,7 @@ export default function CompanyDashboard() {
                                     {isAdminManagingCompany && selectedCompany ? selectedCompany.company_name : 'Permanent Corporate ID'}
                                 </div>
                                 <div className="text-sm font-bold font-mono text-neon-cyan tracking-wider mt-0.5">
-                                    {selectedCompany?.permanent_company_id || (user?.role === 'company' && (user as any).is_amc ? `TD-AMC-C${String(user.id).padStart(3, '0')}` : `TD-C${String(selectedCompany?.id || user?.id || 0).padStart(3, '0')}`)}
+                                    {selectedCompany?.permanent_company_id || selectedCompany?.company_id || user?.company_id || `CMP-${String(selectedCompany?.id || user?.id || 0).padStart(3, '0')}`}
                                 </div>
                             </div>
                         </div>

@@ -590,7 +590,9 @@ export default function ProfilePage() {
 
   if (!user) return null;
 
-  const customerIdFormatted = `${user.role === 'company' ? 'TD-C' : 'TD-'}${String(user.id).padStart(3, '0')}`;
+  const customerIdFormatted = user.role === 'company' 
+    ? (user.company_id || `CMP-${String(user.id).padStart(3, '0')}`) 
+    : `TD-${String(user.id).padStart(3, '0')}`;
 
   const navMenuItems = [
     { id: 'current_repairs', label: 'Current Repairs', icon: Smartphone, count: currentRepairs.length },
@@ -610,7 +612,9 @@ export default function ProfilePage() {
         <header className="bg-zinc-900/40 border border-zinc-800/80 rounded-xl sm:rounded-2xl p-4 sm:p-6 backdrop-blur-md shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4 relative">
           <div>
             <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-              <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-neon-cyan">Customer Permanent ID</span>
+              <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-neon-cyan">
+                {user.role === 'company' ? 'Company Permanent ID' : 'Customer Permanent ID'}
+              </span>
               <div className="w-1.5 h-1.5 bg-neon-cyan rounded-full animate-pulse" />
               {/* <span className="text-zinc-600 font-mono text-xs">•</span> */}
               <span className="text-[11px] font-mono text-zinc-400 font-semibold uppercase tracking-wider">{customerIdFormatted}</span>

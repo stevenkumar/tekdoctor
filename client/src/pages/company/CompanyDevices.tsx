@@ -630,6 +630,7 @@ export default function CompanyDevices() {
                 <DeviceRepairHistoryModal
                     deviceId={historyModalDeviceId}
                     onClose={() => setHistoryModalDeviceId(null)}
+                    onSelectTicket={(ticket) => navigate(`/company/repairs?ticketId=${ticket.ticket_number || ticket.id}`)}
                     onRaiseRepair={(device) => navigate(`/company/repairs?deviceId=${device.id}`)}
                 />
             )}

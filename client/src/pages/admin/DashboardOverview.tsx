@@ -433,7 +433,7 @@ export default function DashboardOverview() {
                                                     <Trash2 size={12} />
                                                 </button>
                                             </div>
-                                            <p className="opacity-80 mt-0.5">{n.message}</p>
+                                            <p className="opacity-80 mt-0.5 line-clamp-2 whitespace-pre-line text-[10px] leading-relaxed">{n.message}</p>
                                             <p className="text-[9px] font-mono opacity-40 mt-1">{new Date(n.created_at).toLocaleString()}</p>
                                         </div>
                                     );
@@ -740,7 +740,11 @@ export default function DashboardOverview() {
                                     <div className="bg-[#0b0b0b]/60 p-2 rounded-lg border border-zinc-900">
                                         <span className="text-zinc-600 block text-[8px] uppercase tracking-wider mb-0.5">Type</span>
                                         <span className="text-zinc-300 font-bold">
-                                            {activeModalNotif.ticket_number || activeModalNotif.ticket_id ? 'Ticket Update' : activeModalNotif.sender_name ? 'User Message' : 'System Alert'}
+                                            {activeModalNotif.title?.toLowerCase().includes('bulk')
+                                                ? 'Bulk Repair'
+                                                : (activeModalNotif.title?.toLowerCase().includes('company')
+                                                    ? 'Company Repair'
+                                                    : (activeModalNotif.ticket_number || activeModalNotif.ticket_id ? 'Ticket Update' : activeModalNotif.sender_name ? 'User Message' : 'System Alert'))}
                                         </span>
                                     </div>
                                     <div className="bg-[#0b0b0b]/60 p-2 rounded-lg border border-zinc-900">
@@ -767,12 +771,14 @@ export default function DashboardOverview() {
                                     </div>
                                 )}
 
-                                {/* Related Ticket Info */}
-                                {activeModalNotif.ticket_number && (
+                                {/* Related Ticket Info (Individual) */}
+                                {(activeModalNotif.ticket_number || activeModalNotif.ticket_id) && (
                                     <div className="space-y-1 font-mono">
                                         <span className="text-zinc-655 block text-[9px] uppercase tracking-wider mb-1">Related Ticket</span>
                                         <div className="flex justify-between items-center bg-neon-cyan/5 p-3 border border-neon-cyan/15 rounded-xl">
-                                            <span className="text-xs font-bold text-white">#{activeModalNotif.ticket_number}</span>
+                                            <span className="text-xs font-bold text-white">
+                                                {activeModalNotif.ticket_number ? `#${activeModalNotif.ticket_number}` : `Ticket #${activeModalNotif.ticket_id}`}
+                                            </span>
                                             <button
                                                 onClick={() => {
                                                     const route = ROUTES.ADMIN_TICKETS;
@@ -783,6 +789,30 @@ export default function DashboardOverview() {
                                                 className="text-[10px] bg-neon-cyan hover:bg-neon-cyan/85 text-black font-bold uppercase py-1.5 px-3 rounded-lg flex items-center gap-1 transition-all cursor-pointer shadow-[0_0_10px_rgba(0,242,255,0.2)]"
                                             >
                                                 <span>View Ticket</span>
+                                                <ArrowUpRight size={10} />
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Bulk Tickets Info (Bulk) */}
+                                {!activeModalNotif.ticket_number && !activeModalNotif.ticket_id && activeModalNotif.title?.toLowerCase().includes('bulk') && (
+                                    <div className="space-y-1 font-mono">
+                                        <span className="text-zinc-655 block text-[9px] uppercase tracking-wider mb-1">Created Tickets</span>
+                                        <div className="flex justify-between items-center bg-neon-cyan/5 p-3 border border-neon-cyan/15 rounded-xl">
+                                            <span className="text-xs font-bold text-white">Bulk Request</span>
+                                            <button
+                                                onClick={() => {
+                                                    const route = ROUTES.ADMIN_TICKETS;
+                                                    const searchParam = activeModalNotif.sender_name 
+                                                        ? `search=${encodeURIComponent(activeModalNotif.sender_name)}` 
+                                                        : 'clientType=company';
+                                                    navigate(`${route}?${searchParam}`);
+                                                    setActiveModalNotif(null);
+                                                }}
+                                                className="text-[10px] bg-neon-cyan hover:bg-neon-cyan/85 text-black font-bold uppercase py-1.5 px-3 rounded-lg flex items-center gap-1 transition-all cursor-pointer shadow-[0_0_10px_rgba(0,242,255,0.2)]"
+                                            >
+                                                <span>View Tickets</span>
                                                 <ArrowUpRight size={10} />
                                             </button>
                                         </div>

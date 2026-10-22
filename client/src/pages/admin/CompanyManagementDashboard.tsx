@@ -1230,6 +1230,7 @@ export default function CompanyManagementDashboard() {
                     ticket={workspaceTicket}
                     role="admin"
                     technicians={technicians as any}
+                    onSelectTicket={(ticket) => handleOpenTicketWorkspace(ticket)}
                     onBack={handleCloseTicketWorkspace}
                     onRefresh={() => {
                         if (workspaceTicket?.id && token) {
@@ -1279,6 +1280,11 @@ export default function CompanyManagementDashboard() {
                 {historyModalDeviceId && (
                     <DeviceRepairHistoryModal
                         deviceId={historyModalDeviceId}
+                        technicians={technicians as any}
+                        onSelectTicket={(ticket) => {
+                            setHistoryModalDeviceId(null);
+                            handleOpenTicketWorkspace(ticket);
+                        }}
                         onClose={() => setHistoryModalDeviceId(null)}
                     />
                 )}
@@ -1629,7 +1635,7 @@ export default function CompanyManagementDashboard() {
                                 <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
                                 <input
                                     type="text"
-                                    placeholder="Search by Company ID (TD-C001, TD-AMC-C001), name, contact, email..."
+                                    placeholder="Search by Company ID (CMP-001, CMP-002), name, contact, email..."
                                     value={searchQuery}
                                     onChange={(e) => {
                                         setSearchQuery(e.target.value);
@@ -3791,6 +3797,11 @@ export default function CompanyManagementDashboard() {
             {historyModalDeviceId && (
                 <DeviceRepairHistoryModal
                     deviceId={historyModalDeviceId}
+                    technicians={technicians as any}
+                    onSelectTicket={(ticket) => {
+                        setHistoryModalDeviceId(null);
+                        handleOpenTicketWorkspace(ticket);
+                    }}
                     onClose={() => setHistoryModalDeviceId(null)}
                 />
             )}
@@ -4359,6 +4370,10 @@ export default function CompanyManagementDashboard() {
                         isDrawer={true}
                         role="admin"
                         technicians={technicians as any}
+                        onSelectTicket={(ticket) => {
+                            setQuickDrawerTicket(null);
+                            if (ticket) handleOpenTicketWorkspace(ticket);
+                        }}
                         onBack={() => setQuickDrawerTicket(null)}
                         onOpenFullWorkspace={() => {
                             const t = quickDrawerTicket;

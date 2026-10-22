@@ -436,7 +436,7 @@ export default function ServiceTracker() {
             <div className="flex-grow relative w-full">
               <input
                 type="text"
-                placeholder="Ex: TD-001-01, TD-C001-01"
+                placeholder="Ex: TD-001-01, CMP-001-001"
                 value={ticketId}
                 onChange={(e) => setTicketId(e.target.value)}
                 className="w-full bg-black border border-zinc-700 rounded-xl px-4 sm:px-5 py-3.5 sm:py-4 text-white text-sm sm:text-base focus:outline-none focus:border-neon-cyan transition-all font-mono uppercase tracking-wider sm:tracking-widest"

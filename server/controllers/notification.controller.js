@@ -13,9 +13,13 @@ const getNotifications = async (req, res, next) => {
     const userId = req.user.id;
     const { limit } = req.query;
 
-    let query = `SELECT n.*, u.name as sender_name, u.email as sender_email, sr.ticket_number
+    let query = `SELECT n.*, 
+       COALESCE(cp.company_name, u.name) as sender_name, 
+       u.email as sender_email, 
+       sr.ticket_number
        FROM notifications n
        LEFT JOIN users u ON n.sender_id = u.id
+       LEFT JOIN company_profiles cp ON cp.user_id = u.id
        LEFT JOIN service_requests sr ON n.ticket_id = sr.id
        WHERE n.user_id = ?
        ORDER BY n.created_at DESC`;

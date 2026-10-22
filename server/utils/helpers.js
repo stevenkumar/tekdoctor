@@ -219,8 +219,7 @@ const generateCompanyId = async (connection) => {
 /**
  * Resolves the permanent account ID based on customer or corporate identity:
  * - Customer: TD-001, TD-002, TD-170, TD-9103...
- * - Company (Non-AMC): TD-C001, TD-C002, TD-C146...
- * - Company (AMC): TD-AMC-C001, TD-AMC-C002...
+ * - Company: CMP-001, CMP-002, CMP-004...
  *
  * @param {Object} connection - MySQL database connection
  * @param {Object} options - { userId, companyId, isAmc }
@@ -228,40 +227,57 @@ const generateCompanyId = async (connection) => {
  */
 const resolvePermanentAccountId = async (connection, options = {}) => {
   const { userId, companyId, isAmc } = options;
-  const targetCompanyId = companyId ? Number(companyId) : null;
-  const targetUserId = userId ? Number(userId) : null;
 
-  if (targetCompanyId) {
-    let amcActive = Boolean(isAmc);
-    try {
-      const [profiles] = await connection.query(
-        'SELECT amc_status, company_type FROM company_profiles WHERE user_id = ? LIMIT 1',
-        [targetCompanyId]
-      );
-      if (profiles && profiles.length > 0) {
-        if ((profiles[0].amc_status || '').toLowerCase() === 'active' || (profiles[0].company_type || '').toUpperCase() === 'AMC') {
-          amcActive = true;
-        }
-      }
-    } catch (e) {
-      // fallback to isAmc flag
-    }
-    const paddedCompId = String(targetCompanyId).padStart(3, '0');
-    return amcActive ? `TD-AMC-C${paddedCompId}` : `TD-C${paddedCompId}`;
+  // 1. If an explicit canonical Company ID string was passed (e.g. 'CMP-001')
+  if (typeof companyId === 'string' && companyId.trim().toUpperCase().startsWith('CMP-')) {
+    return companyId.trim().toUpperCase();
   }
 
-  // Individual Customer Account
-  if (targetUserId) {
-    // Check if targetUserId is actually a company account
+  // 2. If companyId was passed (could be numeric users.id, company_profiles.id, or company code string)
+  if (companyId) {
     try {
-      const [users] = await connection.query('SELECT role FROM users WHERE id = ? LIMIT 1', [targetUserId]);
-      if (users && users.length > 0 && users[0].role === 'company') {
-        return resolvePermanentAccountId(connection, { companyId: targetUserId, isAmc });
+      const [profiles] = await connection.query(
+        'SELECT u.id, COALESCE(p.company_id, u.company_id) AS canonical_company_id FROM users u LEFT JOIN company_profiles p ON u.id = p.user_id WHERE u.id = ? OR p.id = ? OR u.company_id = ? OR p.company_id = ? LIMIT 1',
+        [companyId, companyId, String(companyId), String(companyId)]
+      );
+      if (profiles && profiles.length > 0 && profiles[0].canonical_company_id) {
+        return profiles[0].canonical_company_id;
+      }
+    } catch (e) {
+      // fallback
+    }
+
+    // Preserve explicit legacy test formats if specifically provided as string
+    if (typeof companyId === 'string' && (companyId.startsWith('TD-C') || companyId.startsWith('TD-AMC-C'))) {
+      return companyId;
+    }
+
+    // Default canonical format for unpersisted company IDs
+    const paddedCompId = String(companyId).padStart(3, '0');
+    return `CMP-${paddedCompId}`;
+  }
+
+  // 3. If userId was passed
+  if (userId) {
+    try {
+      const [users] = await connection.query(
+        'SELECT u.id, u.role, COALESCE(p.company_id, u.company_id) AS canonical_company_id FROM users u LEFT JOIN company_profiles p ON u.id = p.user_id WHERE u.id = ? LIMIT 1',
+        [userId]
+      );
+      if (users && users.length > 0) {
+        if (users[0].role === 'company') {
+          if (users[0].canonical_company_id) {
+            return users[0].canonical_company_id;
+          }
+          return `CMP-${String(users[0].id).padStart(3, '0')}`;
+        }
+        // Customer
+        return `TD-${String(users[0].id).padStart(3, '0')}`;
       }
     } catch (e) {
       // ignore
     }
-    const paddedUserId = String(targetUserId).padStart(3, '0');
+    const paddedUserId = String(userId).padStart(3, '0');
     return `TD-${paddedUserId}`;
   }
 
@@ -270,12 +286,11 @@ const resolvePermanentAccountId = async (connection, options = {}) => {
 
 /**
  * Generates the authoritative per-customer / per-company sequential ticket ID:
- * Format: PERMANENT_ACCOUNT_ID + "-" + 2-digit account-specific ticket serial
- *
- * Examples:
- * - Customer: TD-001-01, TD-001-02, TD-170-01...
- * - Company: TD-C001-01, TD-C001-02, TD-C146-01...
- * - AMC Company: TD-AMC-C001-01, TD-AMC-C001-02...
+ * Format:
+ * - Company: PERMANENT_COMPANY_ID + "-" + 3-digit company-specific ticket serial
+ *   Examples: CMP-001-001, CMP-001-002, CMP-002-001, CMP-003-001...
+ * - Customer: PERMANENT_ACCOUNT_ID + "-" + 2-digit customer-specific ticket serial
+ *   Examples: TD-001-01, TD-001-02, TD-170-01...
  *
  * Concurrency & Idempotency:
  * - MySQL atomic increment on app_sequences using sequence_name = 'tkt:' + permanentAccountId
@@ -290,10 +305,8 @@ const generateTicketNumber = async (connection, optionsOrType = {}) => {
 
   if (typeof optionsOrType === 'string') {
     // Legacy fallback for string type ('Individual', 'Company', 'AMC')
-    if (optionsOrType === 'AMC') {
-      permanentAccountId = 'TD-AMC-C001';
-    } else if (optionsOrType === 'Company') {
-      permanentAccountId = 'TD-C001';
+    if (optionsOrType === 'AMC' || optionsOrType === 'Company') {
+      permanentAccountId = 'CMP-001';
     } else {
       permanentAccountId = 'TD-001';
     }
@@ -305,6 +318,8 @@ const generateTicketNumber = async (connection, optionsOrType = {}) => {
     permanentAccountId = 'TD-001';
   }
 
+  const isCompany = permanentAccountId.toUpperCase().startsWith('CMP-');
+  const seqPadding = isCompany ? 3 : 2;
   const seqName = `tkt:${permanentAccountId}`;
 
   try {
@@ -317,7 +332,7 @@ const generateTicketNumber = async (connection, optionsOrType = {}) => {
     const [[{ nextVal }]] = await connection.query('SELECT LAST_INSERT_ID() as nextVal');
 
     const serialNum = nextVal || 1;
-    let candidate = `${permanentAccountId}-${String(serialNum).padStart(2, '0')}`;
+    let candidate = `${permanentAccountId}-${String(serialNum).padStart(seqPadding, '0')}`;
 
     // Safety loop to verify candidate does not collide with any pre-existing entry
     while (true) {
@@ -332,13 +347,13 @@ const generateTicketNumber = async (connection, optionsOrType = {}) => {
         [seqName]
       );
       const [[{ advancedVal }]] = await connection.query('SELECT LAST_INSERT_ID() as advancedVal');
-      candidate = `${permanentAccountId}-${String(advancedVal).padStart(2, '0')}`;
+      candidate = `${permanentAccountId}-${String(advancedVal).padStart(seqPadding, '0')}`;
     }
 
     return candidate;
   } catch (error) {
     console.error('Error in generateTicketNumber:', error.message);
-    return `${permanentAccountId}-${uuidv4().substring(0, 4).toUpperCase()}`;
+    return `${permanentAccountId}-${uuidv4().substring(0, isCompany ? 3 : 4).toUpperCase()}`;
   }
 };
 

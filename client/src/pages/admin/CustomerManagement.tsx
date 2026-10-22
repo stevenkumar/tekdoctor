@@ -19,6 +19,7 @@ import SideDrawer from '@/components/SideDrawer';
 import PaymentReceiptModal from '@/components/PaymentReceiptModal';
 import { NAME_MAX_LENGTH, validateName, validateEmail, validatePassword, DUPLICATE_ERRORS } from '@/config/constants';
 import { parsePhoneNumber, validatePhoneNumber, DEFAULT_COUNTRY } from '@/utils/phoneUtils';
+import { ROUTES } from '@/config/routes';
 
 export default function CustomerManagement() {
     const { token } = useAuth();
@@ -1106,7 +1107,7 @@ export default function CustomerManagement() {
                                     ? "Search ticket #, brand, model, employee..."
                                     : companySubTab === 'devices'
                                         ? "Search asset ID, serial, brand, model..."
-                                        : "Search by Company ID (TD-C001, TD-AMC-C001), name, email, contact..."
+                                        : "Search by Company ID (CMP-001, CMP-002), name, email, contact..."
                         }
                         value={search}
                         onChange={e => setSearch(e.target.value)}
@@ -1310,7 +1311,7 @@ export default function CustomerManagement() {
                                                             </div>
                                                             <div className="flex items-center gap-1.5 mt-0.5">
                                                                 <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-bold">
-                                                                    {c.permanent_company_id || c.company_id || `TD-C${String(c.id).padStart(3, '0')}`}
+                                                                    {c.permanent_company_id || c.company_id || c.permanent_customer_id || `CMP-${String(c.id).padStart(3, '0')}`}
                                                                 </span>
                                                                 <span className="text-[10px] text-zinc-500 font-mono">#{c.id}</span>
                                                             </div>
@@ -1554,7 +1555,7 @@ export default function CustomerManagement() {
                                                             <Download size={13} />
                                                         </button>
                                                         <Link
-                                                            to={`/admin/repair-tickets?id=${t.ticket_number || t.ticketNumber || t.id}`}
+                                                            to={`${ROUTES.ADMIN_TICKETS}?id=${t.ticket_number || t.ticketNumber || t.id}`}
                                                             className="p-1.5 bg-neon-cyan/10 hover:bg-neon-cyan/20 border border-neon-cyan/25 rounded-lg text-neon-cyan transition-all cursor-pointer"
                                                             title="Open Full Repair Ticket Details"
                                                         >
@@ -1803,7 +1804,7 @@ export default function CustomerManagement() {
                                             {selectedCompany.profile?.is_active && <ShieldCheck size={16} className="text-indigo-400" />}
                                         </h2>
                                         <span className="text-xs font-mono px-2 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-bold">
-                                            {selectedCompany.profile?.permanent_company_id || selectedCompany.profile?.company_id || `TD-C${String(selectedCompany.profile?.id || selectedCompany.id).padStart(3, '0')}`}
+                                            {selectedCompany.profile?.permanent_company_id || selectedCompany.profile?.company_id || `CMP-${String(selectedCompany.profile?.id || selectedCompany.id).padStart(3, '0')}`}
                                         </span>
                                     </div>
                                     <span className="text-[10px] font-mono text-zinc-500">Corporate Oversight Dashboard &bull; Database ID #{selectedCompany.profile?.id}</span>
@@ -2060,7 +2061,7 @@ export default function CustomerManagement() {
                                                                 <Download size={10} /> Bill PDF
                                                             </button>
                                                             <Link
-                                                                to={`/admin/repair-tickets?id=${t.ticketNumber || t.id}`}
+                                                                to={`${ROUTES.ADMIN_TICKETS}?id=${t.ticketNumber || t.id}`}
                                                                 className="px-2 py-1 bg-neon-cyan/10 hover:bg-neon-cyan/20 border border-neon-cyan/25 rounded text-neon-cyan text-[9px] font-bold"
                                                             >
                                                                 View
@@ -2598,7 +2599,7 @@ export default function CustomerManagement() {
                                                     </div>
 
                                                     <Link
-                                                        to={`/admin/repair-tickets?id=${r.ticketNumber || r.id}`}
+                                                        to={`${ROUTES.ADMIN_TICKETS}?id=${r.ticketNumber || r.id}`}
                                                         className="px-2.5 py-1 bg-neon-cyan/10 border border-neon-cyan/30 text-neon-cyan rounded-lg hover:bg-neon-cyan/20 transition-colors font-bold text-[10px] tracking-wider uppercase flex items-center gap-1"
                                                     >
                                                         Manage <ExternalLink size={11} />

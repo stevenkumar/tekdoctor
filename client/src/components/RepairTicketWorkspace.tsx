@@ -40,6 +40,7 @@ export interface RepairTicketWorkspaceProps {
     role?: 'admin' | 'technician' | 'company';
     isDrawer?: boolean;
     onOpenFullWorkspace?: (ticketId?: any) => void;
+    onSelectTicket?: (ticket: any) => void;
     technicians?: TechnicianUser[];
     onRequestUpdated?: (updated: Partial<ServiceRequest> & { id: number }) => void;
     onDelete?: () => void;
@@ -55,6 +56,7 @@ export const RepairTicketWorkspace: React.FC<RepairTicketWorkspaceProps> = ({
     role = 'company',
     isDrawer = false,
     onOpenFullWorkspace,
+    onSelectTicket,
     technicians = [],
     onRequestUpdated,
     onDelete,
@@ -199,6 +201,10 @@ export const RepairTicketWorkspace: React.FC<RepairTicketWorkspaceProps> = ({
     const assetId = ticket.asset_id || ticket.assetId || null;
     const isAmc = !!(ticket.is_amc || ticket.isAmc);
     const deviceId = ticket.device_id || ticket.deviceId || null;
+    const serialNumber = ticket.serial_number || ticket.serialNumber || (ticket as any).device_serial || null;
+    const hasRepeatHistory = Boolean((ticket as any).repeatCount > 1 || (ticket as any).deviceRepairHistory?.length > 0 || (ticket as any).repairHistory?.length > 0);
+    const canShowDeviceHistory = Boolean(deviceId || serialNumber || hasRepeatHistory || role === 'admin');
+    const targetHistoryId = deviceId ? Number(deviceId) : (ticket.id ? Number(ticket.id) : null);
 
     const requesterName = ticket.employee_name || ticket.employeeName || ticket.customer_name || ticket.customerName || 'Customer';
     const requesterEmail = ticket.employee_email || ticket.employeeEmail || ticket.email || null;
@@ -703,10 +709,11 @@ export const RepairTicketWorkspace: React.FC<RepairTicketWorkspaceProps> = ({
                                 <RefreshCw size={16} />
                             </button>
                         )}
-                        {deviceId && (
+                        {canShowDeviceHistory && targetHistoryId && (
                             <button
-                                onClick={() => setHistoryDeviceId(Number(deviceId))}
+                                onClick={() => setHistoryDeviceId(targetHistoryId)}
                                 className="px-3 py-2 rounded-xl bg-neon-cyan/10 border border-neon-cyan/30 text-neon-cyan text-xs font-semibold hover:bg-neon-cyan/20 transition-all cursor-pointer flex items-center gap-1.5"
+                                title="View Complete Device Repair History"
                             >
                                 <Clock size={14} />
                                 <span>Device History</span>
@@ -806,10 +813,11 @@ export const RepairTicketWorkspace: React.FC<RepairTicketWorkspaceProps> = ({
                             <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-2">
                                 <Laptop size={14} className="text-neon-cyan" /> Device & Asset Details
                             </h4>
-                            {deviceId && isDrawer && (
+                            {canShowDeviceHistory && targetHistoryId && isDrawer && (
                                 <button
-                                    onClick={() => setHistoryDeviceId(Number(deviceId))}
-                                    className="text-[11px] text-neon-cyan hover:underline flex items-center gap-1 font-mono"
+                                    onClick={() => setHistoryDeviceId(targetHistoryId)}
+                                    className="text-[11px] text-neon-cyan hover:underline flex items-center gap-1 font-mono cursor-pointer"
+                                    title="View Complete Device Repair History"
                                 >
                                     <Clock size={11} /> History
                                 </button>
@@ -1607,6 +1615,15 @@ export const RepairTicketWorkspace: React.FC<RepairTicketWorkspaceProps> = ({
             {historyDeviceId && (
                 <DeviceRepairHistoryModal
                     deviceId={historyDeviceId}
+                    technicians={technicians}
+                    onSelectTicket={(selected) => {
+                        setHistoryDeviceId(null);
+                        if (onSelectTicket) {
+                            onSelectTicket(selected);
+                        } else if (onOpenFullWorkspace) {
+                            onOpenFullWorkspace(selected.id || selected);
+                        }
+                    }}
                     onClose={() => setHistoryDeviceId(null)}
                 />
             )}

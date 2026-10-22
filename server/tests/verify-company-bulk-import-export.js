@@ -608,7 +608,7 @@ async function runTestSuite() {
       await rollbackConn.beginTransaction();
       // Generate candidate ticket number inside transaction
       const rollbackTicket = await generateTicketNumber(rollbackConn, { companyId: compA_Id });
-      assert(rollbackTicket.startsWith('TD-C'), `Generated candidate ticket inside transaction: ${rollbackTicket}`);
+      assert(rollbackTicket.startsWith('CMP-') || rollbackTicket.startsWith('TD-C'), `Generated candidate ticket inside transaction: ${rollbackTicket}`);
 
       // Simulate mid-batch database error (e.g. SQL syntax or constraint violation)
       try {
@@ -762,12 +762,81 @@ async function runTestSuite() {
     );
     assert(compB_Devices.length === 0, 'Company B sees 0 devices despite Company A having 2 devices');
 
+    // =========================================================================
+    // 7. COMPANY PORTAL SPREADSHEET TEMPLATES (DOWNLOAD VERIFICATION)
+    // =========================================================================
+    console.log('\n[Test Group 7] Company Portal Spreadsheet Template Downloads');
+
+    const companyController = require('../controllers/company.controller');
+
+    // Helper to simulate express res for downloadCompanyTemplate
+    const createMockDownloadRes = () => {
+      return {
+        headers: {},
+        statusCode: 200,
+        data: null,
+        status(code) { this.statusCode = code; return this; },
+        setHeader(name, val) { this.headers[name.toLowerCase()] = val; return this; },
+        send(payload) { this.data = payload; return this; },
+        json(payload) { this.data = payload; return this; }
+      };
+    };
+
+    // 7.1 Repairs Template (CSV with samples)
+    const mockResRepairsCsv = createMockDownloadRes();
+    await companyController.downloadCompanyTemplate(
+      { params: { module: 'repairs' }, query: { format: 'csv', samples: 'true' } },
+      mockResRepairsCsv,
+      (err) => { if (err) throw err; }
+    );
+    assert(mockResRepairsCsv.statusCode === 200, 'downloadCompanyTemplate returns HTTP 200 for repairs (CSV)');
+    assert(mockResRepairsCsv.headers['content-type'] === 'text/csv; charset=utf-8', 'Repairs CSV template content-type is text/csv; charset=utf-8');
+    assert(mockResRepairsCsv.headers['content-disposition'].includes('company_repairs_template.csv'), 'Repairs CSV disposition specifies company_repairs_template.csv');
+    const parsedRepairsCsvTemplate = await spreadsheetUtils.parseSpreadsheet(Buffer.from(mockResRepairsCsv.data, 'utf-8'), 'template.csv');
+    assert(parsedRepairsCsvTemplate.data.length === 3, `Repairs CSV template contains 3 sample rows (found ${parsedRepairsCsvTemplate.data.length})`);
+    assert(parsedRepairsCsvTemplate.headers.includes('device_serial') && parsedRepairsCsvTemplate.headers.includes('problem_description'), 'Repairs CSV template includes device_serial and problem_description headers');
+
+    // 7.2 Repairs Template (XLSX with samples)
+    const mockResRepairsXlsx = createMockDownloadRes();
+    await companyController.downloadCompanyTemplate(
+      { params: { module: 'repairs' }, query: { format: 'xlsx', samples: 'true' } },
+      mockResRepairsXlsx,
+      (err) => { if (err) throw err; }
+    );
+    assert(mockResRepairsXlsx.statusCode === 200, 'downloadCompanyTemplate returns HTTP 200 for repairs (XLSX)');
+    assert(mockResRepairsXlsx.headers['content-type'] === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Repairs XLSX template content-type is openxmlformats sheet');
+    assert(mockResRepairsXlsx.headers['content-disposition'].includes('company_repairs_template.xlsx'), 'Repairs XLSX disposition specifies company_repairs_template.xlsx');
+    const parsedRepairsXlsxTemplate = await spreadsheetUtils.parseSpreadsheet(mockResRepairsXlsx.data, 'template.xlsx');
+    assert(parsedRepairsXlsxTemplate.data.length === 3, `Repairs XLSX template contains 3 sample rows (found ${parsedRepairsXlsxTemplate.data.length})`);
+    assert(parsedRepairsXlsxTemplate.headers.includes('device_serial') && parsedRepairsXlsxTemplate.headers.includes('problem_description'), 'Repairs XLSX template includes device_serial and problem_description headers');
+
+    // 7.3 Invalid Module "tickets" Rejection (HTTP 400)
+    const mockResTickets = createMockDownloadRes();
+    await companyController.downloadCompanyTemplate(
+      { params: { module: 'tickets' }, query: { format: 'csv', samples: 'true' } },
+      mockResTickets,
+      (err) => { if (err) throw err; }
+    );
+    assert(mockResTickets.statusCode === 400, 'downloadCompanyTemplate rejects module "tickets" with HTTP 400');
+    assert(mockResTickets.data && mockResTickets.data.message.includes('Allowed modules: branches, employees, devices, repairs'), 'Rejection message clearly lists allowed modules: branches, employees, devices, repairs');
+
+    // 7.4 Other Supported Modules (branches, employees, devices)
+    for (const mod of ['branches', 'employees', 'devices']) {
+      const resMod = createMockDownloadRes();
+      await companyController.downloadCompanyTemplate(
+        { params: { module: mod }, query: { format: 'csv', samples: 'true' } },
+        resMod,
+        (err) => { if (err) throw err; }
+      );
+      assert(resMod.statusCode === 200, `downloadCompanyTemplate returns HTTP 200 for valid module "${mod}"`);
+    }
+
   } catch (err) {
     console.error('\n❌ UNEXPECTED ERROR IN TEST SUITE:', err);
     testsFailed++;
   } finally {
     // =========================================================================
-    // 7. SAFE CLEANUP (ZERO DIRTY FIXTURES OR DAMAGED COUNTERS)
+    // 8. SAFE CLEANUP (ZERO DIRTY FIXTURES OR DAMAGED COUNTERS)
     // =========================================================================
     console.log('\n[Cleanup] Cleaning up isolated test fixtures...');
     try {

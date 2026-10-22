@@ -348,7 +348,7 @@ async function runTests() {
         const updateCompPayload = {
             name: 'Apex Global Infotech',
             email: sampleCompany.email,
-            phone: '9876543212'
+            phone: sampleCompany.phone || `98${Math.floor(10000000 + Math.random() * 90000000)}`
         };
         const updateCompRes = await apiRequest('PUT', `/api/admin/customers/${sampleCompany.id}`, updateCompPayload, adminToken);
         assert(updateCompRes.status === 200, `PUT /api/admin/customers/${sampleCompany.id} for company account returns 200 OK`);

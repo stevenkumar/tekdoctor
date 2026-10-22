@@ -15,6 +15,9 @@ export interface AuthUser {
   phone?: string;
   token_version?: number;
   avatar_url?: string;
+  company_id?: string;
+  permanent_company_id?: string;
+  technician_id?: string;
 }
 
 interface AuthContextType {

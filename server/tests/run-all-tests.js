@@ -54,7 +54,10 @@ const testSuites = [
   'verify-phase8b1-optimizations.js',
 
   // 6. Company Portal Bulk Import / Export & Sequence Integrity
-  'verify-company-bulk-import-export.js'
+  'verify-company-bulk-import-export.js',
+
+  // 7. Multi-Ticket Device History & Ticket Accessibility
+  'verify-device-multi-ticket-history.js'
 ];
 
 function runSuite(suiteFile) {

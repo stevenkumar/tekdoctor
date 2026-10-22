@@ -35,6 +35,8 @@ export interface CompanyProfileDetails {
   address?: string;
   gst_number?: string;
   website_url?: string;
+  company_id?: string;
+  permanent_company_id?: string;
   social_facebook?: string;
   social_instagram?: string;
   social_twitter?: string;
@@ -167,6 +169,7 @@ export const CompanyProvider: React.FC<{ children: ReactNode }> = ({ children })
       return companies.find(c => c.id === selectedCompanyId) || null;
     }
     if (!user) return null;
+    const canonicalCompId = companyProfile?.company_id || (companyProfile as any)?.permanent_company_id || user.company_id || `CMP-${String(user.id).padStart(3, '0')}`;
     return {
       id: user.id,
       name: companyProfile?.company_name || user.name,
@@ -178,6 +181,8 @@ export const CompanyProvider: React.FC<{ children: ReactNode }> = ({ children })
       address: companyProfile?.address,
       gst_number: companyProfile?.gst_number,
       website_url: companyProfile?.website_url,
+      company_id: canonicalCompId,
+      permanent_company_id: canonicalCompId,
     };
   }, [isAdmin, companies, selectedCompanyId, user, companyProfile]);
 

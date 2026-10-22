@@ -69,6 +69,7 @@ interface AdminTicketWorkspaceProps {
     onRequestUpdated: (updated: Partial<ServiceRequest> & { id: number }) => void;
     onDelete: () => void;
     onImagePreview: (src: string, alt: string) => void;
+    onSelectTicket?: (ticket: any) => void;
 }
 
 const getFileUrl = (path: string | null) => {
@@ -85,7 +86,8 @@ export default function AdminTicketWorkspace({
     onBack,
     onRequestUpdated,
     onDelete,
-    onImagePreview
+    onImagePreview,
+    onSelectTicket
 }: AdminTicketWorkspaceProps) {
     const navigate = useNavigate();
     const [modalTab, setModalTab] = useState<AdminModalTab>('details');
@@ -772,9 +774,9 @@ export default function AdminTicketWorkspace({
                                             <Laptop size={14} />
                                             <span>{isCompanyTicket ? 'Corporate Hardware Fleet Identification' : 'Device Specifications'}</span>
                                         </div>
-                                        {deviceId && (
+                                        {(deviceId || request.id) && (
                                             <button
-                                                onClick={() => setHistoryModalDeviceId(Number(deviceId))}
+                                                onClick={() => setHistoryModalDeviceId(Number(deviceId || request.id))}
                                                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono text-neon-cyan hover:bg-neon-cyan/10 border border-neon-cyan/30 transition-colors cursor-pointer"
                                                 title="View Device Lifecycle History"
                                             >
@@ -1784,6 +1786,11 @@ export default function AdminTicketWorkspace({
             {historyModalDeviceId && (
                 <DeviceRepairHistoryModal
                     deviceId={historyModalDeviceId}
+                    technicians={technicians}
+                    onSelectTicket={(selected) => {
+                        setHistoryModalDeviceId(null);
+                        if (onSelectTicket) onSelectTicket(selected);
+                    }}
                     onClose={() => setHistoryModalDeviceId(null)}
                     asDrawer={true}
                 />

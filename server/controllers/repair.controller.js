@@ -382,10 +382,17 @@ const createRepairRequest = async (req, res, next) => {
       }
     }
 
-    // Authoritative per-account sequential ticket number generation (TD-xxx-01, TD-Cxxx-01, TD-AMC-Cxxx-01)
+    // Authoritative per-account sequential ticket number generation (TD-xxx-01, CMP-xxx-xxx)
+    let compIdToPass = targetCompanyId;
+    if (targetCompanyId) {
+      const [cpRows] = await connection.query('SELECT company_id FROM company_profiles WHERE user_id = ? LIMIT 1', [targetCompanyId]);
+      if (cpRows.length > 0 && cpRows[0].company_id) {
+        compIdToPass = cpRows[0].company_id;
+      }
+    }
     const ticketNumber = await generateTicketNumber(connection, {
       userId,
-      companyId: targetCompanyId,
+      companyId: compIdToPass,
       isAmc
     });
 
@@ -713,6 +720,7 @@ const getRepairRequests = async (req, res, next) => {
 
     // Get paginated data
     const dataQuery = `SELECT sr.*, 
+                              cp.company_id as canonical_company_id,
                               cp.company_name, 
                               cp.company_logo,
                               cp.contact_person as company_contact_person,
@@ -747,6 +755,11 @@ const getRepairRequests = async (req, res, next) => {
       invoice_status: row.invoice_status || null,
       invoiceDate: row.invoice_date || null,
       companyId: row.company_id || null,
+      company_id: row.company_id || null,
+      companyNumericId: row.company_id || null,
+      permanent_company_id: row.canonical_company_id || (row.company_id ? 'CMP-' + String(row.company_id).padStart(3, '0') : null),
+      companyPermanentId: row.canonical_company_id || (row.company_id ? 'CMP-' + String(row.company_id).padStart(3, '0') : null),
+      companyCode: row.canonical_company_id || (row.company_id ? 'CMP-' + String(row.company_id).padStart(3, '0') : null),
       companyName: row.company_name || null,
       companyLogo: row.company_logo || null,
       companyContactPerson: row.company_contact_person || null,
@@ -858,7 +871,7 @@ const getRepairRequests = async (req, res, next) => {
       const models = [];
 
       requests.forEach(r => {
-        const serial = r.deviceId ? deviceSerialMap.get(r.deviceId) : null;
+        const serial = r.deviceId ? deviceSerialMap.get(r.deviceId) : (r.serialNumber || null);
         if (serial) {
           serials.push(serial);
         } else if (r.mobile && r.modelNumber) {
@@ -872,8 +885,8 @@ const getRepairRequests = async (req, res, next) => {
       const queryParams = [];
 
       if (serials.length > 0) {
-        conditions.push('d.serial_number IN (?)');
-        queryParams.push(serials);
+        conditions.push('(d.serial_number IN (?) OR sr.serial_number IN (?))');
+        queryParams.push(serials, serials);
       }
       if (mobiles.length > 0 && models.length > 0) {
         conditions.push('(sr.mobile IN (?) AND sr.model_number IN (?))');
@@ -883,8 +896,9 @@ const getRepairRequests = async (req, res, next) => {
       let allHistory = [];
       if (conditions.length > 0) {
         const [historyRows] = await connection.query(
-          `SELECT sr.id, sr.device_id, sr.mobile, sr.model_number, sr.created_at as createdAt, sr.status, 
-                  sr.problem_description as problemDescription, u.name as techName, d.serial_number as serialNumber
+          `SELECT sr.id, sr.ticket_number, sr.device_id, sr.mobile, sr.model_number, sr.created_at as createdAt, sr.status, 
+                  sr.problem_description as problemDescription, u.name as techName, d.serial_number as serialNumber,
+                  sr.serial_number as directSerialNumber
            FROM service_requests sr
            LEFT JOIN company_devices d ON sr.device_id = d.id
            LEFT JOIN users u ON sr.assigned_technician_id = u.id
@@ -897,11 +911,11 @@ const getRepairRequests = async (req, res, next) => {
 
       // 4. Map histories back to each request in-memory
       for (const r of requests) {
-        const serial = r.deviceId ? deviceSerialMap.get(r.deviceId) : null;
+        const serial = r.deviceId ? deviceSerialMap.get(r.deviceId) : (r.serialNumber || null);
         let repeatRows = [];
 
         if (serial) {
-          repeatRows = allHistory.filter(h => h.serialNumber === serial && h.id !== r.id);
+          repeatRows = allHistory.filter(h => (h.serialNumber === serial || h.directSerialNumber === serial) && h.id !== r.id);
         } else if (r.mobile && r.modelNumber) {
           repeatRows = allHistory.filter(h => h.mobile === r.mobile && h.model_number === r.modelNumber && h.id !== r.id);
         }
@@ -909,6 +923,7 @@ const getRepairRequests = async (req, res, next) => {
         r.repeatCount = repeatRows.length + 1;
         r.repairHistory = repeatRows.map(h => ({
           id: h.id,
+          ticketNumber: h.ticket_number,
           createdAt: h.createdAt,
           status: h.status,
           problemDescription: h.problemDescription,
@@ -1737,6 +1752,7 @@ const getRepairRequestById = async (req, res, next) => {
              tech.name as technician_name,
              tech.email as technician_email,
              tech.phone as technician_phone,
+             cp.company_id as canonical_company_id,
              cp.company_name,
              cp.contact_person as company_contact_person,
              cp.phone_number as company_phone,
@@ -1825,10 +1841,20 @@ const getRepairRequestById = async (req, res, next) => {
           LEFT JOIN users tech ON sr.assigned_technician_id = tech.id
           WHERE sr.device_id = ? AND sr.id != ?
           ORDER BY sr.created_at DESC
-          LIMIT 10
+          LIMIT 20
         `, [targetDeviceId, row.id]);
         deviceRepairHistory = histRows;
-      } else if (targetSerial) {
+      } else if (targetSerial && String(targetSerial).trim() !== '') {
+        let compWhere = '';
+        const queryParams = [targetSerial, targetSerial];
+        if (row.company_id) {
+          compWhere = ' AND sr.company_id = ?';
+          queryParams.push(row.company_id);
+        } else if (row.user_id) {
+          compWhere = ' AND sr.company_id IS NULL AND sr.user_id = ?';
+          queryParams.push(row.user_id);
+        }
+        queryParams.push(row.id);
         const [histRows] = await connection.query(`
           SELECT sr.id, sr.ticket_number, sr.created_at, sr.status, sr.priority, 
                  sr.problem_type, sr.problem_description, sr.repair_cost, sr.payment_status,
@@ -1836,10 +1862,25 @@ const getRepairRequestById = async (req, res, next) => {
           FROM service_requests sr
           LEFT JOIN users tech ON sr.assigned_technician_id = tech.id
           WHERE (sr.serial_number = ? OR sr.device_id IN (SELECT id FROM company_devices WHERE serial_number = ?))
+            ${compWhere}
             AND sr.id != ?
           ORDER BY sr.created_at DESC
-          LIMIT 10
-        `, [targetSerial, targetSerial, row.id]);
+          LIMIT 20
+        `, queryParams);
+        deviceRepairHistory = histRows;
+      } else if (row.user_id && row.brand && row.model_number) {
+        const [histRows] = await connection.query(`
+          SELECT sr.id, sr.ticket_number, sr.created_at, sr.status, sr.priority, 
+                 sr.problem_type, sr.problem_description, sr.repair_cost, sr.payment_status,
+                 tech.name as technician_name
+          FROM service_requests sr
+          LEFT JOIN users tech ON sr.assigned_technician_id = tech.id
+          WHERE sr.user_id = ? AND sr.brand = ? AND sr.model_number = ?
+            AND sr.company_id IS NULL
+            AND sr.id != ?
+          ORDER BY sr.created_at DESC
+          LIMIT 20
+        `, [row.user_id, row.brand, row.model_number, row.id]);
         deviceRepairHistory = histRows;
       }
     } catch (e) {
@@ -1855,6 +1896,10 @@ const getRepairRequestById = async (req, res, next) => {
       userId: row.user_id,
       company_id: row.company_id || null,
       companyId: row.company_id || null,
+      companyNumericId: row.company_id || null,
+      permanent_company_id: row.canonical_company_id || (row.company_id ? 'CMP-' + String(row.company_id).padStart(3, '0') : null),
+      companyPermanentId: row.canonical_company_id || (row.company_id ? 'CMP-' + String(row.company_id).padStart(3, '0') : null),
+      companyCode: row.canonical_company_id || (row.company_id ? 'CMP-' + String(row.company_id).padStart(3, '0') : null),
       company_name: row.company_name || null,
       companyName: row.company_name || null,
       company_email: row.company_email || null,

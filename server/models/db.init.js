@@ -1055,7 +1055,7 @@ const MIGRATIONS = [
       // Check unmigrated tickets
       const [unmigrated] = await connection.query(`
         SELECT id FROM service_requests 
-        WHERE ticket_number IS NULL OR ticket_number NOT REGEXP '^(TD|TD-C|TD-AMC-C)[0-9]+-[0-9]{2,}$' 
+        WHERE ticket_number IS NULL OR ticket_number NOT REGEXP '^(TD|TD-C|TD-AMC-C|CMP)[0-9A-Za-z-]+$' 
         LIMIT 1
       `);
       if (unmigrated.length > 0) {
