@@ -16,6 +16,7 @@ const generateToken = (user) => {
       name: user.name,
       email: user.email,
       role: user.role,
+      company_id: user.company_id || user.companyId || null,
       token_version: user.token_version || 1
     },
     config.jwt.secret,

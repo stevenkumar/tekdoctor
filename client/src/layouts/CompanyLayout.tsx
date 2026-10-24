@@ -271,7 +271,9 @@ function CompanyLayoutInner() {
                                     {isAdminManagingCompany ? (
                                         <span className="text-amber-400 font-bold">Admin Authority</span>
                                     ) : (
-                                        selectedCompany?.contact_person || user?.email
+                                        <span className="text-indigo-400 font-bold">
+                                            {selectedCompany?.permanent_company_id || selectedCompany?.company_id || user?.company_id || selectedCompany?.contact_person || user?.email}
+                                        </span>
                                     )}
                                 </div>
                             </div>

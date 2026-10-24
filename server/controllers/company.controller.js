@@ -201,12 +201,14 @@ const getCompanyProfile = async (req, res, next) => {
               COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) AS company_id,
               COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) AS permanent_company_id,
               COALESCE(p.company_id, u.company_id, CONCAT('CMP-', LPAD(u.id, 3, '0'))) AS companyId,
-              p.company_name, p.company_logo, p.contact_person, p.address, 
+              COALESCE(p.company_name, u.name) AS company_name, 
+              COALESCE(p.company_logo, u.avatar_url) AS company_logo, 
+              p.contact_person, p.address, 
               p.gst_number, p.website_url, p.social_facebook, p.social_instagram, 
               p.social_twitter, p.social_linkedin 
        FROM users u 
-       INNER JOIN company_profiles p ON u.id = p.user_id 
-       WHERE u.id = ? LIMIT 1`,
+       LEFT JOIN company_profiles p ON u.id = p.user_id 
+       WHERE u.id = ? AND u.role = 'company' LIMIT 1`,
             [targetCompanyId]
         );
 

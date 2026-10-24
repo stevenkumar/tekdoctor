@@ -2,7 +2,7 @@
 --  TekDoctor — Fresh Production MySQL Schema & Seed Data
 --  Target: phpMyAdmin / cPanel MySQL Database Import
 --  Live Domain: https://thetekdoctor.com
---  Generated: 2026-10-24T11:20:50.341Z
+--  Generated: 2026-10-24T13:23:22.020Z
 -- ============================================================================
 --  HOW TO IMPORT IN phpMyAdmin (cPanel):
 --    1. Log in to cPanel -> Databases -> phpMyAdmin.
@@ -580,7 +580,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 -- 1. Default Admin Account
 INSERT INTO users (name, email, password, role, is_active, token_version)
-VALUES ('TekDoctor Admin', 'vkvseri@gmail.com', '$2a$12$5CWxACvxs600d37cd3MWHuyG8VdKvOSbupZd9BEjFJivCyye.6a/y', 'admin', 1, 1)
+VALUES ('TekDoctor Admin', 'vkvseri@gmail.com', '$2a$12$axQnSNbWPte/G5ef3szRm.H0XitNTfX/RNb4SnxfOBZC5xOnhKNsC', 'admin', 1, 1)
 ON DUPLICATE KEY UPDATE role = 'admin', is_active = 1;
 
 -- 2. Default App Sequences

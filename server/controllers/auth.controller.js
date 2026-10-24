@@ -166,6 +166,23 @@ const signin = async (req, res, next) => {
       }));
     }
 
+    let displayName = user.name;
+    let avatarUrl = user.avatar_url;
+    let companyId = user.company_id || null;
+
+    if (user.role === 'company') {
+      const [compProfile] = await connection.query(
+        'SELECT company_id, company_name, company_logo FROM company_profiles WHERE user_id = ? LIMIT 1',
+        [user.id]
+      );
+      if (compProfile.length > 0) {
+        if (compProfile[0].company_id) companyId = compProfile[0].company_id;
+        if (compProfile[0].company_name) displayName = compProfile[0].company_name;
+        if (compProfile[0].company_logo) avatarUrl = compProfile[0].company_logo;
+      }
+      user.company_id = companyId;
+    }
+
     const token = generateToken(user);
 
     logger.info(`User logged in: ${email} (ID: ${user.id})`);
@@ -173,25 +190,13 @@ const signin = async (req, res, next) => {
     // Log Activity
     await logActivity(user.id, 'security', 'login', 'users', user.id, { name: user.name, role: user.role }, req.ip);
 
-    let displayName = user.name;
-    let avatarUrl = user.avatar_url;
-
-    if (user.role === 'company') {
-      const [compProfile] = await connection.query(
-        'SELECT company_name, company_logo FROM company_profiles WHERE user_id = ? LIMIT 1',
-        [user.id]
-      );
-      if (compProfile.length > 0) {
-        if (compProfile[0].company_name) displayName = compProfile[0].company_name;
-        if (compProfile[0].company_logo) avatarUrl = compProfile[0].company_logo;
-      }
-    }
-
     return res.status(200).json(formatResponse(true, 'Login successful.', {
       id: user.id,
       name: displayName,
       email: user.email,
       role: user.role,
+      company_id: companyId,
+      permanent_company_id: companyId,
       avatar_url: avatarUrl,
       token
     }));

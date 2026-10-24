@@ -1311,9 +1311,8 @@ export default function CustomerManagement() {
                                                             </div>
                                                             <div className="flex items-center gap-1.5 mt-0.5">
                                                                 <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-bold">
-                                                                    {c.permanent_company_id || c.company_id || c.permanent_customer_id || `CMP-${String(c.id).padStart(3, '0')}`}
+                                                                    {c.permanent_company_id || c.company_id || `CMP-${String(c.id).padStart(3, '0')}`}
                                                                 </span>
-                                                                <span className="text-[10px] text-zinc-500 font-mono">#{c.id}</span>
                                                             </div>
                                                             {!c.is_active && (
                                                                 <div className="text-[10px] text-amber-400 font-mono mt-0.5">
@@ -1807,7 +1806,7 @@ export default function CustomerManagement() {
                                             {selectedCompany.profile?.permanent_company_id || selectedCompany.profile?.company_id || `CMP-${String(selectedCompany.profile?.id || selectedCompany.id).padStart(3, '0')}`}
                                         </span>
                                     </div>
-                                    <span className="text-[10px] font-mono text-zinc-500">Corporate Oversight Dashboard &bull; Database ID #{selectedCompany.profile?.id}</span>
+                                    <span className="text-[10px] font-mono text-zinc-500">Corporate Oversight Dashboard &bull; Registered Corporate Client</span>
                                 </div>
                             </div>
                             <button onClick={() => setSelectedCompany(null)} className="p-1.5 hover:bg-zinc-900 rounded-lg text-zinc-400 hover:text-white cursor-pointer">

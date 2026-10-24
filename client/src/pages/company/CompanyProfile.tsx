@@ -21,7 +21,7 @@ interface CompanyProfileData {
 
 export default function CompanyProfile() {
     const { token, user, updateToken } = useAuth();
-    const { selectedCompanyId, isAdminManagingCompany, loadingCompanies, refreshCompanyProfile, refreshCompanies } = useCompanyContext();
+    const { selectedCompany, selectedCompanyId, isAdminManagingCompany, loadingCompanies, refreshCompanyProfile, refreshCompanies } = useCompanyContext();
 
     // Profile settings state
     const [profile, setProfile] = useState<CompanyProfileData | null>(null);
@@ -211,9 +211,16 @@ export default function CompanyProfile() {
     return (
         <div className="space-y-8 animate-fadeIn max-w-4xl">
             {/* Title */}
-            <div>
-                <h1 className="text-2xl md:text-3xl font-bold text-white tracking-tight">Company Profile</h1>
-                <p className="text-zinc-500 text-sm mt-1">Configure business identifiers, primary contacts, and branding images.</p>
+            <div className="flex items-center justify-between flex-wrap gap-3">
+                <div>
+                    <div className="flex items-center gap-3">
+                        <h1 className="text-2xl md:text-3xl font-bold text-white tracking-tight">Company Profile</h1>
+                        <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300">
+                            {selectedCompany?.permanent_company_id || selectedCompany?.company_id || user?.company_id || 'CMP-001'}
+                        </span>
+                    </div>
+                    <p className="text-zinc-500 text-sm mt-1">Configure business identifiers, primary contacts, and branding images.</p>
+                </div>
             </div>
 
             {success && (

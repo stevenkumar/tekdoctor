@@ -169,7 +169,7 @@ export const CompanyProvider: React.FC<{ children: ReactNode }> = ({ children })
       return companies.find(c => c.id === selectedCompanyId) || null;
     }
     if (!user) return null;
-    const canonicalCompId = companyProfile?.company_id || (companyProfile as any)?.permanent_company_id || user.company_id || `CMP-${String(user.id).padStart(3, '0')}`;
+    const canonicalCompId = user.company_id || user.permanent_company_id || companyProfile?.company_id || (companyProfile as any)?.permanent_company_id || (user.id ? `CMP-${String(user.id).padStart(3, '0')}` : 'CMP-001');
     return {
       id: user.id,
       name: companyProfile?.company_name || user.name,
