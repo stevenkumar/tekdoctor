@@ -9,6 +9,8 @@ const {
     validateSetRepairCharges,
     validateContactReply,
     validateChangePassword,
+    validateVerifyLoginOtp,
+    validateResendOtp,
     validateUpdateCustomer,
     validateAdminProfile,
     validateSendMessage
@@ -102,5 +104,7 @@ router.get('/reports', admin.getReports);
 // Profile
 router.put('/profile', validateAdminProfile, admin.updateProfile);
 router.put('/change-password', validateChangePassword, admin.changePassword);
+router.post('/verify-change-password-otp', validateVerifyLoginOtp, admin.verifyChangePasswordOtp);
+router.post('/resend-change-password-otp', validateResendOtp, admin.resendChangePasswordOtp);
 
 module.exports = router;

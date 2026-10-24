@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
   User, Smartphone, Mail, MapPin,
@@ -118,16 +118,212 @@ function matchDistrictForState(stateName: string, loc: { district?: string; city
 }
 
 const DEVICE_CATEGORIES = [
-  'Laptop', 'Desktop PC', 'Printer', 'CCTV',
-  'Monitor', 'UPS', 'Networking Device', 'Other'
+  'Laptop & Computer Repair',
+  'Server & Enterprise Hardware Repair',
+  'CCTV & Security Devices',
+  'Networking & Wi-Fi Devices',
+  'Monitor, TV & Display Repair',
+  'Printer & Scanner Repair',
+  'Tablet & iPad Repair',
+  'Software Installation',
+  'Microsoft 365 Provide',
+  'Other'
 ];
 
-const BRANDS = [
-  'HP', 'Dell', 'Lenovo', 'Acer', 'Asus',
-  'Canon', 'Epson', 'Hikvision', 'CP Plus', 'Other'
-];
+const CATEGORY_BRANDS: Record<string, string[]> = {
+  'Laptop & Computer Repair': [
+    'HP', 'Dell', 'Lenovo', 'Asus', 'Acer', 'Apple (MacBook / Mac)',
+    'MSI', 'Samsung', 'LG', 'Toshiba', 'Custom / Assembled PC', 'Other'
+  ],
+  'Server & Enterprise Hardware Repair': [
+    'Dell PowerEdge / EMC', 'HP Enterprise (HPE)', 'Lenovo ThinkSystem',
+    'Cisco UCS', 'Supermicro', 'IBM', 'Intel Server', 'Synology', 'QNAP', 'Other'
+  ],
+  'CCTV & Security Devices': [
+    'Hikvision', 'CP Plus', 'Dahua', 'Bosch Security', 'Honeywell',
+    'Axis Communications', 'Uniview (UNV)', 'Panasonic', 'Secureye', 'Godrej', 'Other'
+  ],
+  'Networking & Wi-Fi Devices': [
+    'Cisco', 'TP-Link', 'D-Link', 'Netgear', 'Ubiquiti / UniFi',
+    'Mikrotik', 'Aruba / HPE', 'Tenda', 'Linksys', 'Fortinet', 'Other'
+  ],
+  'Monitor, TV & Display Repair': [
+    'Samsung', 'LG', 'Dell', 'HP', 'Sony', 'BenQ',
+    'Acer', 'Asus', 'ViewSonic', 'OnePlus', 'Xiaomi / Mi', 'TCL', 'Other'
+  ],
+  'Printer & Scanner Repair': [
+    'HP', 'Canon', 'Epson', 'Brother', 'Ricoh',
+    'Xerox', 'Kyocera', 'Pantum', 'Fujitsu', 'TVS Electronics', 'Other'
+  ],
+  'Tablet & iPad Repair': [
+    'Apple (iPad)', 'Samsung (Galaxy Tab)', 'Lenovo Tab', 'Xiaomi / Redmi Pad',
+    'Realme Pad', 'OnePlus Pad', 'Microsoft Surface', 'Amazon Fire', 'Other'
+  ],
+  'Software Installation': [
+    'Microsoft Windows (10 / 11)', 'Linux / Ubuntu', 'macOS Setup',
+    'Adobe Creative Cloud', 'Antivirus & Endpoint Security',
+    'Tally / ERP / Accounting Software', 'AutoCAD / Design Software',
+    'Driver & System Optimization', 'Other'
+  ],
+  'Microsoft 365 Provide': [
+    'Microsoft 365 Business Basic', 'Microsoft 365 Business Standard',
+    'Microsoft 365 Business Premium', 'Microsoft 365 Personal / Family',
+    'Office Home & Business 2021 / 2024', 'Exchange Online (Email Only)',
+    'OneDrive & SharePoint Setup', 'Azure AD / Intune Device Management', 'Other'
+  ],
+  'Other': [
+    'HP', 'Dell', 'Lenovo', 'Apple', 'Samsung', 'Custom / Assembled', 'Other'
+  ],
+  // Fallbacks for legacy/rebooked historical records
+  'Laptop': [
+    'HP', 'Dell', 'Lenovo', 'Asus', 'Acer', 'Apple (MacBook / Mac)',
+    'MSI', 'Samsung', 'LG', 'Toshiba', 'Custom / Assembled PC', 'Other'
+  ],
+  'Desktop PC': [
+    'HP', 'Dell', 'Lenovo', 'Asus', 'Acer', 'Apple (MacBook / Mac)',
+    'MSI', 'Samsung', 'LG', 'Toshiba', 'Custom / Assembled PC', 'Other'
+  ],
+  'Printer': [
+    'HP', 'Canon', 'Epson', 'Brother', 'Ricoh',
+    'Xerox', 'Kyocera', 'Pantum', 'Fujitsu', 'TVS Electronics', 'Other'
+  ],
+  'CCTV': [
+    'Hikvision', 'CP Plus', 'Dahua', 'Bosch Security', 'Honeywell',
+    'Axis Communications', 'Uniview (UNV)', 'Panasonic', 'Secureye', 'Godrej', 'Other'
+  ],
+  'Monitor': [
+    'Samsung', 'LG', 'Dell', 'HP', 'Sony', 'BenQ',
+    'Acer', 'Asus', 'ViewSonic', 'OnePlus', 'Xiaomi / Mi', 'TCL', 'Other'
+  ],
+  'UPS': [
+    'APC / Schneider Electric', 'Luminous', 'Microtek', 'V-Guard', 'Numeric', 'Eaton', 'CyberPower', 'Other'
+  ],
+  'Networking Device': [
+    'Cisco', 'TP-Link', 'D-Link', 'Netgear', 'Ubiquiti / UniFi',
+    'Mikrotik', 'Aruba / HPE', 'Tenda', 'Linksys', 'Fortinet', 'Other'
+  ]
+};
 
 const CATEGORY_PROBLEMS: Record<string, string[]> = {
+  'Laptop & Computer Repair': [
+    'Not Powering On / Dead System',
+    'Screen Crack / Flickering / No Display',
+    'Keyboard / Touchpad Fault',
+    'Battery / Charging Port Issue',
+    'Slow Performance / Boot Loop',
+    'Overheating / Fan Noise / Dust Cleaning',
+    'Hardware Upgrade (RAM / SSD / GPU)',
+    'OS Crash / Blue Screen (BSOD) / Virus',
+    'Liquid / Water Spill Damage',
+    'Motherboard / Chip-Level Fault',
+    'Body / Hinge Broken Repair',
+    'Other'
+  ],
+  'Server & Enterprise Hardware Repair': [
+    'Server Not Powering On / Redundant PSU Failure',
+    'RAID Array Degraded / Drive Offline',
+    'Boot Loop / Hypervisor Crash (ESXi / Hyper-V)',
+    'Overheating / Server Blower Fan Failure',
+    'Motherboard / Dual CPU Socket Fault',
+    'ECC RAM / Memory Error',
+    'Storage / SAS / NVMe Controller Fault',
+    'iDRAC / iLO Remote Management Issue',
+    'Firmware / BIOS Update Issue',
+    'Network Interface / 10G SFP+ Link Down',
+    'Scheduled Preventive Maintenance (PPM)',
+    'Other'
+  ],
+  'CCTV & Security Devices': [
+    'CCTV Camera Offline / No Signal',
+    'Blank Video Feed / Black Screen',
+    'Intermittent Video Loss / Line Noise',
+    'NVR / DVR Storage / HDD Not Detected',
+    'Recording Not Saving / Playback Failure',
+    'Admin Password Reset / Account Lockout',
+    'Night Vision / IR LED Failure',
+    'PTZ Camera Motor / Rotation Issue',
+    'PoE Switch / Power Adapter Failure',
+    'Mobile App Viewing / Cloud Link Offline',
+    'Other'
+  ],
+  'Networking & Wi-Fi Devices': [
+    'No Internet / WAN Link Down',
+    'Frequent Wi-Fi Disconnections / Drops',
+    'Router / Managed Switch Boot Loop',
+    'SSID / Password / VLAN Configuration Issue',
+    'Local LAN / Ethernet Port Failure',
+    'Low Wi-Fi Range / Signal Dead Zones',
+    'Firewall / VPN / Port Forwarding Error',
+    'Firmware Corruption / Brick Recovery',
+    'Bandwidth Throttling / High Latency',
+    'Other'
+  ],
+  'Monitor, TV & Display Repair': [
+    'No Display / Standby Light Blinking',
+    'Dim Screen / LED Backlight Burnout',
+    'Flickering / Horizontal or Vertical Lines',
+    'Color Bleeding / Ghosting / Inverted Colors',
+    'Physical Screen Crack / Broken Panel',
+    'HDMI / DisplayPort / Audio Jack Defective',
+    'Power Board / Motherboard Short Circuit',
+    'Display Powers Off After Few Seconds',
+    'Other'
+  ],
+  'Printer & Scanner Repair': [
+    'Printer Not Printing / Spooler Error',
+    'Frequent Paper Jam / Roller Slip',
+    'Faded / Blank / Streaked Printouts',
+    'Ink Tank / Cartridge Head Clogged',
+    'Scanner Glass / ADF Feeder Failure',
+    'Error Code / Red Light Blinking',
+    'Wi-Fi / USB Connectivity Issue',
+    'Toner / Ink Leakage Inside Mechanism',
+    'Driver Installation / Offline Status Issue',
+    'Other'
+  ],
+  'Tablet & iPad Repair': [
+    'Touch Screen Unresponsive / Broken Glass',
+    'Display Blank / Flickering LCD / OLED',
+    'Battery Draining Fast / Swollen Battery',
+    'Charging Port Loose / Not Charging',
+    'Stuck on Apple / Android Logo Boot Loop',
+    'Speaker / Microphone / Audio Issue',
+    'Camera Not Working / Blurry Lens',
+    'Body Dent / Bent Frame Repair',
+    'Liquid Spill Damage',
+    'Other'
+  ],
+  'Software Installation': [
+    'Clean OS Installation / OS Upgrade (Windows / Linux / Mac)',
+    'Dual Boot Configuration (Windows + Linux)',
+    'Software License Activation / Key Error',
+    'Virus / Malware Removal & System Cleanup',
+    'Driver Conflict / Hardware Driver Installation',
+    'Application Crashing / Corrupt DLL Files',
+    'Data Backup & OS Migration to SSD',
+    'Enterprise Accounting / ERP Software Setup',
+    'Other'
+  ],
+  'Microsoft 365 Provide': [
+    'New Tenant Setup & Domain Verification',
+    'Email Migration from Google Workspace / cPanel to M365',
+    'Outlook Configuration & Sync Issues',
+    'OneDrive & SharePoint Cloud Storage Setup',
+    'Microsoft Teams & Collaboration Configuration',
+    'User License Allocation & Management',
+    '2-Factor Authentication (MFA) & Security Policy',
+    'Subscription Renewal / License Upgrade',
+    'Other'
+  ],
+  'Other': [
+    'Hardware Component Fault',
+    'Diagnostic & Troubleshooting Request',
+    'General Technical Assistance',
+    'Preventive Maintenance Service',
+    'Custom IT Requirement',
+    'Other'
+  ],
+  // Fallbacks for legacy/rebooked historical records
   'Laptop': [
     'Not Powering On', 'Screen Crack/Flicker', 'Keyboard/Touchpad Fault',
     'Battery/Charging Issue', 'Slow Performance/Boot Loop', 'Overheating/Fan Noise',
@@ -159,9 +355,6 @@ const CATEGORY_PROBLEMS: Record<string, string[]> = {
   'Networking Device': [
     'No WiFi/Internet Offline', 'Router/Switch Reboot Loop', 'Config/SSID Password Issue',
     'Local Network Access Failure', 'Range/Signal Strength Issues', 'Other'
-  ],
-  'Other': [
-    'Hardware Component Fault', 'Diagnostic Request', 'General Technical Assistance', 'Other'
   ]
 };
 
@@ -227,6 +420,25 @@ export default function RepairInquiryForm() {
   const [pincodePlaces, setPincodePlaces] = useState<string[]>([]);
   const [loadingPincode, setLoadingPincode] = useState(false);
   const lastFetchedZipRef = useRef('');
+
+  // Dynamically resolve category-specific brands and problems locally
+  const availableBrands = useMemo(() => {
+    if (!formData.deviceCategory) return [];
+    const list = CATEGORY_BRANDS[formData.deviceCategory] || CATEGORY_BRANDS['Other'] || [];
+    if (formData.brand && !list.includes(formData.brand) && formData.brand !== 'Other') {
+      return [formData.brand, ...list];
+    }
+    return list;
+  }, [formData.deviceCategory, formData.brand]);
+
+  const availableProblems = useMemo(() => {
+    if (!formData.deviceCategory) return [];
+    const list = CATEGORY_PROBLEMS[formData.deviceCategory] || CATEGORY_PROBLEMS['Other'] || [];
+    if (formData.problemType && !list.includes(formData.problemType) && formData.problemType !== 'Other') {
+      return [formData.problemType, ...list];
+    }
+    return list;
+  }, [formData.deviceCategory, formData.problemType]);
 
   // Auto redirect countdown to Customer Dashboard after successful booking
   useEffect(() => {
@@ -523,14 +735,14 @@ export default function RepairInquiryForm() {
       case 'brand': {
         const trimmed = (value || '').trim();
         if (!trimmed) return 'Brand is required.';
-        if (trimmed.length > 30) return 'Brand cannot exceed 30 characters.';
+        if (trimmed.length > 50) return 'Brand cannot exceed 50 characters.';
         return undefined;
       }
       case 'customBrand': {
         if (currentForm.brand === 'Other') {
           const trimmed = (value || '').trim();
           if (!trimmed) return 'Please specify your custom brand.';
-          if (trimmed.length < 2 || trimmed.length > 30) return 'Brand name must be between 2 and 30 characters.';
+          if (trimmed.length < 2 || trimmed.length > 50) return 'Brand name must be between 2 and 50 characters.';
         }
         return undefined;
       }
@@ -615,6 +827,8 @@ export default function RepairInquiryForm() {
         nextData.city = '';
       }
       if (name === 'deviceCategory') {
+        nextData.brand = '';
+        nextData.customBrand = '';
         nextData.problemType = '';
         nextData.customProblemType = '';
         if (value !== 'Other') {
@@ -640,6 +854,37 @@ export default function RepairInquiryForm() {
         if (value) {
           delete next.state;
         }
+        return next;
+      });
+    }
+
+    if (name === 'deviceCategory') {
+      setErrors(prev => {
+        const next = { ...prev };
+        delete next.brand;
+        delete next.customBrand;
+        delete next.problemType;
+        delete next.customProblemType;
+        if (value !== 'Other') delete next.customDeviceCategory;
+        if (value) delete next.deviceCategory;
+        return next;
+      });
+    }
+
+    if (name === 'brand') {
+      setErrors(prev => {
+        const next = { ...prev };
+        if (value !== 'Other') delete next.customBrand;
+        if (value) delete next.brand;
+        return next;
+      });
+    }
+
+    if (name === 'problemType') {
+      setErrors(prev => {
+        const next = { ...prev };
+        if (value !== 'Other') delete next.customProblemType;
+        if (value) delete next.problemType;
         return next;
       });
     }
@@ -1397,7 +1642,7 @@ export default function RepairInquiryForm() {
             {formData.deviceCategory === 'Other' && (
               <div className="md:col-span-2">
                 <label htmlFor="customDeviceCategory" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">
-                  Please specify your device category *
+                  Please specify your device category / custom requirement *
                 </label>
                 <input
                   type="text"
@@ -1411,7 +1656,7 @@ export default function RepairInquiryForm() {
                   onBlur={handleBlur}
                   aria-invalid={Boolean(errors.customDeviceCategory)}
                   aria-describedby={errors.customDeviceCategory ? "customDeviceCategory-error" : undefined}
-                  placeholder="e.g. Medical Monitor, VR Headset, Smart Watch"
+                  placeholder="e.g. Medical Equipment, Specialized Hardware, Custom Requirement"
                   className={`w-full bg-black border ${errors.customDeviceCategory ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all ${
                     isRebookMode ? 'opacity-70 cursor-not-allowed bg-zinc-950/80 border-zinc-700' : ''
                   }`}
@@ -1423,22 +1668,24 @@ export default function RepairInquiryForm() {
             )}
 
             <div>
-              <label htmlFor="brand" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Brand Name *</label>
+              <label htmlFor="brand" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Brand / Provider Name *</label>
               <select
                 id="brand"
                 name="brand"
-                disabled={isRebookMode}
+                disabled={isRebookMode || !formData.deviceCategory}
                 value={formData.brand}
                 onChange={handleInputChange}
                 onBlur={handleBlur}
                 aria-invalid={Boolean(errors.brand)}
                 aria-describedby={errors.brand ? "brand-error" : undefined}
                 className={`w-full bg-black border ${errors.brand ? 'border-red-500/50' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-zinc-300 focus:outline-none transition-all appearance-none ${
-                  isRebookMode ? 'opacity-70 cursor-not-allowed bg-zinc-950/80 border-zinc-700' : 'cursor-pointer'
+                  isRebookMode || !formData.deviceCategory ? 'opacity-70 cursor-not-allowed bg-zinc-950/80 border-zinc-700' : 'cursor-pointer'
                 }`}
               >
-                <option value="">-- Select Brand --</option>
-                {BRANDS.map(brand => (
+                <option value="">
+                  {!formData.deviceCategory ? '-- Please Select Category First --' : '-- Select Brand / Provider --'}
+                </option>
+                {availableBrands.map(brand => (
                   <option key={brand} value={brand}>{brand}</option>
                 ))}
               </select>
@@ -1447,12 +1694,12 @@ export default function RepairInquiryForm() {
 
             {formData.brand === 'Other' && (
               <div className="md:col-span-2">
-                <label htmlFor="customBrand" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Custom Brand Name *</label>
+                <label htmlFor="customBrand" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Custom Brand / Provider Name *</label>
                 <input
                   type="text"
                   id="customBrand"
                   name="customBrand"
-                  maxLength={30}
+                  maxLength={50}
                   disabled={isRebookMode}
                   readOnly={isRebookMode}
                   value={formData.customBrand}
@@ -1460,7 +1707,7 @@ export default function RepairInquiryForm() {
                   onBlur={handleBlur}
                   aria-invalid={Boolean(errors.customBrand)}
                   aria-describedby={errors.customBrand ? "customBrand-error" : undefined}
-                  placeholder="e.g. Acer or MSI (Max 30 chars)"
+                  placeholder="e.g. Acer, MSI, Custom Brand (Max 50 chars)"
                   className={`w-full bg-black border ${errors.customBrand ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-white focus:outline-none transition-all ${
                     isRebookMode ? 'opacity-70 cursor-not-allowed bg-zinc-950/80 border-zinc-700' : ''
                   }`}
@@ -1555,21 +1802,22 @@ export default function RepairInquiryForm() {
               <select
                 id="problemType"
                 name="problemType"
+                disabled={!formData.deviceCategory}
                 value={formData.problemType}
                 onChange={handleInputChange}
                 onBlur={handleBlur}
                 aria-invalid={Boolean(errors.problemType)}
                 aria-describedby={errors.problemType ? "problemType-error" : undefined}
-                className={`w-full bg-black border ${errors.problemType ? 'border-red-500/50' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-zinc-300 focus:outline-none transition-all appearance-none cursor-pointer`}
+                className={`w-full bg-black border ${errors.problemType ? 'border-red-500/50' : 'border-zinc-800 focus:border-neon-cyan'} rounded-lg p-3 text-sm text-zinc-300 focus:outline-none transition-all appearance-none ${
+                  !formData.deviceCategory ? 'opacity-70 cursor-not-allowed bg-zinc-950/80 border-zinc-700' : 'cursor-pointer'
+                }`}
               >
-                <option value="">-- Select Problem Type --</option>
-                {formData.deviceCategory ? (
-                  CATEGORY_PROBLEMS[formData.deviceCategory]?.map(type => (
-                    <option key={type} value={type}>{type}</option>
-                  ))
-                ) : (
-                  <option disabled value="">Please select device category first</option>
-                )}
+                <option value="">
+                  {!formData.deviceCategory ? '-- Please Select Device Category First --' : '-- Select Problem Type --'}
+                </option>
+                {availableProblems.map(type => (
+                  <option key={type} value={type}>{type}</option>
+                ))}
               </select>
               {errors.problemType && <p id="problemType-error" className="text-red-400 text-xs mt-1 font-mono">{errors.problemType}</p>}
             </div>

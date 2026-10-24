@@ -82,6 +82,8 @@ export default function TechnicianDashboard() {
     const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
     const [notifFilter, setNotifFilter] = useState<'all' | 'unread'>('all');
     const [searchQuery, setSearchQuery] = useState<string>('');
+    const [diagSearch, setDiagSearch] = useState<string>('');
+    const [diagFilter, setDiagFilter] = useState<'all' | 'priority' | 'individual' | 'b2b'>('all');
     const [isLoading, setIsLoading] = useState<boolean>(true);
     const [errorMsg, setErrorMsg] = useState<string>('');
     const [selectedTask, setSelectedTask] = useState<ServiceRequest | null>(null);
@@ -1062,10 +1064,9 @@ export default function TechnicianDashboard() {
     const completedCount = tasks.filter(t => t.status === 'completed').length;
     const deliveredCount = tasks.filter(t => t.status === 'delivered').length;
 
-    // Select top Diagnosis & Estimate ticket and Pending Acceptance ticket for Dashboard overview
-    const diagnosisTicket = useMemo(() => {
+    // Diagnosis & Estimate queue for Dashboard overview
+    const diagnosisTickets = useMemo(() => {
         const eligible = tasks.filter(t => t.status?.toLowerCase() === 'pending' && t.pendingTechnicianId !== user?.id);
-        if (eligible.length === 0) return null;
         return [...eligible].sort((a, b) => {
             const isPriorityA = (a.priority?.toLowerCase() === 'priority' || a.priority?.toLowerCase() === 'urgent') ? 1 : 0;
             const isPriorityB = (b.priority?.toLowerCase() === 'priority' || b.priority?.toLowerCase() === 'urgent') ? 1 : 0;
@@ -1073,21 +1074,42 @@ export default function TechnicianDashboard() {
             const timeA = new Date(a.updatedAt || a.createdAt || 0).getTime();
             const timeB = new Date(b.updatedAt || b.createdAt || 0).getTime();
             return timeB - timeA;
-        })[0];
+        });
     }, [tasks, user?.id]);
 
-    const pendingAcceptanceTicket = useMemo(() => {
-        const eligible = tasks.filter(t => t.pendingTechnicianId === user?.id);
-        if (eligible.length === 0) return null;
-        return [...eligible].sort((a, b) => {
-            const isPriorityA = (a.priority?.toLowerCase() === 'priority' || a.priority?.toLowerCase() === 'urgent') ? 1 : 0;
-            const isPriorityB = (b.priority?.toLowerCase() === 'priority' || b.priority?.toLowerCase() === 'urgent') ? 1 : 0;
-            if (isPriorityA !== isPriorityB) return isPriorityB - isPriorityA;
-            const timeA = new Date(a.updatedAt || a.createdAt || 0).getTime();
-            const timeB = new Date(b.updatedAt || b.createdAt || 0).getTime();
-            return timeB - timeA;
-        })[0];
-    }, [tasks, user?.id]);
+    const displayedDiagnosisTickets = useMemo(() => {
+        let list = diagnosisTickets;
+        if (diagFilter === 'priority') {
+            list = list.filter(t => t.priority?.toLowerCase() === 'priority' || t.priority?.toLowerCase() === 'urgent');
+        } else if (diagFilter === 'individual') {
+            list = list.filter(t => !t.companyId && !t.companyName);
+        } else if (diagFilter === 'b2b') {
+            list = list.filter(t => Boolean(t.companyId || t.companyName));
+        }
+
+        if (diagSearch.trim()) {
+            const q = diagSearch.toLowerCase().trim();
+            list = list.filter(t =>
+                (t.ticketNumber && t.ticketNumber.toLowerCase().includes(q)) ||
+                (t.customerName && t.customerName.toLowerCase().includes(q)) ||
+                (t.companyName && t.companyName.toLowerCase().includes(q)) ||
+                (t.companyContactPerson && t.companyContactPerson.toLowerCase().includes(q)) ||
+                (t.employeeName && t.employeeName.toLowerCase().includes(q)) ||
+                (t.serialNumber && t.serialNumber.toLowerCase().includes(q)) ||
+                (t.assetId && t.assetId.toLowerCase().includes(q)) ||
+                (t.mobile && t.mobile.includes(q)) ||
+                (t.companyPhone && t.companyPhone.includes(q)) ||
+                (t.employeePhone && t.employeePhone.includes(q)) ||
+                (t.city && t.city.toLowerCase().includes(q)) ||
+                (t.deviceCategory && t.deviceCategory.toLowerCase().includes(q)) ||
+                (t.brand && t.brand.toLowerCase().includes(q)) ||
+                (t.customBrand && t.customBrand.toLowerCase().includes(q)) ||
+                (t.modelNumber && t.modelNumber.toLowerCase().includes(q)) ||
+                (t.problemType && t.problemType.toLowerCase().includes(q))
+            );
+        }
+        return list;
+    }, [diagnosisTickets, diagFilter, diagSearch]);
 
     const displayedNotifications = notifications.filter(n => {
         if (notifFilter === 'unread') {
@@ -1743,274 +1765,346 @@ export default function TechnicianDashboard() {
                         )}
                     </div>
                 ) : isDashboardRoute ? (
-                    /* ── DASHBOARD VIEW (Diagnosis & Estimate and Pending Acceptance Ticket Cards) ── */
-                    isLoading ? (
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-                            <div className="bg-[#0c0c0c] border border-zinc-900 rounded-2xl p-5 min-h-[300px] flex flex-col justify-between animate-pulse">
-                                <div className="h-4 bg-zinc-800 rounded w-1/3 mb-4"></div>
-                                <div className="space-y-3">
-                                    <div className="h-16 bg-zinc-900/60 rounded-xl"></div>
-                                    <div className="h-20 bg-zinc-900/40 rounded-xl"></div>
+                    /* ── DASHBOARD VIEW: DEDICATED DIAGNOSIS & ESTIMATE SECTION ── */
+                    <div className="space-y-6">
+                        {/* Smart Banner: Only displayed if there are incoming transfer requests awaiting response */}
+                        {pendingTransferCount > 0 && (
+                            <div className="bg-gradient-to-r from-amber-500/15 via-amber-500/10 to-transparent border border-amber-500/30 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                                <div className="flex items-center gap-3.5">
+                                    <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
+                                        <Clock size={20} className="animate-pulse" />
+                                    </div>
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-amber-300">
+                                                Task Transfer Requests Waiting
+                                            </h4>
+                                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                                {pendingTransferCount} pending
+                                            </span>
+                                        </div>
+                                        <p className="text-xs text-zinc-400 mt-0.5">
+                                            Another technician has transferred device tasks to your bench. Review and accept or reject.
+                                        </p>
+                                    </div>
                                 </div>
-                                <div className="h-4 bg-zinc-800/60 rounded w-1/2 mt-4"></div>
+                                <button
+                                    type="button"
+                                    onClick={() => navigate(`${ROUTES.TECHNICIAN_ASSIGNED_TICKETS}?tab=pending_acceptance`)}
+                                    className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-mono font-bold transition-all cursor-pointer shadow-lg shadow-amber-500/10 flex items-center gap-1.5 shrink-0"
+                                >
+                                    <span>Review Requests ({pendingTransferCount})</span>
+                                    <ChevronRight size={14} />
+                                </button>
                             </div>
-                            <div className="bg-[#0c0c0c] border border-zinc-900 rounded-2xl p-5 min-h-[300px] flex flex-col justify-between animate-pulse">
-                                <div className="h-4 bg-zinc-800 rounded w-1/3 mb-4"></div>
-                                <div className="space-y-3">
-                                    <div className="h-16 bg-zinc-900/60 rounded-xl"></div>
-                                    <div className="h-20 bg-zinc-900/40 rounded-xl"></div>
+                        )}
+
+                        {/* Section Header with Device Queue Counts & Quick Filters */}
+                        <div className="bg-gradient-to-b from-[#0e0e0e] to-[#070707] border border-zinc-900 rounded-2xl p-4 sm:p-6 space-y-4">
+                            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-zinc-900">
+                                <div>
+                                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                        <div className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                            <Cpu size={16} />
+                                        </div>
+                                        <span className="text-xs font-mono font-bold uppercase tracking-widest text-blue-400">
+                                            Diagnosis & Estimate Queue
+                                        </span>
+                                        <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                                            {diagnosisTickets.length} {diagnosisTickets.length === 1 ? 'Device' : 'Devices'} Pending Diagnosis
+                                        </span>
+                                    </div>
+                                    <h2 className="text-xl sm:text-2xl font-extrabold text-white font-outfit tracking-tight">
+                                        Devices Awaiting Diagnosis & Quotation
+                                    </h2>
+                                    <p className="text-xs text-zinc-400 mt-1 max-w-2xl leading-relaxed">
+                                        Inspect reported device issues, test hardware faults, and create accurate cost estimates for customer approval.
+                                    </p>
                                 </div>
-                                <div className="h-4 bg-zinc-800/60 rounded w-1/2 mt-4"></div>
+
+                                <div className="flex items-center gap-2.5 self-start lg:self-auto shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => navigate(ROUTES.TECHNICIAN_DIAGNOSIS)}
+                                        className="px-3.5 py-2 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-300 hover:text-white text-xs font-mono font-semibold transition-all cursor-pointer flex items-center gap-1.5"
+                                        title="Open full dedicated Diagnosis page"
+                                    >
+                                        <span>Full Stage View</span>
+                                        <ChevronRight size={13} />
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Filters & Search Row */}
+                            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 pt-1">
+                                {/* Segmented Filters */}
+                                <div className="flex flex-wrap items-center gap-1.5 bg-black/40 p-1 rounded-xl border border-zinc-900">
+                                    <button
+                                        type="button"
+                                        onClick={() => setDiagFilter('all')}
+                                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center gap-1.5 ${
+                                            diagFilter === 'all'
+                                                ? 'bg-blue-500 text-black font-bold shadow'
+                                                : 'text-zinc-400 hover:text-white'
+                                        }`}
+                                    >
+                                        <span>All Devices</span>
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${diagFilter === 'all' ? 'bg-black/20 text-black font-bold' : 'bg-zinc-800 text-zinc-400'}`}>
+                                            {diagnosisTickets.length}
+                                        </span>
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        onClick={() => setDiagFilter('priority')}
+                                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center gap-1.5 ${
+                                            diagFilter === 'priority'
+                                                ? 'bg-amber-500 text-black font-bold shadow'
+                                                : 'text-zinc-400 hover:text-white'
+                                        }`}
+                                    >
+                                        <span>Priority / Urgent</span>
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${diagFilter === 'priority' ? 'bg-black/20 text-black font-bold' : 'bg-zinc-800 text-amber-400'}`}>
+                                            {diagnosisTickets.filter(t => t.priority?.toLowerCase() === 'priority' || t.priority?.toLowerCase() === 'urgent').length}
+                                        </span>
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        onClick={() => setDiagFilter('individual')}
+                                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center gap-1.5 ${
+                                            diagFilter === 'individual'
+                                                ? 'bg-zinc-700 text-white font-bold shadow'
+                                                : 'text-zinc-400 hover:text-white'
+                                        }`}
+                                    >
+                                        <span>Individual</span>
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${diagFilter === 'individual' ? 'bg-black/20 text-white font-bold' : 'bg-zinc-800 text-zinc-400'}`}>
+                                            {diagnosisTickets.filter(t => !t.companyId && !t.companyName).length}
+                                        </span>
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        onClick={() => setDiagFilter('b2b')}
+                                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center gap-1.5 ${
+                                            diagFilter === 'b2b'
+                                                ? 'bg-purple-600 text-white font-bold shadow'
+                                                : 'text-zinc-400 hover:text-white'
+                                        }`}
+                                    >
+                                        <span>B2B Company</span>
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${diagFilter === 'b2b' ? 'bg-black/20 text-white font-bold' : 'bg-zinc-800 text-purple-300'}`}>
+                                            {diagnosisTickets.filter(t => Boolean(t.companyId || t.companyName)).length}
+                                        </span>
+                                    </button>
+                                </div>
+
+                                {/* Quick Search for Diagnosis devices */}
+                                <div className="relative w-full md:w-80">
+                                    <Search className="absolute left-3.5 top-2.5 w-3.5 h-3.5 text-blue-400" />
+                                    <input
+                                        type="text"
+                                        placeholder="Search by ticket #, brand, customer, fault..."
+                                        value={diagSearch}
+                                        onChange={e => setDiagSearch(e.target.value)}
+                                        className="w-full bg-black/60 border border-zinc-800 rounded-xl pl-9 pr-8 py-1.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 transition-all font-mono"
+                                    />
+                                    {diagSearch && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setDiagSearch('')}
+                                            className="absolute right-2.5 top-2 text-zinc-500 hover:text-white p-0.5 rounded transition-colors cursor-pointer"
+                                            title="Clear search"
+                                        >
+                                            <X size={13} />
+                                        </button>
+                                    )}
+                                </div>
                             </div>
                         </div>
-                    ) : (
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-                            {/* Card 1: Diagnosis & Estimate Ticket */}
-                            {diagnosisTicket ? (() => {
-                                const isB2B = Boolean(diagnosisTicket.companyId || diagnosisTicket.companyName);
-                                const identifier = diagnosisTicket.assetId ? `Asset: ${diagnosisTicket.assetId}` : diagnosisTicket.serialNumber ? `S/N: ${diagnosisTicket.serialNumber}` : 'ID: N/A';
-                                return (
-                                    <div
-                                        key={diagnosisTicket.id}
-                                        onClick={() => openModal(diagnosisTicket, 'diagnosis')}
-                                        className="bg-[#0c0c0c] border border-blue-500/20 hover:border-blue-500/40 hover:bg-blue-500/[0.02] rounded-xl sm:rounded-2xl p-4 sm:p-5 cursor-pointer transition-all group relative overflow-hidden flex flex-col justify-between"
+
+                        {/* Diagnosis Devices Grid */}
+                        {isLoading ? (
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+                                {[1, 2, 3].map(i => (
+                                    <div key={i} className="bg-[#0c0c0c] border border-zinc-900 rounded-2xl p-5 min-h-[300px] flex flex-col justify-between animate-pulse">
+                                        <div className="h-4 bg-zinc-800 rounded w-1/3 mb-4"></div>
+                                        <div className="space-y-3">
+                                            <div className="h-14 bg-zinc-900/60 rounded-xl"></div>
+                                            <div className="h-20 bg-zinc-900/40 rounded-xl"></div>
+                                        </div>
+                                        <div className="h-6 bg-zinc-800/60 rounded w-1/2 mt-4"></div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : displayedDiagnosisTickets.length === 0 ? (
+                            <div className="bg-[#0c0c0c] border border-dashed border-zinc-900 rounded-2xl p-10 sm:p-14 flex flex-col items-center justify-center text-center min-h-[300px]">
+                                <div className="w-14 h-14 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-4 text-blue-400">
+                                    <Cpu size={28} />
+                                </div>
+                                <h4 className="text-base font-mono font-bold uppercase tracking-wider text-zinc-200 mb-2">
+                                    {diagnosisTickets.length === 0
+                                        ? 'No Devices Currently Awaiting Diagnosis'
+                                        : 'No Devices Match Selected Filter'}
+                                </h4>
+                                <p className="text-xs text-zinc-500 max-w-md font-mono mb-5 leading-relaxed">
+                                    {diagnosisTickets.length === 0
+                                        ? 'All repair tasks assigned to you have been diagnosed or moved to in-progress repairs. When new devices arrive for inspection, they will automatically appear here.'
+                                        : 'Try clearing your search query or switching filters to view all devices waiting for diagnosis.'}
+                                </p>
+                                {diagnosisTickets.length > 0 ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => { setDiagFilter('all'); setDiagSearch(''); }}
+                                        className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-xl text-xs font-mono text-blue-400 hover:text-white transition-colors cursor-pointer"
                                     >
-                                        <div>
-                                            {/* Stage Header */}
-                                            <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-zinc-900">
-                                                <div className="flex items-center gap-2">
-                                                    <Cpu size={14} className="text-blue-400" />
-                                                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-blue-400">Diagnosis & Estimate</span>
-                                                </div>
-                                                <span className="text-[10px] font-mono text-zinc-500 bg-zinc-900/60 px-2 py-0.5 rounded border border-zinc-800">
-                                                    {pendingCount} in queue
-                                                </span>
-                                            </div>
-
-                                            {/* Authoritative Ticket ID & Badges */}
-                                            <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
-                                                <div>
-                                                    <span className="text-xs font-mono font-bold text-blue-400 tracking-wider block">
-                                                        {diagnosisTicket.ticketNumber || `TICKET_ID: #${diagnosisTicket.id}`}
+                                        Reset Filters ({diagnosisTickets.length} devices)
+                                    </button>
+                                ) : (
+                                    <div className="flex flex-wrap items-center justify-center gap-3">
+                                        <button
+                                            type="button"
+                                            onClick={() => navigate(ROUTES.TECHNICIAN_IN_PROGRESS)}
+                                            className="px-4 py-2 bg-neon-cyan/10 hover:bg-neon-cyan/20 border border-neon-cyan/30 text-neon-cyan hover:text-white rounded-xl text-xs font-mono font-semibold transition-colors cursor-pointer flex items-center gap-1.5"
+                                        >
+                                            <Hammer size={13} />
+                                            <span>Active Repairs ({inProgressCount})</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => navigate(ROUTES.TECHNICIAN_ASSIGNED_TICKETS)}
+                                            className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-xl text-xs font-mono text-zinc-300 hover:text-white transition-colors cursor-pointer flex items-center gap-1.5"
+                                        >
+                                            <ClipboardList size={13} />
+                                            <span>All Assigned Tasks ({tasks.length})</span>
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+                                {displayedDiagnosisTickets.map(ticket => {
+                                    const isB2B = Boolean(ticket.companyId || ticket.companyName);
+                                    const identifier = ticket.assetId ? `Asset: ${ticket.assetId}` : ticket.serialNumber ? `S/N: ${ticket.serialNumber}` : 'ID: N/A';
+                                    return (
+                                        <div
+                                            key={ticket.id}
+                                            onClick={() => openModal(ticket, 'diagnosis')}
+                                            className="bg-[#0c0c0c] border border-blue-500/25 hover:border-blue-500/50 hover:bg-blue-500/[0.02] rounded-xl sm:rounded-2xl p-4 sm:p-5 cursor-pointer transition-all group relative overflow-hidden flex flex-col justify-between shadow-xl shadow-black/50 hover:shadow-blue-500/5"
+                                        >
+                                            <div>
+                                                {/* Stage Header */}
+                                                <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-zinc-900">
+                                                    <div className="flex items-center gap-2">
+                                                        <Cpu size={14} className="text-blue-400" />
+                                                        <span className="text-xs font-mono font-bold uppercase tracking-wider text-blue-400">Diagnosis & Estimate</span>
+                                                    </div>
+                                                    <span className="text-[10px] font-mono text-zinc-400 bg-zinc-900/80 px-2 py-0.5 rounded border border-zinc-800">
+                                                        {ticket.deviceCategory || 'Device'}
                                                     </span>
-                                                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                                                        {isB2B ? (
-                                                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">B2B</span>
-                                                        ) : (
-                                                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono text-zinc-500 bg-zinc-900 border border-zinc-800">INDIVIDUAL</span>
-                                                        )}
-                                                        {getPriorityBadge(diagnosisTicket.priority)}
-                                                    </div>
                                                 </div>
-                                                <div className="shrink-0">
-                                                    {getStatusBadge(diagnosisTicket.status)}
-                                                </div>
-                                            </div>
 
-                                            {/* Customer / Company Info */}
-                                            <div className="bg-zinc-950/60 rounded-xl p-3 border border-zinc-900 mb-3 space-y-1">
-                                                <div className="flex items-center justify-between gap-2">
-                                                    <div className="text-xs font-bold text-white font-mono truncate max-w-[150px] sm:max-w-[200px]">
-                                                        {isB2B ? (diagnosisTicket.companyName || diagnosisTicket.customerName) : diagnosisTicket.customerName}
-                                                    </div>
-                                                    {diagnosisTicket.city && (
-                                                        <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1 shrink-0">
-                                                            <MapPin size={10} />
-                                                            {diagnosisTicket.city}
+                                                {/* Authoritative Ticket ID & Badges */}
+                                                <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
+                                                    <div>
+                                                        <span className="text-xs font-mono font-bold text-blue-400 tracking-wider block">
+                                                            {ticket.ticketNumber || `TICKET_ID: #${ticket.id}`}
                                                         </span>
+                                                        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                                            {isB2B ? (
+                                                                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">B2B</span>
+                                                            ) : (
+                                                                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono text-zinc-500 bg-zinc-900 border border-zinc-800">INDIVIDUAL</span>
+                                                            )}
+                                                            {getPriorityBadge(ticket.priority)}
+                                                        </div>
+                                                    </div>
+                                                    <div className="shrink-0">
+                                                        {getStatusBadge(ticket.status)}
+                                                    </div>
+                                                </div>
+
+                                                {/* Customer / Company Info */}
+                                                <div className="bg-zinc-950/60 rounded-xl p-3 border border-zinc-900 mb-3 space-y-1">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <div className="text-xs font-bold text-white font-mono truncate max-w-[150px] sm:max-w-[180px]">
+                                                            {isB2B ? (ticket.companyName || ticket.customerName) : ticket.customerName}
+                                                        </div>
+                                                        {ticket.city && (
+                                                            <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1 shrink-0">
+                                                                <MapPin size={10} />
+                                                                {ticket.city}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {isB2B && ticket.companyContactPerson && (
+                                                        <div className="text-[11px] text-zinc-400 font-mono truncate">
+                                                            Contact: {ticket.companyContactPerson}
+                                                        </div>
+                                                    )}
+                                                    <div className="text-[11px] text-zinc-500 font-mono flex items-center gap-2">
+                                                        <Phone size={10} />
+                                                        <span className="truncate">{ticket.mobile || ticket.companyPhone || 'No phone'}</span>
+                                                    </div>
+                                                </div>
+
+                                                {/* Device & Problem Details */}
+                                                <div className="space-y-1.5 text-xs font-mono">
+                                                    <div className="flex items-center justify-between gap-2 text-zinc-300">
+                                                        <span className="font-semibold text-white truncate">{ticket.brand} {ticket.modelNumber || ''}</span>
+                                                        <span className="text-[11px] text-zinc-500 shrink-0">{identifier}</span>
+                                                    </div>
+                                                    <div className="text-xs text-zinc-300 bg-zinc-900/50 rounded-lg p-2.5 border border-zinc-900/80">
+                                                        <span className="text-zinc-500 font-mono text-[10px] uppercase block mb-0.5">Problem Reported:</span>
+                                                        <span className="text-zinc-300 line-clamp-2">{ticket.problemType || 'Device inspection requested'}</span>
+                                                    </div>
+                                                    {(ticket as any).approximateBudget && (
+                                                        <div className="text-[11px] font-mono text-amber-400/90 pt-1">
+                                                            Approx Budget: ₹{Number((ticket as any).approximateBudget).toLocaleString()}
+                                                        </div>
                                                     )}
                                                 </div>
-                                                {isB2B && diagnosisTicket.companyContactPerson && (
-                                                    <div className="text-[11px] text-zinc-400 font-mono truncate">
-                                                        Contact: {diagnosisTicket.companyContactPerson}
-                                                    </div>
-                                                )}
-                                                <div className="text-[11px] text-zinc-500 font-mono flex items-center gap-2">
-                                                    <Phone size={10} />
-                                                    <span className="truncate">{diagnosisTicket.mobile || diagnosisTicket.companyPhone || 'No phone'}</span>
-                                                </div>
                                             </div>
 
-                                            {/* Device & Problem Details */}
-                                            <div className="space-y-1.5 text-xs font-mono">
-                                                <div className="flex items-center justify-between gap-2 text-zinc-300">
-                                                    <span className="font-semibold text-white truncate">{diagnosisTicket.brand} {diagnosisTicket.modelNumber || ''}</span>
-                                                    <span className="text-[11px] text-zinc-500 shrink-0">{identifier}</span>
-                                                </div>
-                                                <div className="text-xs text-zinc-300 bg-zinc-900/50 rounded-lg p-2.5 border border-zinc-900/80">
-                                                    <span className="text-zinc-500 font-mono text-[10px] uppercase block mb-0.5">Problem Reported:</span>
-                                                    <span className="text-zinc-300 line-clamp-2">{diagnosisTicket.problemType || 'Device inspection requested'}</span>
-                                                </div>
-                                                {(diagnosisTicket as any).approximateBudget && (
-                                                    <div className="text-[11px] font-mono text-amber-400/90 pt-1">
-                                                        Approx Budget: ₹{Number((diagnosisTicket as any).approximateBudget).toLocaleString()}
-                                                    </div>
-                                                )}
-                                            </div>
-                                        </div>
-
-                                        {/* Footer & Action */}
-                                        <div className="pt-3 sm:pt-4 mt-3 sm:mt-4 border-t border-zinc-900 flex flex-wrap items-center justify-between gap-2">
-                                            <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1">
-                                                <Clock size={11} />
-                                                Updated {diagnosisTicket.updatedAt ? new Date(diagnosisTicket.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'N/A'}
-                                            </span>
-                                            <button
-                                                type="button"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    openModal(diagnosisTicket, 'diagnosis');
-                                                }}
-                                                className="w-full sm:w-auto justify-center px-3.5 py-1.5 rounded-xl bg-blue-500 hover:bg-blue-400 text-black text-xs font-mono font-bold transition-all cursor-pointer shadow-lg shadow-blue-500/10 flex items-center gap-1.5 group-hover:gap-2"
-                                                title="Diagnose & submit quote"
-                                            >
-                                                <span>Diagnose & Quote</span>
-                                                <ChevronRight size={13} />
-                                            </button>
-                                        </div>
-                                    </div>
-                                );
-                            })() : (
-                                <div className="bg-[#0c0c0c] border border-dashed border-zinc-900 rounded-2xl p-8 flex flex-col items-center justify-center text-center min-h-[300px]">
-                                    <Cpu size={32} className="text-zinc-700 mb-3" />
-                                    <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">Diagnosis & Estimate</h4>
-                                    <p className="text-xs text-zinc-600 max-w-xs font-mono">No tickets currently awaiting inspection or cost estimate.</p>
-                                </div>
-                            )}
-
-                            {/* Card 2: Pending Acceptance Ticket */}
-                            {pendingAcceptanceTicket ? (() => {
-                                const isB2B = Boolean(pendingAcceptanceTicket.companyId || pendingAcceptanceTicket.companyName);
-                                const identifier = pendingAcceptanceTicket.assetId ? `Asset: ${pendingAcceptanceTicket.assetId}` : pendingAcceptanceTicket.serialNumber ? `S/N: ${pendingAcceptanceTicket.serialNumber}` : 'ID: N/A';
-                                return (
-                                    <div
-                                        key={pendingAcceptanceTicket.id}
-                                        onClick={() => openModal(pendingAcceptanceTicket, 'overview')}
-                                        className="bg-[#0c0c0c] border border-amber-500/30 hover:border-amber-500/50 hover:bg-amber-500/[0.02] rounded-xl sm:rounded-2xl p-4 sm:p-5 cursor-pointer transition-all group relative overflow-hidden flex flex-col justify-between"
-                                    >
-                                        <div>
-                                            {/* Stage Header */}
-                                            <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-zinc-900">
-                                                <div className="flex items-center gap-2">
-                                                    <Clock size={14} className="text-amber-400 animate-pulse" />
-                                                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-amber-400">Pending Acceptance</span>
-                                                </div>
-                                                <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded font-bold uppercase tracking-wider">
-                                                    Transfer Request
+                                            {/* Footer & Action */}
+                                            <div className="pt-3 sm:pt-4 mt-3 sm:mt-4 border-t border-zinc-900 flex flex-wrap items-center justify-between gap-2">
+                                                <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1">
+                                                    <Clock size={11} />
+                                                    {ticket.updatedAt ? new Date(ticket.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'N/A'}
                                                 </span>
-                                            </div>
-
-                                            {/* Authoritative Ticket ID & Badges */}
-                                            <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
-                                                <div>
-                                                    <span className="text-xs font-mono font-bold text-amber-400 tracking-wider block">
-                                                        {pendingAcceptanceTicket.ticketNumber || `TICKET_ID: #${pendingAcceptanceTicket.id}`}
-                                                    </span>
-                                                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                                                        {isB2B ? (
-                                                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">B2B</span>
-                                                        ) : (
-                                                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono text-zinc-500 bg-zinc-900 border border-zinc-800">INDIVIDUAL</span>
-                                                        )}
-                                                        {getPriorityBadge(pendingAcceptanceTicket.priority)}
-                                                    </div>
+                                                <div className="flex items-center gap-2 w-full sm:w-auto">
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            openModal(ticket, 'overview');
+                                                        }}
+                                                        className="flex-1 sm:flex-none px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white text-xs font-mono transition-colors cursor-pointer text-center border border-zinc-800"
+                                                        title="Inspect ticket details"
+                                                    >
+                                                        Review
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            openModal(ticket, 'diagnosis');
+                                                        }}
+                                                        className="flex-1 sm:flex-none justify-center px-3.5 py-1.5 rounded-xl bg-blue-500 hover:bg-blue-400 text-black text-xs font-mono font-bold transition-all cursor-pointer shadow-lg shadow-blue-500/10 flex items-center gap-1.5"
+                                                        title="Diagnose & submit quote"
+                                                    >
+                                                        <span>Diagnose & Quote</span>
+                                                        <ChevronRight size={13} />
+                                                    </button>
                                                 </div>
-                                                <div className="shrink-0">
-                                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-mono font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
-                                                        <Clock size={11} /> Awaiting Acceptance
-                                                    </span>
-                                                </div>
-                                            </div>
-
-                                            {/* Customer / Company Info */}
-                                            <div className="bg-zinc-950/60 rounded-xl p-3 border border-zinc-900 mb-3 space-y-1">
-                                                <div className="flex items-center justify-between gap-2">
-                                                    <div className="text-xs font-bold text-white font-mono truncate max-w-[150px] sm:max-w-[200px]">
-                                                        {isB2B ? (pendingAcceptanceTicket.companyName || pendingAcceptanceTicket.customerName) : pendingAcceptanceTicket.customerName}
-                                                    </div>
-                                                    {pendingAcceptanceTicket.city && (
-                                                        <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1 shrink-0">
-                                                            <MapPin size={10} />
-                                                            {pendingAcceptanceTicket.city}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                                {isB2B && pendingAcceptanceTicket.companyContactPerson && (
-                                                    <div className="text-[11px] text-zinc-400 font-mono truncate">
-                                                        Contact: {pendingAcceptanceTicket.companyContactPerson}
-                                                    </div>
-                                                )}
-                                                <div className="text-[11px] text-zinc-500 font-mono flex items-center gap-2">
-                                                    <Phone size={10} />
-                                                    <span className="truncate">{pendingAcceptanceTicket.mobile || pendingAcceptanceTicket.companyPhone || 'No phone'}</span>
-                                                </div>
-                                            </div>
-
-                                            {/* Device & Problem Details */}
-                                            <div className="space-y-1.5 text-xs font-mono">
-                                                <div className="flex items-center justify-between gap-2 text-zinc-300">
-                                                    <span className="font-semibold text-white truncate">{pendingAcceptanceTicket.brand} {pendingAcceptanceTicket.modelNumber || ''}</span>
-                                                    <span className="text-[11px] text-zinc-500 shrink-0">{identifier}</span>
-                                                </div>
-                                                <div className="text-xs text-zinc-300 bg-zinc-900/50 rounded-lg p-2.5 border border-zinc-900/80">
-                                                    <span className="text-zinc-500 font-mono text-[10px] uppercase block mb-0.5">Problem Reported:</span>
-                                                    <span className="text-zinc-300 line-clamp-2">{pendingAcceptanceTicket.problemType || 'Device transfer pending'}</span>
-                                                </div>
-                                                {(pendingAcceptanceTicket as any).transferReason && (
-                                                    <div className="text-[11px] font-mono text-amber-400/90 pt-1">
-                                                        Reason: {(pendingAcceptanceTicket as any).transferReason}
-                                                    </div>
-                                                )}
                                             </div>
                                         </div>
-
-                                        {/* Footer & Action */}
-                                        <div className="pt-3 sm:pt-4 mt-3 sm:mt-4 border-t border-zinc-900 flex flex-wrap items-center justify-between gap-2">
-                                            <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1">
-                                                <Clock size={11} />
-                                                Received {new Date(pendingAcceptanceTicket.updatedAt || pendingAcceptanceTicket.createdAt || 0).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                            </span>
-                                            <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
-                                                <button
-                                                    type="button"
-                                                    onClick={(e) => handleAccept(e, pendingAcceptanceTicket.id)}
-                                                    className="flex-1 sm:flex-none px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-mono font-bold transition-all cursor-pointer shadow-lg shadow-emerald-500/10 text-center"
-                                                    title="Accept assigned ticket"
-                                                >
-                                                    Accept
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={(e) => handleReject(e, pendingAcceptanceTicket.id)}
-                                                    className="flex-1 sm:flex-none px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-400 text-xs font-mono font-bold transition-all cursor-pointer text-center"
-                                                    title="Reject ticket assignment"
-                                                >
-                                                    Reject
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        openModal(pendingAcceptanceTicket, 'overview');
-                                                    }}
-                                                    className="flex-1 sm:flex-none px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-mono transition-colors cursor-pointer text-center"
-                                                    title="Inspect ticket details"
-                                                >
-                                                    Review
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                );
-                            })() : (
-                                <div className="bg-[#0c0c0c] border border-dashed border-zinc-900 rounded-2xl p-8 flex flex-col items-center justify-center text-center min-h-[300px]">
-                                    <Clock size={32} className="text-zinc-700 mb-3" />
-                                    <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">Pending Acceptance</h4>
-                                    <p className="text-xs text-zinc-600 max-w-xs font-mono">No incoming task transfer requests waiting for your acceptance.</p>
-                                </div>
-                            )}
-                        </div>
-                    )
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
                 ) : (
                     <div className="space-y-8">
                         {/* ══════════════════════════════════════════════════════════════ */}

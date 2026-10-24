@@ -959,7 +959,7 @@ export const RepairTicketWorkspace: React.FC<RepairTicketWorkspaceProps> = ({
                                     <select
                                         value={selectedTechForAssign}
                                         onChange={e => setSelectedTechForAssign(e.target.value === '' ? '' : Number(e.target.value))}
-                                        className="flex-grow bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-neon-cyan cursor-pointer"
+                                        className="flex-grow w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-neon-cyan cursor-pointer"
                                     >
                                         <option value="">-- No Technician (Unassigned) --</option>
                                         {technicians.map(t => (

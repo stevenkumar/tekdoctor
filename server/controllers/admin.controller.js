@@ -1,10 +1,20 @@
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const config = require('../config/app.config');
 const { pool } = require('../config/db.config');
 const { formatResponse, generateCompanyId } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const nodemailer = require('nodemailer');
-const { sendCustomerNotification, resolveTlsConfig } = require('../utils/email.utils');
+const { sendCustomerNotification, sendOtpEmail, resolveTlsConfig } = require('../utils/email.utils');
 const { normalizePhoneNumber } = require('../middleware/validate.middleware');
+const {
+    generateOtpCode,
+    hashOtp,
+    verifyOtpHash,
+    generatePendingChangePasswordToken,
+    maskEmail,
+    generateToken
+} = require('../utils/auth.helpers');
 const {
     isSecretKey,
     isMaskedPlaceholder,
@@ -1606,6 +1616,19 @@ const updateProfile = async (req, res, next) => {
 
         const cleanEmail = email ? email.trim().toLowerCase() : '';
         const cleanPhone = phone ? normalizePhoneNumber(phone) : null;
+        const cleanName = name ? name.trim() : '';
+
+        // Validation: Verify if any actual change is being made vs database record
+        const [currentUserRows] = await connection.query('SELECT name, email, phone FROM users WHERE id = ? LIMIT 1', [userId]);
+        if (currentUserRows.length > 0) {
+            const curName = (currentUserRows[0].name || '').trim();
+            const curEmail = (currentUserRows[0].email || '').trim().toLowerCase();
+            const curPhone = currentUserRows[0].phone ? normalizePhoneNumber(currentUserRows[0].phone) : null;
+
+            if (curName === cleanName && curEmail === cleanEmail && (curPhone || null) === (cleanPhone || null)) {
+                return res.status(400).json(formatResponse(false, 'No changes detected. Please modify at least one field before updating.'));
+            }
+        }
 
         if (cleanEmail) {
             const [dupEmail] = await connection.query('SELECT id FROM users WHERE email = ? AND id != ? LIMIT 1', [cleanEmail, userId]);
@@ -1625,10 +1648,10 @@ const updateProfile = async (req, res, next) => {
             }
         }
 
-        await connection.query('UPDATE users SET name = ?, email = ?, phone = ? WHERE id = ?', [name, cleanEmail, cleanPhone, userId]);
-        await logActivity(connection, userId, 'update_profile', 'user', userId, { name, email: cleanEmail }, req.ip);
+        await connection.query('UPDATE users SET name = ?, email = ?, phone = ? WHERE id = ?', [cleanName, cleanEmail, cleanPhone, userId]);
+        await logActivity(connection, userId, 'update_profile', 'user', userId, { name: cleanName, email: cleanEmail }, req.ip);
 
-        return res.json(formatResponse(true, 'Profile updated successfully.', { name, email: cleanEmail, phone: cleanPhone }));
+        return res.json(formatResponse(true, 'Profile updated successfully.', { name: cleanName, email: cleanEmail, phone: cleanPhone }));
     } catch (error) {
         next(error);
     } finally {
@@ -1655,18 +1678,227 @@ const changePassword = async (req, res, next) => {
             return res.status(400).json(formatResponse(false, 'Password must be at least 8 characters long.'));
         }
 
-        const [rows] = await connection.query('SELECT password FROM users WHERE id = ? LIMIT 1', [userId]);
+        if (newPassword === currentPassword) {
+            return res.status(400).json(formatResponse(false, 'New password must be different from current password.'));
+        }
+
+        const [rows] = await connection.query('SELECT id, name, email, role, password, token_version FROM users WHERE id = ? LIMIT 1', [userId]);
         if (rows.length === 0) return res.status(404).json(formatResponse(false, 'User not found.'));
 
-        const isMatch = await bcrypt.compare(currentPassword, rows[0].password);
+        const user = rows[0];
+        const isMatch = await bcrypt.compare(currentPassword, user.password);
         if (!isMatch) return res.status(400).json(formatResponse(false, 'Incorrect current password.'));
 
-        const salt = await bcrypt.genSalt(12);
-        const hashedPassword = await bcrypt.hash(newPassword, salt);
-        await connection.query('UPDATE users SET password = ?, token_version = token_version + 1 WHERE id = ?', [hashedPassword, userId]);
-        await logActivity(connection, userId, 'change_password', 'user', userId, null, req.ip);
+        // Admin Role: Generate OTP challenge (mandatory verification before changing password)
+        const otp = generateOtpCode();
+        const otpHash = hashOtp(otp);
 
-        return res.json(formatResponse(true, 'Password changed successfully.'));
+        // Invalidate any active, unused change-password OTPs for this admin
+        await connection.query(
+            'UPDATE auth_otps SET is_used = 1 WHERE user_id = ? AND purpose = "admin_change_password" AND is_used = 0',
+            [user.id]
+        );
+
+        // Insert new OTP record valid for 5 minutes
+        await connection.query(
+            'INSERT INTO auth_otps (user_id, otp_hash, purpose, expires_at, attempts_count, max_attempts, resend_count, last_sent_at) VALUES (?, ?, "admin_change_password", DATE_ADD(NOW(), INTERVAL 5 MINUTE), 0, 5, 0, NOW())',
+            [user.id, otpHash]
+        );
+
+        // Dispatch OTP email
+        await sendOtpEmail({
+            toEmail: user.email,
+            otpCode: otp,
+            purpose: 'change_password',
+            expiresInMinutes: 5
+        });
+
+        if (config.env === 'development' || config.env === 'test') {
+            logger.info(`[DEV ADMIN PASSWORD CHANGE OTP] User: ${user.email} | OTP: ${otp}`);
+        }
+
+        await logActivity(connection, user.id, 'admin_change_password_otp_dispatched', 'users', user.id, { email: user.email }, req.ip);
+
+        const salt = await bcrypt.genSalt(12);
+        const newPasswordHash = await bcrypt.hash(newPassword, salt);
+
+        const pendingToken = generatePendingChangePasswordToken(user, newPasswordHash);
+
+        return res.status(200).json(formatResponse(true, 'A 6-digit verification code has been sent to your registered Admin email.', {
+            requiresOtp: true,
+            pendingToken,
+            maskedEmail: maskEmail(user.email)
+        }));
+    } catch (error) {
+        next(error);
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
+const verifyChangePasswordOtp = async (req, res, next) => {
+    let connection;
+    try {
+        if (req.user?.role !== 'admin') {
+            return res.status(403).json(formatResponse(false, 'Access denied. Only administrators can use this password change function.'));
+        }
+
+        const { pendingToken, otp } = req.body;
+        if (!pendingToken || !otp) {
+            return res.status(400).json(formatResponse(false, 'Pending token and verification code are required.'));
+        }
+
+        let decoded;
+        try {
+            decoded = jwt.verify(pendingToken, config.jwt.secret);
+        } catch (err) {
+            return res.status(400).json(formatResponse(false, 'Invalid or expired password change session. Please try again.'));
+        }
+
+        if (decoded.type !== 'admin_change_password_pending' || decoded.role !== 'admin' || decoded.id !== req.user.id) {
+            return res.status(400).json(formatResponse(false, 'Invalid password change session token.'));
+        }
+
+        connection = await pool.getConnection();
+
+        const [otpRows] = await connection.query(
+            'SELECT id, otp_hash, attempts_count, max_attempts, expires_at FROM auth_otps WHERE user_id = ? AND purpose = "admin_change_password" AND is_used = 0 ORDER BY id DESC LIMIT 1',
+            [decoded.id]
+        );
+
+        if (otpRows.length === 0) {
+            return res.status(400).json(formatResponse(false, 'Verification code has expired or was not requested. Please request a new code.'));
+        }
+
+        const otpRecord = otpRows[0];
+
+        if (new Date() > new Date(otpRecord.expires_at)) {
+            await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+            return res.status(400).json(formatResponse(false, 'Verification code has expired. Please request a new code.'));
+        }
+
+        if (otpRecord.attempts_count >= otpRecord.max_attempts) {
+            await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+            return res.status(400).json(formatResponse(false, 'Maximum verification attempts exceeded. Please start over.'));
+        }
+
+        const isValid = verifyOtpHash(otp, otpRecord.otp_hash);
+        if (!isValid) {
+            const newAttempts = otpRecord.attempts_count + 1;
+            const remaining = Math.max(0, otpRecord.max_attempts - newAttempts);
+            await connection.query('UPDATE auth_otps SET attempts_count = ? WHERE id = ?', [newAttempts, otpRecord.id]);
+
+            if (remaining === 0) {
+                await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+                return res.status(400).json(formatResponse(false, 'Too many incorrect attempts. This code has been invalidated. Please request a new code.'));
+            }
+
+            return res.status(400).json(formatResponse(false, `Invalid verification code. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`));
+        }
+
+        // Mark OTP as used (single-use)
+        await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [otpRecord.id]);
+
+        // Update password and bump token_version in database
+        await connection.query(
+            'UPDATE users SET password = ?, token_version = token_version + 1 WHERE id = ?',
+            [decoded.newPasswordHash, decoded.id]
+        );
+
+        const [userRows] = await connection.query('SELECT id, name, email, role, token_version FROM users WHERE id = ? LIMIT 1', [decoded.id]);
+        const updatedUser = userRows[0];
+
+        // Generate refreshed token with new token_version so admin stays seamlessly authenticated
+        const newToken = generateToken(updatedUser);
+
+        await logActivity(connection, decoded.id, 'change_password', 'user', decoded.id, { mfa: 'email_otp' }, req.ip);
+
+        return res.status(200).json(formatResponse(true, 'Password changed successfully.', { token: newToken }));
+    } catch (error) {
+        next(error);
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
+const resendChangePasswordOtp = async (req, res, next) => {
+    let connection;
+    try {
+        if (req.user?.role !== 'admin') {
+            return res.status(403).json(formatResponse(false, 'Access denied. Only administrators can use this password change function.'));
+        }
+
+        const { pendingToken } = req.body;
+        if (!pendingToken) {
+            return res.status(400).json(formatResponse(false, 'Pending token is required.'));
+        }
+
+        let decoded;
+        try {
+            decoded = jwt.verify(pendingToken, config.jwt.secret);
+        } catch (err) {
+            return res.status(400).json(formatResponse(false, 'Invalid or expired password change session. Please try again.'));
+        }
+
+        if (decoded.type !== 'admin_change_password_pending' || decoded.role !== 'admin' || decoded.id !== req.user.id) {
+            return res.status(400).json(formatResponse(false, 'Invalid password change session token.'));
+        }
+
+        connection = await pool.getConnection();
+
+        const [otpRows] = await connection.query(
+            'SELECT id, resend_count, last_sent_at FROM auth_otps WHERE user_id = ? AND purpose = "admin_change_password" AND is_used = 0 ORDER BY id DESC LIMIT 1',
+            [decoded.id]
+        );
+
+        if (otpRows.length === 0) {
+            return res.status(400).json(formatResponse(false, 'No active verification session found. Please start password change again.'));
+        }
+
+        const activeOtp = otpRows[0];
+
+        const lastSent = new Date(activeOtp.last_sent_at).getTime();
+        const now = Date.now();
+        const diffSeconds = Math.floor((now - lastSent) / 1000);
+
+        if (diffSeconds < 60) {
+            const waitTime = 60 - diffSeconds;
+            return res.status(429).json(formatResponse(false, `Please wait ${waitTime} second${waitTime === 1 ? '' : 's'} before requesting a new code.`));
+        }
+
+        if (activeOtp.resend_count >= 5) {
+            return res.status(429).json(formatResponse(false, 'Maximum resend limit reached. Please wait for the current code to expire or try again later.'));
+        }
+
+        const newOtp = generateOtpCode();
+        const newOtpHash = hashOtp(newOtp);
+
+        await connection.query('UPDATE auth_otps SET is_used = 1 WHERE id = ?', [activeOtp.id]);
+
+        await connection.query(
+            'INSERT INTO auth_otps (user_id, otp_hash, purpose, expires_at, attempts_count, max_attempts, resend_count, last_sent_at) VALUES (?, ?, "admin_change_password", DATE_ADD(NOW(), INTERVAL 5 MINUTE), 0, 5, ?, NOW())',
+            [decoded.id, newOtpHash, activeOtp.resend_count + 1]
+        );
+
+        const [userRows] = await connection.query('SELECT email FROM users WHERE id = ? LIMIT 1', [decoded.id]);
+        const userEmail = userRows[0]?.email;
+
+        if (userEmail) {
+            await sendOtpEmail({
+                toEmail: userEmail,
+                otpCode: newOtp,
+                purpose: 'change_password',
+                expiresInMinutes: 5
+            });
+        }
+
+        if (config.env === 'development' || config.env === 'test') {
+            logger.info(`[DEV ADMIN RESEND CHANGE PASSWORD OTP] User: ${userEmail} | OTP: ${newOtp}`);
+        }
+
+        await logActivity(connection, decoded.id, 'admin_change_password_otp_resent', 'users', decoded.id, { email: userEmail }, req.ip);
+
+        return res.status(200).json(formatResponse(true, 'A new verification code has been sent to your registered Admin email.'));
     } catch (error) {
         next(error);
     } finally {
@@ -3158,7 +3390,7 @@ module.exports = {
     uploadFile,
     getActivityLogs,
     getReports,
-    updateProfile, changePassword, resetUserPassword,
+    updateProfile, changePassword, verifyChangePasswordOtp, resendChangePasswordOtp, resetUserPassword,
     getAllTaskTransfers,
     logActivity,
     getCompanyMessages,

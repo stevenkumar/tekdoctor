@@ -179,7 +179,7 @@ const createBaseTables = async (connection) => {
       company_id INT NOT NULL,
       branch_id INT NULL,
       employee_id INT NULL,
-      device_category VARCHAR(50) NOT NULL,
+      device_category VARCHAR(100) NOT NULL,
       brand VARCHAR(50) NOT NULL,
       model_number VARCHAR(100) NOT NULL,
       serial_number VARCHAR(100) NOT NULL,
@@ -216,7 +216,7 @@ const createBaseTables = async (connection) => {
       city VARCHAR(100) NOT NULL,
       state VARCHAR(50) NULL,
       zip_code VARCHAR(20) NULL,
-      device_category VARCHAR(50) NOT NULL,
+      device_category VARCHAR(100) NOT NULL,
       custom_device_category VARCHAR(100) NULL,
       brand VARCHAR(50) NOT NULL,
       custom_brand VARCHAR(50) NULL,
@@ -1285,6 +1285,29 @@ const MIGRATIONS = [
         );
         console.log(`[Migration:2026_10] Created initial admin account with email: ${targetEmail}`);
       }
+    }
+  },
+  {
+    version: '2026_11_expand_device_category_length',
+    name: 'Expand device_category column lengths to VARCHAR(100)',
+    isSatisfied: async (connection) => {
+      const [srRows] = await connection.query(`
+        SELECT CHARACTER_MAXIMUM_LENGTH 
+        FROM information_schema.COLUMNS 
+        WHERE TABLE_SCHEMA = DATABASE() 
+          AND TABLE_NAME = 'service_requests' 
+          AND COLUMN_NAME = 'device_category'
+      `);
+      return srRows.length > 0 && srRows[0].CHARACTER_MAXIMUM_LENGTH >= 100;
+    },
+    apply: async (connection) => {
+      await connection.query('ALTER TABLE service_requests MODIFY COLUMN device_category VARCHAR(100) NOT NULL');
+      try {
+        await connection.query('ALTER TABLE company_devices MODIFY COLUMN device_category VARCHAR(100) NOT NULL');
+      } catch (e) {
+        // Table may not exist or already updated
+      }
+      console.log('[Migration:2026_11] Expanded device_category columns to VARCHAR(100).');
     }
   }
 ];

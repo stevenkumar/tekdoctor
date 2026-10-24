@@ -471,24 +471,77 @@ const validateContactReply = validate([
 // ── Repair Request Validations ─────────────────────────────────────────────
 
 const ALLOWED_DEVICE_CATEGORIES = [
+  'server & enterprise hardware repair',
+  'cctv & security devices',
+  'networking & wi-fi devices',
+  'networking & wifi devices',
+  'monitor, tv & display repair',
+  'printer & scanner repair',
+  'tablet & ipad repair',
+  'laptop & computer repair',
+  'software installation',
+  'microsoft 365 provide',
   'laptop', 'desktop pc', 'printer', 'cctv', 'monitor', 'ups', 'networking device', 'other',
   'desktop', 'pc'
 ];
 
 const ALLOWED_PROBLEM_TYPES = [
-  'not powering on', 'screen crack/flicker', 'keyboard/touchpad fault', 'battery/charging issue',
-  'slow performance/boot loop', 'slow performance/virus', 'overheating/fan noise', 'hardware upgrade (ram/ssd)', 'os/software issue',
-  'liquid damage', 'no power/no display', 'random blue screen/crash', 'overheating/dust cleaning',
-  'hardware upgrade (gpu/ram/ssd)', 'power supply (psu) failure', 'os/software installation',
-  'printer not printing', 'paper jam/feeder issue', 'ghosting/faded prints', 'error code/connectivity failure',
-  'driver/installation issue', 'cartridge/toner refill', 'spooler error', 'cctv camera offline',
-  'no video feed/blank screen', 'intermittent signal loss', 'nvr/dvr loading/storage issue',
-  'password reset/admin lockout', 'night vision mode failure', 'no display/standby indicator only',
-  'dim screen/backlight issue', 'flickering/vertical lines', 'color distortion/bleeding',
-  'physical panel damage', 'no power/backup fail', 'frequent alarm/beeping', 'battery replacement alert',
-  'overload trip/voltage issue', 'no wifi/internet offline', 'router/switch reboot loop',
-  'config/ssid password issue', 'local network access failure', 'range/signal strength issues',
-  'hardware component fault', 'diagnostic request', 'general technical assistance', 'other',
+  // Laptop & Computer
+  'not powering on', 'not powering on / dead system', 'screen crack/flicker', 'screen crack / flickering / no display',
+  'keyboard/touchpad fault', 'keyboard / touchpad fault', 'battery/charging issue', 'battery / charging port issue',
+  'slow performance/boot loop', 'slow performance / boot loop', 'slow performance/virus', 'overheating/fan noise',
+  'overheating / fan noise / dust cleaning', 'hardware upgrade (ram/ssd)', 'hardware upgrade (ram / ssd / gpu)',
+  'os/software issue', 'os crash / blue screen (bsod) / virus', 'liquid damage', 'liquid / water spill damage',
+  'no power/no display', 'random blue screen/crash', 'overheating/dust cleaning', 'hardware upgrade (gpu/ram/ssd)',
+  'power supply (psu) failure', 'os/software installation', 'motherboard / chip-level fault', 'body / hinge broken repair',
+  // Server & Enterprise
+  'server not powering on / redundant psu failure', 'raid array degraded / drive offline',
+  'boot loop / hypervisor crash (esxi / hyper-v)', 'overheating / server blower fan failure',
+  'motherboard / dual cpu socket fault', 'ecc ram / memory error', 'storage / sas / nvme controller fault',
+  'idrac / ilo remote management issue', 'firmware / bios update issue', 'network interface / 10g sfp+ link down',
+  'scheduled preventive maintenance (ppm)',
+  // CCTV & Security
+  'cctv camera offline', 'cctv camera offline / no signal', 'no video feed/blank screen', 'blank video feed / black screen',
+  'intermittent signal loss', 'intermittent video loss / line noise', 'nvr/dvr loading/storage issue',
+  'nvr / dvr storage / hdd not detected', 'recording not saving / playback failure', 'password reset/admin lockout',
+  'admin password reset / account lockout', 'night vision mode failure', 'night vision / ir led failure',
+  'ptz camera motor / rotation issue', 'poe switch / power adapter failure', 'mobile app viewing / cloud link offline',
+  // Networking & Wi-Fi
+  'no wifi/internet offline', 'no internet / wan link down', 'frequent wi-fi disconnections / drops',
+  'router/switch reboot loop', 'router / managed switch boot loop', 'config/ssid password issue',
+  'ssid / password / vlan configuration issue', 'local network access failure', 'local lan / ethernet port failure',
+  'range/signal strength issues', 'low wi-fi range / signal dead zones', 'firewall / vpn / port forwarding error',
+  'firmware corruption / brick recovery', 'bandwidth throttling / high latency',
+  // Monitor, TV & Display
+  'no display/standby indicator only', 'no display / standby light blinking', 'dim screen/backlight issue',
+  'dim screen / led backlight burnout', 'flickering/vertical lines', 'flickering / horizontal or vertical lines',
+  'color distortion/bleeding', 'color bleeding / ghosting / inverted colors', 'physical panel damage',
+  'physical screen crack / broken panel', 'hdmi / displayport / audio jack defective', 'power board / motherboard short circuit',
+  'display powers off after few seconds',
+  // Printer & Scanner
+  'printer not printing', 'printer not printing / spooler error', 'paper jam/feeder issue', 'frequent paper jam / roller slip',
+  'ghosting/faded prints', 'faded / blank / streaked printouts', 'error code/connectivity failure',
+  'driver/installation issue', 'driver installation / offline status issue', 'cartridge/toner refill',
+  'spooler error', 'ink tank / cartridge head clogged', 'scanner glass / adf feeder failure',
+  'error code / red light blinking', 'wi-fi / usb connectivity issue', 'toner / ink leakage inside mechanism',
+  // Tablet & iPad
+  'touch screen unresponsive / broken glass', 'display blank / flickering lcd / oled', 'battery draining fast / swollen battery',
+  'charging port loose / not charging', 'stuck on apple / android logo boot loop', 'speaker / microphone / audio issue',
+  'camera not working / blurry lens', 'body dent / bent frame repair',
+  // Software Installation
+  'clean os installation / os upgrade (windows / linux / mac)', 'dual boot configuration (windows + linux)',
+  'software license activation / key error', 'virus / malware removal & system cleanup',
+  'driver conflict / hardware driver installation', 'application crashing / corrupt dll files',
+  'data backup & os migration to ssd', 'enterprise accounting / erp software setup',
+  // Microsoft 365
+  'new tenant setup & domain verification', 'email migration from google workspace / cpanel to m365',
+  'outlook configuration & sync issues', 'onedrive & sharepoint cloud storage setup',
+  'microsoft teams & collaboration configuration', 'user license allocation & management',
+  '2-factor authentication (mfa) & security policy', 'subscription renewal / license upgrade',
+  // UPS / General / Other
+  'no power/backup fail', 'frequent alarm/beeping', 'battery replacement alert', 'overload trip/voltage issue',
+  'hardware component fault', 'diagnostic request', 'diagnostic & troubleshooting request',
+  'general technical assistance', 'preventive maintenance service', 'custom it requirement', 'other',
   'hardware', 'software', 'network'
 ];
 
@@ -577,7 +630,12 @@ const validateRepairRequest = validate([
     .custom((val, { req }) => {
       if (req.body.deviceId) return true;
       if (!val || typeof val !== 'string' || !val.trim()) throw new Error('Device category is required.');
-      if (!ALLOWED_DEVICE_CATEGORIES.includes(val.toLowerCase().trim())) {
+      const normalized = val.toLowerCase().replace(/\s*&\s*/g, ' & ').replace(/\s+/g, ' ').trim();
+      const isAllowed = ALLOWED_DEVICE_CATEGORIES.some(c => c.toLowerCase().replace(/\s*&\s*/g, ' & ').replace(/\s+/g, ' ').trim() === normalized);
+      if (!isAllowed) {
+        if (typeof val === 'string' && val.trim().length >= 2 && val.trim().length <= 100 && !/[<>]/.test(val)) {
+          return true;
+        }
         throw new Error('Invalid device category selected.');
       }
       return true;
@@ -604,8 +662,8 @@ const validateRepairRequest = validate([
       if (req.body.deviceId) return true;
       if (!val || typeof val !== 'string' || !val.trim()) throw new Error('Brand is required.');
       const trimmed = val.trim();
-      if (trimmed.length < 1 || trimmed.length > 30) {
-        throw new Error('Brand must be between 1 and 30 characters.');
+      if (trimmed.length < 1 || trimmed.length > 50) {
+        throw new Error('Brand must be between 1 and 50 characters.');
       }
       return true;
     }),
@@ -617,8 +675,8 @@ const validateRepairRequest = validate([
         if (!trimmed) {
           throw new Error('Please specify your brand name.');
         }
-        if (trimmed.length < 2 || trimmed.length > 30) {
-          throw new Error('Custom brand must be between 2 and 30 characters.');
+        if (trimmed.length < 2 || trimmed.length > 50) {
+          throw new Error('Custom brand must be between 2 and 50 characters.');
         }
       }
       return true;

@@ -528,6 +528,27 @@ const maskEmail = (email) => {
   return `${userPart.slice(0, 2)}${'*'.repeat(Math.min(5, userPart.length - 2))}@${domainPart}`;
 };
 
+/**
+ * Generate a short-lived restricted JWT for the pending Admin Change Password state.
+ * @param {Object} user - User object with { id, email, role, token_version }
+ * @param {string} newPasswordHash - Bcrypt hash of the new password to apply upon verification
+ * @returns {string} Signed pending JWT valid for 10 minutes
+ */
+const generatePendingChangePasswordToken = (user, newPasswordHash) => {
+  return jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      newPasswordHash,
+      token_version: user.token_version || 1,
+      type: 'admin_change_password_pending'
+    },
+    config.jwt.secret,
+    { expiresIn: '10m' }
+  );
+};
+
 module.exports = {
   generateToken,
   generateEstimateActionToken,
@@ -540,6 +561,7 @@ module.exports = {
   verifyOtpHash,
   generatePendingAuthToken,
   verifyPendingAuthToken,
+  generatePendingChangePasswordToken,
   maskEmail
 };
 

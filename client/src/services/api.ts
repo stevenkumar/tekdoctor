@@ -1880,8 +1880,22 @@ export const adminApi = {
     }),
 
   changePassword: (token: string, data: { currentPassword: string; newPassword: string }) =>
-    safeFetch(getUrl(ENDPOINTS.ADMIN.CHANGE_PASSWORD), {
+    safeFetch<{ data?: { requiresOtp?: boolean; pendingToken?: string; maskedEmail?: string } }>(getUrl(ENDPOINTS.ADMIN.CHANGE_PASSWORD), {
       method: 'PUT',
+      headers: adminHeaders(token),
+      body: JSON.stringify(data),
+    }),
+
+  verifyChangePasswordOtp: (token: string, data: { pendingToken: string; otp: string }) =>
+    safeFetch<{ data?: { token?: string } }>(getUrl('/api/admin/verify-change-password-otp'), {
+      method: 'POST',
+      headers: adminHeaders(token),
+      body: JSON.stringify(data),
+    }),
+
+  resendChangePasswordOtp: (token: string, data: { pendingToken: string }) =>
+    safeFetch(getUrl('/api/admin/resend-change-password-otp'), {
+      method: 'POST',
       headers: adminHeaders(token),
       body: JSON.stringify(data),
     }),

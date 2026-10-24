@@ -254,12 +254,21 @@ const sendCustomerNotification = async (toEmail, subject, htmlContent) => {
  */
 const sendOtpEmail = async ({ toEmail, otpCode, purpose = 'login', expiresInMinutes = 5 }) => {
     const isLogin = purpose === 'login';
+    const isChangePassword = purpose === 'change_password' || purpose === 'password_change';
     const subject = isLogin 
         ? 'TekDoctor Admin — Login Verification Code' 
+        : isChangePassword
+        ? 'TekDoctor Admin — Password Change Verification Code'
         : 'TekDoctor Admin — Password Reset Code';
-    const titleText = isLogin ? 'Admin Login Verification' : 'Admin Password Reset';
+    const titleText = isLogin 
+        ? 'Admin Login Verification' 
+        : isChangePassword 
+        ? 'Admin Password Change Verification' 
+        : 'Admin Password Reset';
     const actionDesc = isLogin 
         ? 'Use the verification code below to complete your administrative login.'
+        : isChangePassword
+        ? 'Use the verification code below to confirm changing your administrator password.'
         : 'Use the verification code below to proceed with resetting your administrator password.';
 
     const htmlContent = `
