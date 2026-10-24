@@ -14,6 +14,7 @@ import PhoneInput from '@/components/PhoneInput';
 import { PromptModal } from '@/components/PromptModal';
 import { parsePhoneNumber, validatePhoneNumber, DEFAULT_COUNTRY } from '@/utils/phoneUtils';
 import { NAME_MAX_LENGTH, validateName, validateEmail, validatePassword, DUPLICATE_ERRORS } from '@/config/constants';
+import { SkeletonTable } from '@/components/Skeleton';
 
 export default function TechnicianManagement() {
     const { token } = useAuth();
@@ -357,7 +358,9 @@ export default function TechnicianManagement() {
                         </div>
                     </div>
                     {loading ? (
-                        <div className="p-12 text-center"><Loader2 className="w-6 h-6 text-neon-cyan animate-spin mx-auto" /></div>
+                        <div className="p-4">
+                            <SkeletonTable rows={5} columns={5} hasHeaderFilter={false} />
+                        </div>
                     ) : filteredTechnicians.length === 0 ? (
                         <div className="p-12 text-center text-zinc-500 text-sm">No technicians found for this filter.</div>
                     ) : (

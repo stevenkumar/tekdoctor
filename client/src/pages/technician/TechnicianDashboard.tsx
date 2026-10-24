@@ -23,6 +23,7 @@ import ImagePreviewModal from '@/components/ImagePreviewModal';
 import PaymentReceiptModal from '@/components/PaymentReceiptModal';
 import { downloadPaymentBillPdf, printPaymentBill } from '@/utils/billGenerator';
 import { sanitizeAmountInput, handleAmountKeyDown } from '@/utils/currencyUtils';
+import { SkeletonTable } from '@/components/Skeleton';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getApprovalStatusBadge } from '@/components/TechnicianTaskWorkspace';
 import { subscribeToPaymentUpdates } from '@/utils/paymentSync';
@@ -1587,9 +1588,8 @@ export default function TechnicianDashboard() {
 
                         {/* Transfer Items */}
                         {myTransfersLoading ? (
-                            <div className="min-h-[30vh] flex flex-col items-center justify-center text-center">
-                                <Loader2 className="w-8 h-8 text-neon-cyan animate-spin mb-3" />
-                                <p className="text-zinc-500 text-xs font-mono uppercase tracking-wider">Syncing transfer audit logs...</p>
+                            <div className="py-2">
+                                <SkeletonTable rows={4} columns={5} hasHeaderFilter={false} />
                             </div>
                         ) : myTransfers.length === 0 ? (
                             <div className="border border-zinc-900 bg-zinc-950/20 rounded-2xl p-16 text-center">
@@ -2258,9 +2258,8 @@ export default function TechnicianDashboard() {
 
                                 {/* Loading / Error / Empty / Views */}
                                 {isLoading ? (
-                                    <div className="min-h-[40vh] flex flex-col items-center justify-center text-center">
-                                        <Loader2 className="w-8 h-8 text-emerald-400 animate-spin mb-3" />
-                                        <p className="text-zinc-500 text-xs font-mono uppercase tracking-wider">Syncing workbench telemetry...</p>
+                                    <div className="py-2">
+                                        <SkeletonTable rows={6} columns={6} hasHeaderFilter={false} />
                                     </div>
                                 ) : errorMsg ? (
                                     <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-6 text-center text-red-400 font-mono text-sm max-w-xl mx-auto">{errorMsg}</div>

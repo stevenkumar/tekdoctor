@@ -13,6 +13,7 @@ import { downloadPaymentBillPdf, printPaymentBill } from '@/utils/billGenerator'
 import PaymentMethodModal from '@/components/PaymentMethodModal';
 import { PaymentReceiptModal } from '@/components/PaymentReceiptModal';
 import { toast } from 'react-hot-toast';
+import { SkeletonTable } from '@/components/Skeleton';
 
 interface LineItem {
     description: string;
@@ -569,8 +570,8 @@ export default function CompanyBilling() {
 
             {/* Content Display */}
             {loading ? (
-                <div className="flex items-center justify-center min-h-[300px]">
-                    <Loader2 className="animate-spin text-indigo-500" size={32} />
+                <div className="py-2">
+                    <SkeletonTable rows={5} columns={6} hasHeaderFilter={false} />
                 </div>
             ) : activeTab === 'quotes' ? (
                 /* ── TAB 1: Estimates & Quotes ── */

@@ -12,6 +12,7 @@ import { useSiteContext } from '../../context/SiteContext';
 import { toast } from 'react-hot-toast';
 import DeviceRepairHistoryModal from '../../components/DeviceRepairHistoryModal';
 import { PromptModal } from '@/components/PromptModal';
+import { SkeletonTable } from '@/components/Skeleton';
 
 interface Employee {
     id: number;
@@ -450,8 +451,8 @@ export default function CompanyDevices() {
             )}
 
             {loading ? (
-                <div className="flex items-center justify-center min-h-[300px]">
-                    <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-indigo-500"></div>
+                <div className="py-2">
+                    <SkeletonTable rows={6} columns={6} hasHeaderFilter={false} />
                 </div>
             ) : filteredDevices.length === 0 ? (
                 <div className="bg-[#0c0c0c] border border-zinc-900 border-dashed rounded-2xl py-20 text-center flex flex-col items-center justify-center space-y-4">

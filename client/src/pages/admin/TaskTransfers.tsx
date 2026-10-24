@@ -10,6 +10,7 @@ import type { TaskTransfer, TechnicianUser, ServiceRequest } from '@/services/ap
 import { useAuth } from '@/context/AuthContext';
 import { toast } from 'react-hot-toast';
 import SideDrawer from '@/components/SideDrawer';
+import { SkeletonTable } from '@/components/Skeleton';
 
 export default function TaskTransfers() {
     const { token } = useAuth();
@@ -444,10 +445,7 @@ export default function TaskTransfers() {
             {/* Main Table / Data View */}
             <div className="bg-[#0a0a0a] border border-zinc-900 rounded-2xl overflow-hidden shadow-xl">
                 {isLoading ? (
-                    <div className="p-16 flex flex-col items-center justify-center text-center">
-                        <RefreshCw className="w-8 h-8 text-neon-cyan animate-spin mb-3" />
-                        <p className="text-zinc-500 text-xs font-mono uppercase tracking-wider">Loading transfer records...</p>
-                    </div>
+                    <SkeletonTable rows={6} columns={6} hasHeaderFilter={false} />
                 ) : transfers.length === 0 ? (
                     <div className="p-16 text-center">
                         <ArrowRightLeft className="w-12 h-12 text-zinc-700 mx-auto mb-3" />

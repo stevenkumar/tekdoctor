@@ -22,6 +22,7 @@ import { triggerRazorpayCheckout } from '@/utils/payment';
 import { downloadPaymentBillPdf } from '@/utils/billGenerator';
 import RepairStepProgress, { type WorkflowStepKey } from '@/components/RepairStepProgress';
 import PaymentMethodModal from '@/components/PaymentMethodModal';
+import { SkeletonTicketWorkspace } from '@/components/Skeleton';
 
 const getFileUrl = (path: string | null) => {
   if (!path) return null;
@@ -466,6 +467,12 @@ export default function ServiceTracker() {
           {searchError && (
             <div className="text-center mt-6 p-3 bg-red-500/10 border border-red-500/30 text-red-500 text-sm font-mono rounded-xl max-w-md mx-auto">
               {searchError}
+            </div>
+          )}
+
+          {isSearching && (
+            <div className="mt-8 sm:mt-12 pt-8 sm:pt-10 border-t border-zinc-800/50">
+              <SkeletonTicketWorkspace />
             </div>
           )}
 

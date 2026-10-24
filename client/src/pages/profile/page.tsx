@@ -43,6 +43,7 @@ import {
 import { useAuth } from '@/context/AuthContext';
 import { authApi, repairApi, billingApi } from '@/services/api';
 import type { ServiceRequest, Invoice } from '@/services/api';
+import { SkeletonTable, SkeletonCard, SkeletonList } from '@/components/Skeleton';
 import { ROUTES } from '@/config/routes';
 import { VALIDATION, validatePassword, validatePasswordMatch } from '@/config/constants';
 import { appConfig } from '@/config/appConfig';
@@ -859,9 +860,7 @@ export default function ProfilePage() {
             </div>
 
             {loadingHistory ? (
-              <div className="flex justify-center p-12 bg-zinc-900/20 border border-zinc-800/60 rounded-2xl">
-                <Loader2 className="w-8 h-8 animate-spin text-neon-cyan" />
-              </div>
+              <SkeletonTable rows={4} columns={6} hasHeaderFilter={false} />
             ) : currentRepairs.length === 0 ? (
               <div className="text-center p-8 sm:p-12 bg-zinc-900/20 border border-dashed border-zinc-800 rounded-2xl space-y-4">
                 <div className="w-12 h-12 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center mx-auto text-zinc-500">
@@ -993,8 +992,8 @@ export default function ProfilePage() {
             </div>
 
             {loadingHistory ? (
-              <div className="flex justify-center p-12 bg-zinc-900/20 border border-zinc-800/60 rounded-2xl">
-                <Loader2 className="w-8 h-8 animate-spin text-neon-cyan" />
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-6">
+                <SkeletonCard count={4} />
               </div>
             ) : previousRepairs.length === 0 ? (
               <div className="text-center p-12 bg-zinc-900/20 border border-dashed border-zinc-800 rounded-2xl space-y-2">
@@ -1092,8 +1091,8 @@ export default function ProfilePage() {
             </div>
 
             {loadingHistory ? (
-              <div className="flex justify-center p-12 bg-zinc-900/20 border border-zinc-800/60 rounded-2xl">
-                <Loader2 className="w-8 h-8 animate-spin text-neon-cyan" />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <SkeletonCard count={4} />
               </div>
             ) : uniqueDevices.length === 0 ? (
               <div className="text-center p-12 bg-zinc-900/20 border border-dashed border-zinc-800 rounded-2xl space-y-2">
@@ -1162,8 +1161,8 @@ export default function ProfilePage() {
             </div>
 
             {loadingHistory ? (
-              <div className="flex justify-center p-12 bg-zinc-900/20 border border-zinc-800/60 rounded-2xl">
-                <Loader2 className="w-8 h-8 animate-spin text-neon-cyan" />
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-6">
+                <SkeletonCard count={4} />
               </div>
             ) : estimatesList.length === 0 ? (
               <div className="text-center p-12 bg-zinc-900/20 border border-dashed border-zinc-800 rounded-2xl space-y-2">
@@ -1378,9 +1377,7 @@ export default function ProfilePage() {
             </div>
 
             {loadingHistory ? (
-              <div className="flex justify-center p-12 bg-zinc-900/20 border border-zinc-800/60 rounded-2xl">
-                <Loader2 className="w-8 h-8 animate-spin text-neon-cyan" />
-              </div>
+              <SkeletonList count={4} />
             ) : paymentTickets.length === 0 ? (
               <div className="text-center p-12 bg-zinc-900/20 border border-dashed border-zinc-800 rounded-2xl space-y-2">
                 <p className="text-sm font-mono text-zinc-500">No payment records found.</p>
@@ -1461,9 +1458,7 @@ export default function ProfilePage() {
             </div>
 
             {loadingInvoices ? (
-              <div className="flex justify-center p-12 bg-zinc-900/20 border border-zinc-800/60 rounded-2xl">
-                <Loader2 className="w-8 h-8 animate-spin text-neon-cyan" />
-              </div>
+              <SkeletonTable rows={4} columns={5} hasHeaderFilter={false} />
             ) : invoices.length === 0 ? (
               <div className="text-center p-12 bg-zinc-900/20 border border-dashed border-zinc-800 rounded-2xl space-y-2">
                 <div className="w-12 h-12 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center mx-auto text-zinc-500">

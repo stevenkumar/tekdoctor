@@ -9,6 +9,7 @@ import {
     Play, Square, Bell, Plus, CheckCircle2, ShieldAlert, Code
 } from 'lucide-react';
 import { formatActivity } from '@/utils/activityFormatter';
+import { SkeletonList } from '@/components/Skeleton';
 
 export default function ActivityLogs() {
     const { token } = useAuth();
@@ -280,10 +281,7 @@ export default function ActivityLogs() {
 
             {/* Timeline Stream Listing */}
             {loading ? (
-                <div className="min-h-[45vh] flex flex-col items-center justify-center gap-3">
-                    <Loader2 className="w-9 h-9 text-neon-cyan animate-spin" />
-                    <span className="text-zinc-500 text-xs font-outfit">Syncing operator activities stream...</span>
-                </div>
+                <SkeletonList count={6} />
             ) : logs.length === 0 ? (
                 <div className="border border-zinc-900/60 bg-zinc-950/10 rounded-2xl py-24 text-center">
                     <AlertCircle className="w-10 h-10 text-zinc-600 mx-auto mb-3" />

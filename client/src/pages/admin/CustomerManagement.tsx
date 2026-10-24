@@ -20,6 +20,7 @@ import PaymentReceiptModal from '@/components/PaymentReceiptModal';
 import { NAME_MAX_LENGTH, validateName, validateEmail, validatePassword, DUPLICATE_ERRORS } from '@/config/constants';
 import { parsePhoneNumber, validatePhoneNumber, DEFAULT_COUNTRY } from '@/utils/phoneUtils';
 import { ROUTES } from '@/config/routes';
+import { SkeletonTable, SkeletonList } from '@/components/Skeleton';
 
 export default function CustomerManagement() {
     const { token } = useAuth();
@@ -1118,8 +1119,8 @@ export default function CustomerManagement() {
 
             {/* Main Content Area */}
             {loading ? (
-                <div className="min-h-[40vh] flex items-center justify-center">
-                    <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
+                <div className="py-2">
+                    <SkeletonTable rows={7} columns={5} hasHeaderFilter={false} />
                 </div>
             ) : (
                 <div className="border border-zinc-900 bg-zinc-950/20 rounded-2xl overflow-hidden shadow-xl">
@@ -2548,9 +2549,8 @@ export default function CustomerManagement() {
 
                         {/* 4. Ticket Records List */}
                         {historyLoading ? (
-                            <div className="py-12 flex flex-col items-center justify-center gap-3">
-                                <Loader2 className="w-7 h-7 text-neon-cyan animate-spin" />
-                                <span className="text-xs font-mono text-zinc-500">Loading complete repair records...</span>
+                            <div className="py-2">
+                                <SkeletonList count={4} />
                             </div>
                         ) : (historyModal.tickets || []).length === 0 ? (
                             <div className="py-12 text-center bg-zinc-950/40 rounded-xl border border-zinc-900">

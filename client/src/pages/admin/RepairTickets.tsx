@@ -23,6 +23,7 @@ import { PaymentReceiptModal } from '@/components/PaymentReceiptModal';
 import { downloadPaymentBillPdf, printPaymentBill } from '@/utils/billGenerator';
 import ConfirmModal from '@/components/ConfirmModal';
 import { subscribeToPaymentUpdates } from '@/utils/paymentSync';
+import { SkeletonTable } from '@/components/Skeleton';
 
 const STANDARD_DEVICE_CATEGORIES = [
     'Laptop', 'Desktop', 'Smartphone', 'Tablet', 'Server', 'Printer', 'Smartwatch', 'Other'
@@ -1470,8 +1471,8 @@ export default function RepairTickets() {
 
                     {/* Content Area */}
                     {loading ? (
-                        <div className="flex items-center justify-center min-h-[300px]">
-                            <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-indigo-500"></div>
+                        <div className="py-2">
+                            <SkeletonTable rows={7} columns={6} hasHeaderFilter={false} />
                         </div>
                     ) : filteredRequests.length === 0 ? (
                         <div className="bg-[#0c0c0c] border border-zinc-800/40 border-dashed rounded-2xl py-20 text-center flex flex-col items-center justify-center space-y-4">

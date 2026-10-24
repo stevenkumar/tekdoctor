@@ -22,6 +22,7 @@ import ImagePreviewModal from '@/components/ImagePreviewModal';
 import PaymentReceiptModal from '@/components/PaymentReceiptModal';
 import { downloadPaymentBillPdf, printPaymentBill } from '@/utils/billGenerator';
 import { MESSAGE_MAX_LENGTH } from '@/config/constants';
+import { SkeletonTable } from '@/components/Skeleton';
 import {
     validateRegisterField,
     validateAllRegisterFields,
@@ -1686,12 +1687,18 @@ export default function CompanyManagementDashboard() {
                                 </thead>
                                 <tbody className="divide-y divide-zinc-900/70">
                                     {companiesLoading ? (
-                                        <tr>
-                                            <td colSpan={8} className="py-12 text-center text-zinc-500">
-                                                <RefreshCw size={24} className="animate-spin mx-auto mb-2 text-neon-cyan" />
-                                                <span>Loading company directory...</span>
-                                            </td>
-                                        </tr>
+                                        Array.from({ length: 6 }).map((_, idx) => (
+                                            <tr key={idx} className="animate-pulse border-b border-zinc-900/50">
+                                                <td className="py-3.5 px-4"><div className="h-4 w-20 bg-zinc-800/80 rounded" /></td>
+                                                <td className="py-3.5 px-4"><div className="h-4 w-36 bg-zinc-800/80 rounded" /></td>
+                                                <td className="py-3.5 px-4"><div className="h-4 w-28 bg-zinc-800/80 rounded" /></td>
+                                                <td className="py-3.5 px-4"><div className="h-4 w-12 bg-zinc-800/80 rounded" /></td>
+                                                <td className="py-3.5 px-4"><div className="h-4 w-24 bg-zinc-800/80 rounded" /></td>
+                                                <td className="py-3.5 px-4"><div className="h-4 w-12 bg-zinc-800/80 rounded" /></td>
+                                                <td className="py-3.5 px-4"><div className="h-4 w-16 bg-zinc-800/80 rounded" /></td>
+                                                <td className="py-3.5 px-4 text-right"><div className="h-4 w-20 bg-zinc-800/80 rounded ml-auto" /></td>
+                                            </tr>
+                                        ))
                                     ) : companies.length === 0 ? (
                                         <tr>
                                             <td colSpan={8} className="py-12 text-center text-zinc-500">
@@ -2018,14 +2025,17 @@ export default function CompanyManagementDashboard() {
                                         </thead>
                                         <tbody className="divide-y divide-zinc-900/60">
                                             {paymentsLoading ? (
-                                                <tr>
-                                                    <td colSpan={7} className="py-12 text-center text-zinc-500">
-                                                        <div className="flex items-center justify-center gap-2">
-                                                            <RefreshCw size={16} className="animate-spin text-emerald-400" />
-                                                            <span>Loading verified payment ledger...</span>
-                                                        </div>
-                                                    </td>
-                                                </tr>
+                                                Array.from({ length: 5 }).map((_, idx) => (
+                                                    <tr key={idx} className="animate-pulse border-b border-zinc-900/50">
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-24 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-32 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-28 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-20 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-20 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-24 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4 text-right"><div className="h-4 w-16 bg-zinc-800/80 rounded ml-auto" /></td>
+                                                    </tr>
+                                                ))
                                             ) : payments.length === 0 ? (
                                                 <tr>
                                                     <td colSpan={7} className="py-12 text-center text-zinc-500">
@@ -2340,14 +2350,17 @@ export default function CompanyManagementDashboard() {
                                         </thead>
                                         <tbody className="divide-y divide-zinc-900/60">
                                             {corporateRepairsLoading ? (
-                                                <tr>
-                                                    <td colSpan={7} className="py-12 text-center text-zinc-500">
-                                                        <div className="flex items-center justify-center gap-2">
-                                                            <RefreshCw size={16} className="animate-spin text-blue-400" />
-                                                            <span>Loading corporate repair tickets...</span>
-                                                        </div>
-                                                    </td>
-                                                </tr>
+                                                Array.from({ length: 6 }).map((_, idx) => (
+                                                    <tr key={idx} className="animate-pulse border-b border-zinc-900/50">
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-28 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-32 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-36 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-16 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-20 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-24 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4 text-right"><div className="h-4 w-16 bg-zinc-800/80 rounded ml-auto" /></td>
+                                                    </tr>
+                                                ))
                                             ) : allCorporateRepairs.length === 0 ? (
                                                 <tr>
                                                     <td colSpan={7} className="py-12 text-center text-zinc-500">
@@ -2697,14 +2710,17 @@ export default function CompanyManagementDashboard() {
                                         </thead>
                                         <tbody className="divide-y divide-zinc-900/60">
                                             {corporateInvoicesLoading ? (
-                                                <tr>
-                                                    <td colSpan={7} className="py-12 text-center text-zinc-500">
-                                                        <div className="flex items-center justify-center gap-2">
-                                                            <RefreshCw size={16} className="animate-spin text-purple-400" />
-                                                            <span>Loading corporate invoice ledger...</span>
-                                                        </div>
-                                                    </td>
-                                                </tr>
+                                                Array.from({ length: 5 }).map((_, idx) => (
+                                                    <tr key={idx} className="animate-pulse border-b border-zinc-900/50">
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-24 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-32 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-36 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-20 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-20 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4"><div className="h-4 w-28 bg-zinc-800/80 rounded" /></td>
+                                                        <td className="py-3.5 px-4 text-right"><div className="h-4 w-16 bg-zinc-800/80 rounded ml-auto" /></td>
+                                                    </tr>
+                                                ))
                                             ) : corporateInvoices.length === 0 ? (
                                                 <tr>
                                                     <td colSpan={7} className="py-12 text-center text-zinc-500">
@@ -3136,10 +3152,7 @@ export default function CompanyManagementDashboard() {
 
                             {/* Table */}
                             {companyTicketsLoading ? (
-                                <div className="bg-[#0c0c0c] border border-zinc-800/40 rounded-2xl py-20 text-center flex flex-col items-center justify-center space-y-3">
-                                    <RefreshCw size={24} className="animate-spin text-neon-cyan" />
-                                    <p className="text-zinc-400 text-xs font-medium">Loading repair tickets for {selectedCompany.name}...</p>
-                                </div>
+                                <SkeletonTable rows={5} columns={6} hasHeaderFilter={false} />
                             ) : filteredCompanyTickets.length === 0 ? (
                                 <div className="bg-[#0c0c0c] border border-zinc-800/40 border-dashed rounded-2xl py-20 text-center flex flex-col items-center justify-center space-y-4">
                                     <Wrench size={40} className="text-zinc-700" />

@@ -7,6 +7,7 @@ import { getMediaUrl } from '@/utils/media';
 import PhoneInput from '@/components/PhoneInput';
 import { NAME_MAX_LENGTH, validateName } from '@/config/constants';
 import { parsePhoneNumber, validatePhoneNumber, DEFAULT_COUNTRY } from '@/utils/phoneUtils';
+import { SkeletonProfile } from '@/components/Skeleton';
 
 interface CompanyProfileData {
     company_name: string;
@@ -201,11 +202,7 @@ export default function CompanyProfile() {
     };
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center min-h-[400px]">
-                <Loader2 className="animate-spin text-indigo-500" size={32} />
-            </div>
-        );
+        return <SkeletonProfile />;
     }
 
     return (

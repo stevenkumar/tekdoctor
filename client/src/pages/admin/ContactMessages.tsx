@@ -9,6 +9,7 @@ import {
 import { toast } from 'react-hot-toast';
 import { MESSAGE_MAX_LENGTH } from '@/config/constants';
 import { ConfirmModal } from '@/components/ConfirmModal';
+import { SkeletonList } from '@/components/Skeleton';
 
 const formatDateTime = (dateStr: string | Date) => {
     if (!dateStr) return '—';
@@ -358,7 +359,7 @@ export default function ContactMessages() {
             )}
 
             {loading ? (
-                <div className="min-h-[40vh] flex items-center justify-center"><Loader2 className="w-8 h-8 text-neon-cyan animate-spin" /></div>
+                <SkeletonList count={5} />
             ) : contacts.length === 0 ? (
                 <div className="border border-zinc-900 bg-zinc-950/20 rounded-2xl p-16 text-center text-zinc-500 text-sm">
                     {hasActiveFilters ? 'No contact messages matched your search criteria.' : 'No contact messages yet.'}

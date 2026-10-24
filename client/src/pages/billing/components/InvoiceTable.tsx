@@ -7,6 +7,7 @@ import PaymentStatusBadge from './PaymentStatusBadge';
 import InvoiceShareMenu from './InvoiceShareMenu';
 import { PaymentReceiptModal } from '@/components/PaymentReceiptModal';
 import { ConfirmModal } from '@/components/ConfirmModal';
+import { SkeletonTable } from '@/components/Skeleton';
 
 interface LineItem {
   id?: number | string;
@@ -357,10 +358,8 @@ export default function InvoiceTable({
 
   if (isLoading) {
     return (
-      <div className="flex justify-center items-center py-12">
-        <div className="animate-pulse text-neon-cyan text-lg font-mono">
-          LOADING_INVOICES...
-        </div>
+      <div className="py-2">
+        <SkeletonTable rows={5} columns={6} hasHeaderFilter={false} />
       </div>
     );
   }

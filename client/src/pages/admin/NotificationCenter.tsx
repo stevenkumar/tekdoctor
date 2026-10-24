@@ -4,6 +4,7 @@ import { useAuth } from '@/context/AuthContext';
 import { adminApi } from '@/services/api';
 import { Bell, Send, Radio, Loader2, ChevronLeft, ChevronRight, Users, History, RefreshCw, Trash2, X } from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import { SkeletonList } from '@/components/Skeleton';
 
 export default function NotificationCenter() {
     const { token } = useAuth();
@@ -258,7 +259,7 @@ export default function NotificationCenter() {
                     )}
 
                     {historyLoading ? (
-                        <div className="min-h-[30vh] flex items-center justify-center"><Loader2 className="w-6 h-6 text-neon-cyan animate-spin" /></div>
+                        <SkeletonList count={5} />
                     ) : history.length === 0 ? (
                         <div className="border border-zinc-900 bg-zinc-950/20 rounded-2xl p-16 text-center text-zinc-500 text-sm">No notifications sent yet.</div>
                     ) : (

@@ -12,6 +12,7 @@ import PhoneInput from '@/components/PhoneInput';
 import { PromptModal } from '@/components/PromptModal';
 import { NAME_MAX_LENGTH, validateName } from '@/config/constants';
 import { parsePhoneNumber, validatePhoneNumber, DEFAULT_COUNTRY } from '@/utils/phoneUtils';
+import { SkeletonTable } from '@/components/Skeleton';
 
 interface Branch {
     id: number;
@@ -394,8 +395,8 @@ export default function CompanyBranches() {
 
             {/* Loading state */}
             {loading ? (
-                <div className="flex items-center justify-center min-h-[300px]">
-                    <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-indigo-500"></div>
+                <div className="py-2">
+                    <SkeletonTable rows={5} columns={4} hasHeaderFilter={false} />
                 </div>
             ) : filteredBranches.length === 0 ? (
                 <div className="bg-[#0c0c0c] border border-zinc-900 border-dashed rounded-2xl py-20 text-center flex flex-col items-center justify-center space-y-4">

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { adminApi } from '@/services/api';
 import { Mail, Loader2, Save, CheckCircle2, Shield, TestTube, AlertCircle } from 'lucide-react';
+import { SkeletonProfile } from '@/components/Skeleton';
 
 export default function EmailSettings() {
     const { token } = useAuth();
@@ -59,7 +60,7 @@ export default function EmailSettings() {
         { key: 'template_status_update', label: 'Ticket Status Updated', help: 'Variables: {{customer_name}}, {{ticket_id}}, {{status}}' }
     ];
 
-    if (loading) return <div className="min-h-[60vh] flex items-center justify-center"><Loader2 className="w-8 h-8 text-neon-cyan animate-spin" /></div>;
+    if (loading) return <div className="max-w-2xl"><SkeletonProfile /></div>;
 
     return (
         <div className="space-y-6 max-w-2xl">

@@ -11,6 +11,7 @@ import type { NotificationItem } from '@/services/api';
 import { ROUTES } from '@/config/routes';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
+import { SkeletonList } from '@/components/Skeleton';
 
 export default function UserNotifications() {
   const { user: _user, token, isAuthenticated } = useAuth();
@@ -282,9 +283,8 @@ export default function UserNotifications() {
 
         {/* Notifications List */}
         {loading ? (
-          <div className="p-12 text-center bg-zinc-950/60 border border-zinc-900 rounded-2xl flex flex-col items-center justify-center gap-3">
-            <Loader2 size={24} className="text-neon-cyan animate-spin" />
-            <p className="text-xs font-mono text-zinc-500">Loading your alerts...</p>
+          <div className="py-2">
+            <SkeletonList count={5} />
           </div>
         ) : filteredNotifications.length === 0 ? (
           <div className="p-12 text-center bg-zinc-950/60 border border-dashed border-zinc-900 rounded-2xl flex flex-col items-center justify-center gap-3">

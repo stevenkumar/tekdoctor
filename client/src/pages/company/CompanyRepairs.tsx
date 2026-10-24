@@ -18,6 +18,7 @@ import DeviceRepairHistoryModal from '../../components/DeviceRepairHistoryModal'
 import ImagePreviewModal from '@/components/ImagePreviewModal';
 import SideDrawer from '@/components/SideDrawer';
 import RepairTicketWorkspace from '@/components/RepairTicketWorkspace';
+import { SkeletonTable } from '@/components/Skeleton';
 import PaymentMethodModal from '@/components/PaymentMethodModal';
 import { PaymentReceiptModal } from '@/components/PaymentReceiptModal';
 import { DESCRIPTION_MAX_LENGTH } from '@/config/constants';
@@ -859,8 +860,8 @@ export default function CompanyRepairs() {
             )}
 
             {loading ? (
-                <div className="flex items-center justify-center min-h-[300px]">
-                    <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-indigo-500"></div>
+                <div className="py-2">
+                    <SkeletonTable rows={6} columns={6} hasHeaderFilter={false} />
                 </div>
             ) : filteredRepairs.length === 0 ? (
                 <div className="bg-[#0c0c0c] border border-zinc-800/40 border-dashed rounded-2xl py-20 text-center flex flex-col items-center justify-center space-y-4">

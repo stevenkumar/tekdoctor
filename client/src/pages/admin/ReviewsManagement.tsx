@@ -5,6 +5,7 @@ import { toast } from 'react-hot-toast';
 import { Loader2, Star, Trash2, CheckCircle2, MessageSquare, Edit2, X, Save } from 'lucide-react';
 import { MESSAGE_MAX_LENGTH } from '@/config/constants';
 import { ConfirmModal } from '@/components/ConfirmModal';
+import { SkeletonCard } from '@/components/Skeleton';
 
 export default function ReviewsManagement() {
     const { token } = useAuth();
@@ -102,8 +103,8 @@ export default function ReviewsManagement() {
             </div>
 
             {reviewsLoading ? (
-                <div className="min-h-[40vh] flex items-center justify-center">
-                    <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <SkeletonCard count={4} />
                 </div>
             ) : reviewsList.length === 0 ? (
                 <div className="border border-zinc-900 bg-zinc-950/20 rounded-2xl p-16 text-center text-zinc-500 text-sm flex flex-col items-center">

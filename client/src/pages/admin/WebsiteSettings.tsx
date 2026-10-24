@@ -20,6 +20,7 @@ import {
 import { toast } from 'react-hot-toast';
 import { useSiteContext } from '@/context/SiteContext';
 import { getMediaUrl, isUploadPath } from '@/utils/media';
+import { SkeletonDashboard } from '@/components/Skeleton';
 
 // ─── Schema for text/select settings (branding media handled separately) ───
 const DEFAULT_SETTINGS = {
@@ -278,7 +279,7 @@ export default function WebsiteSettings() {
         meta_title: 'Meta Title', meta_description: 'Meta Description', meta_keywords: 'Meta Keywords',
     };
 
-    if (loading) return <div className="min-h-[60vh] flex items-center justify-center"><Loader2 className="w-8 h-8 text-neon-cyan animate-spin" /></div>;
+    if (loading) return <SkeletonDashboard />;
 
     // ─── Branding Media Card Component ───
     const BrandingCard = ({

@@ -3,6 +3,7 @@ import { useAuth } from '@/context/AuthContext';
 import { adminApi } from '@/services/api';
 import { BarChart3, Loader2, Download, Filter, FileText, Calendar as CalIcon, AlertTriangle, RotateCcw } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from 'recharts';
+import { SkeletonCard, SkeletonTable } from '@/components/Skeleton';
 
 export default function ReportsAnalytics() {
     const { token } = useAuth();
@@ -110,7 +111,12 @@ export default function ReportsAnalytics() {
             )}
 
             {loading ? (
-                <div className="min-h-[40vh] flex items-center justify-center"><Loader2 className="w-8 h-8 text-neon-cyan animate-spin" /></div>
+                <div className="space-y-6">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <SkeletonCard count={2} />
+                    </div>
+                    <SkeletonTable rows={4} columns={4} hasHeaderFilter={false} />
+                </div>
             ) : !data || !data.repairStats || data.repairStats.length === 0 ? (
                 <div className="border border-zinc-900 bg-zinc-950/20 rounded-2xl p-16 text-center text-zinc-500 text-sm">No data available for this period.</div>
             ) : (
