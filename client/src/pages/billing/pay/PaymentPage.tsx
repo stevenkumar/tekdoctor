@@ -511,8 +511,51 @@ export default function PaymentPage() {
                   </div>
                 ))}
               </div>
-              <div className="flex justify-between items-end">
-                <span className="text-zinc-500 uppercase tracking-widest text-xs font-bold">Total Due</span>
+
+              {/* GST & Financial Breakdown */}
+              {(() => {
+                const subtotal = Number(invoice.subtotal || (invoice.lineItems || []).reduce((s: number, it: any) => s + (Number(it.total) || 0), 0));
+                const totalTax = Number(invoice.taxAmount !== undefined && invoice.taxAmount !== null ? invoice.taxAmount : (Number(invoice.amount || 0) - subtotal));
+                const isInterstate = Boolean(invoice.isInterstate || (invoice as any).is_interstate);
+                const cgst = isInterstate ? 0 : Number(invoice.cgstAmount !== undefined && invoice.cgstAmount !== null ? invoice.cgstAmount : Math.round((totalTax / 2) * 100) / 100);
+                const sgst = isInterstate ? 0 : Number(invoice.sgstAmount !== undefined && invoice.sgstAmount !== null ? invoice.sgstAmount : Math.round((totalTax - cgst) * 100) / 100);
+                const igst = isInterstate ? Number(invoice.igstAmount !== undefined && invoice.igstAmount !== null ? invoice.igstAmount : totalTax) : 0;
+
+                return (
+                  <div className="py-4 border-t border-zinc-800/80 space-y-2 text-xs font-mono">
+                    <div className="flex justify-between text-zinc-400">
+                      <span>Taxable Subtotal:</span>
+                      <span className="text-white font-bold">₹{subtotal.toFixed(2)}</span>
+                    </div>
+
+                    {isInterstate ? (
+                      <div className="flex justify-between text-zinc-400">
+                        <span>IGST (18%):</span>
+                        <span className="text-amber-400 font-bold">₹{igst.toFixed(2)}</span>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex justify-between text-zinc-400">
+                          <span>CGST (9.0%):</span>
+                          <span className="text-neon-cyan font-bold">₹{cgst.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-zinc-400">
+                          <span>SGST (9.0%):</span>
+                          <span className="text-neon-cyan font-bold">₹{sgst.toFixed(2)}</span>
+                        </div>
+                      </>
+                    )}
+
+                    <div className="flex justify-between text-zinc-400 pt-1 border-t border-zinc-900">
+                      <span>Total GST:</span>
+                      <span className="text-cyan-300 font-bold">₹{totalTax.toFixed(2)}</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="flex justify-between items-end pt-4 border-t border-zinc-800">
+                <span className="text-zinc-500 uppercase tracking-widest text-xs font-bold">Total Due (INR)</span>
                 <span className="text-4xl font-black text-white font-mono">₹{Number(invoice.amount || 0).toFixed(2)}</span>
               </div>
             </div>

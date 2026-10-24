@@ -104,16 +104,16 @@ Notes: ${invoice.notes || 'N/A'}
       };
     });
 
-    const subtotal = Number((inv as any).subtotal || lineItems.reduce((acc, li) => acc + li.total, 0));
-    const isInterstate = Boolean((inv as any).isInterstate);
-    const taxAmount = Number((inv as any).taxAmount || (inv.amount - subtotal));
+    const subtotal = Number((inv as any).subtotal !== null && (inv as any).subtotal !== undefined ? (inv as any).subtotal : lineItems.reduce((acc, li) => acc + li.total, 0));
+    const isInterstate = Boolean((inv as any).isInterstate || (inv as any).is_interstate);
+    const taxAmount = Number((inv as any).taxAmount !== undefined && (inv as any).taxAmount !== null ? (inv as any).taxAmount : Math.max(0, inv.amount - subtotal));
     const effectiveTaxRate = subtotal > 0
       ? Math.round((taxAmount / subtotal) * 10000) / 100
       : (lineItems.length > 0 && lineItems[0].taxRate !== undefined ? lineItems[0].taxRate : 18);
     const halfRate = Math.round((effectiveTaxRate / 2) * 100) / 100;
-    const cgstAmount = Number((inv as any).cgstAmount || (isInterstate ? 0 : taxAmount / 2));
-    const sgstAmount = Number((inv as any).sgstAmount || (isInterstate ? 0 : taxAmount - cgstAmount));
-    const igstAmount = Number((inv as any).igstAmount || (isInterstate ? taxAmount : 0));
+    const cgstAmount = Number((inv as any).cgstAmount !== undefined && (inv as any).cgstAmount !== null ? (inv as any).cgstAmount : (isInterstate ? 0 : Math.round((taxAmount / 2) * 100) / 100));
+    const sgstAmount = Number((inv as any).sgstAmount !== undefined && (inv as any).sgstAmount !== null ? (inv as any).sgstAmount : (isInterstate ? 0 : Math.round((taxAmount - cgstAmount) * 100) / 100));
+    const igstAmount = Number((inv as any).igstAmount !== undefined && (inv as any).igstAmount !== null ? (inv as any).igstAmount : (isInterstate ? taxAmount : 0));
 
     return {
       receiptNumber: inv.id,

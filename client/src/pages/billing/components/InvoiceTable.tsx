@@ -19,6 +19,15 @@ interface LineItem {
   total: number;
 }
 
+export const COMMON_SAC_CODES = [
+  { code: '9987', label: '9987 - IT & Computer Repair Services' },
+  { code: '998713', label: '998713 - Laptop & Desktop Hardware Repair' },
+  { code: '998729', label: '998729 - Other Electronics & Device Repair' },
+  { code: '8473', label: '8473 - Computer Parts & Display Panels' },
+  { code: '8507', label: '8507 - Device Batteries & Power Cells' },
+  { code: '9983', label: '9983 - OS & Software Installation Support' },
+];
+
 const DEFAULT_CATALOG_ITEMS: Array<{ description: string; hsnSac: string; unitPrice: number; taxRate: number }> = [
   { description: 'Diagnostic Service Fee', hsnSac: '9987', unitPrice: 499, taxRate: 18 },
   { description: 'Motherboard Chip-level Repair', hsnSac: '9987', unitPrice: 2499, taxRate: 18 },
@@ -42,7 +51,7 @@ interface Invoice {
   cgstAmount?: number;
   sgstAmount?: number;
   igstAmount?: number;
-  originalEstimate?: number;
+  originalEstimate?: number | null;
   isInterstate?: boolean;
   currency: string;
   invoiceDate: string;
@@ -591,27 +600,107 @@ export default function InvoiceTable({
                       <td colSpan={7} className="px-6 py-6">
                         <div className="space-y-4">
                           <div>
-                            <h4 className="text-neon-cyan font-bold font-mono mb-3">
-                              LINE_ITEMS:
-                            </h4>
-                            <div className="space-y-2 bg-zinc-950 border border-zinc-800 rounded p-4">
-                              {invoice.lineItems && invoice.lineItems.map((item, itemIdx) => (
-                                <div
-                                  key={itemIdx}
-                                  className="flex justify-between text-sm text-zinc-300 pb-2 border-b border-zinc-800 last:border-b-0"
-                                >
-                                  <div className="flex-1">
-                                    <p className="font-mono text-zinc-200">{item.description}</p>
-                                      <p className="text-xs text-zinc-500">
-                                        Qty: {item.quantity} × ₹{item.unitPrice.toFixed(2)}
+                            <div className="flex items-center justify-between mb-3">
+                              <h4 className="text-neon-cyan font-bold font-mono text-xs uppercase tracking-wider">
+                                Line Items & Commercial Details ({invoice.lineItems?.length || 0})
+                              </h4>
+                              <span className="text-[11px] font-mono text-zinc-400">
+                                Place of Supply: <strong className="text-white">{invoice.isInterstate ? 'Inter-State (IGST 18%)' : 'Intra-State (CGST 9% + SGST 9%)'}</strong>
+                              </span>
+                            </div>
+                            <div className="space-y-2 bg-zinc-950 border border-zinc-800 rounded-xl p-4">
+                              {invoice.lineItems && invoice.lineItems.map((item, itemIdx) => {
+                                const itemRate = item.taxRate !== undefined ? Number(item.taxRate) : ((item as any).tax_rate !== undefined ? Number((item as any).tax_rate) : 18);
+                                const itemTaxAmt = item.taxAmount !== undefined ? Number(item.taxAmount) : ((item as any).tax_amount !== undefined ? Number((item as any).tax_amount) : Math.round((item.total * (itemRate / 100)) * 100) / 100);
+                                const isInter = Boolean(invoice.isInterstate);
+                                const halfRate = itemRate / 2;
+                                const itemCgst = isInter ? 0 : Math.round((itemTaxAmt / 2) * 100) / 100;
+                                const itemSgst = isInter ? 0 : Math.round((itemTaxAmt - itemCgst) * 100) / 100;
+
+                                return (
+                                  <div
+                                    key={itemIdx}
+                                    className="p-3 bg-zinc-900/50 border border-zinc-800/80 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                                  >
+                                    <div className="flex-1">
+                                      <p className="font-mono text-zinc-200 text-sm font-semibold">{item.description}</p>
+                                      <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-500 font-mono mt-1">
+                                        <span>SAC/HSN: <strong className="text-zinc-300">{item.hsnSac || (item as any).hsn_sac || '9987'}</strong></span>
+                                        <span>•</span>
+                                        <span>Qty: {item.quantity} × ₹{item.unitPrice.toFixed(2)}</span>
+                                        <span>•</span>
+                                        <span>Taxable: <strong className="text-zinc-300">₹{item.total.toFixed(2)}</strong></span>
+                                      </div>
+                                    </div>
+                                    <div className="text-right font-mono">
+                                      <p className="text-neon-cyan font-bold text-sm">
+                                        ₹{(item.total + itemTaxAmt).toFixed(2)}
+                                      </p>
+                                      <p className="text-[10px] text-zinc-400">
+                                        {isInter
+                                          ? `IGST (${itemRate}%): ₹${itemTaxAmt.toFixed(2)}`
+                                          : `CGST (${halfRate}%): ₹${itemCgst.toFixed(2)} + SGST (${halfRate}%): ₹${itemSgst.toFixed(2)}`}
                                       </p>
                                     </div>
-                                    <p className="font-mono text-neon-cyan font-bold ml-4">
-                                      ₹{item.total.toFixed(2)}
-                                    </p>
-                                </div>
-                              ))}
+                                  </div>
+                                );
+                              })}
                             </div>
+
+                            {/* Authoritative Financial & GST Breakdown Card */}
+                            {(() => {
+                              const subtotal = Number(invoice.subtotal !== null && invoice.subtotal !== undefined ? invoice.subtotal : invoice.amount);
+                              const totalTax = Number(invoice.taxAmount !== undefined && invoice.taxAmount !== null ? invoice.taxAmount : (invoice.amount - subtotal));
+                              const isInter = Boolean(invoice.isInterstate);
+                              const cgst = isInter ? 0 : Number(invoice.cgstAmount !== undefined && invoice.cgstAmount !== null ? invoice.cgstAmount : Math.round((totalTax / 2) * 100) / 100);
+                              const sgst = isInter ? 0 : Number(invoice.sgstAmount !== undefined && invoice.sgstAmount !== null ? invoice.sgstAmount : Math.round((totalTax - cgst) * 100) / 100);
+                              const igst = isInter ? Number(invoice.igstAmount !== undefined && invoice.igstAmount !== null ? invoice.igstAmount : totalTax) : 0;
+
+                              return (
+                                <div className="mt-3 p-4 bg-zinc-950 border border-zinc-800 rounded-xl">
+                                  <div className="text-xs font-mono uppercase text-zinc-400 font-bold mb-3 flex items-center justify-between">
+                                    <span>Financial & GST Breakdown</span>
+                                    <span className="text-[10px] text-cyan-400 font-mono">
+                                      {isInter ? '● Inter-State (IGST 18%)' : '● Intra-State Split (CGST 9% + SGST 9%)'}
+                                    </span>
+                                  </div>
+                                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs font-mono">
+                                    <div className="bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800">
+                                      <span className="text-zinc-500 block text-[10px] uppercase">Taxable Subtotal</span>
+                                      <span className="text-white font-bold text-sm">₹{subtotal.toFixed(2)}</span>
+                                    </div>
+
+                                    {isInter ? (
+                                      <div className="bg-amber-950/30 p-2.5 rounded-lg border border-amber-500/30">
+                                        <span className="text-amber-400 block text-[10px] uppercase">IGST (18%)</span>
+                                        <span className="text-amber-300 font-bold text-sm">₹{igst.toFixed(2)}</span>
+                                      </div>
+                                    ) : (
+                                      <>
+                                        <div className="bg-cyan-950/30 p-2.5 rounded-lg border border-cyan-500/30">
+                                          <span className="text-cyan-400 block text-[10px] uppercase">CGST (9.0%)</span>
+                                          <span className="text-cyan-300 font-bold text-sm">₹{cgst.toFixed(2)}</span>
+                                        </div>
+                                        <div className="bg-cyan-950/30 p-2.5 rounded-lg border border-cyan-500/30">
+                                          <span className="text-cyan-400 block text-[10px] uppercase">SGST (9.0%)</span>
+                                          <span className="text-cyan-300 font-bold text-sm">₹{sgst.toFixed(2)}</span>
+                                        </div>
+                                      </>
+                                    )}
+
+                                    <div className="bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800">
+                                      <span className="text-zinc-500 block text-[10px] uppercase">Total Tax (GST)</span>
+                                      <span className="text-cyan-300 font-bold text-sm">₹{totalTax.toFixed(2)}</span>
+                                    </div>
+
+                                    <div className="bg-emerald-950/30 p-2.5 rounded-lg border border-emerald-500/30">
+                                      <span className="text-emerald-400 block text-[10px] uppercase font-bold">Total Payable</span>
+                                      <span className="text-emerald-400 font-black text-sm">₹{invoice.amount.toFixed(2)}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
                           </div>
 
                           {invoice.notes && (
@@ -728,18 +817,30 @@ export default function InvoiceTable({
                               />
                             </div>
 
-                            {/* Interstate Tax Toggle */}
-                            <div className="flex items-center gap-2 md:col-span-2 pt-2">
-                              <input
-                                type="checkbox"
-                                id={`interstate-${invoice.id}`}
-                                checked={editIsInterstate}
-                                onChange={e => setEditIsInterstate(e.target.checked)}
-                                className="w-4 h-4 rounded bg-zinc-950 border-zinc-700 text-neon-cyan focus:ring-neon-cyan cursor-pointer"
-                              />
-                              <label htmlFor={`interstate-${invoice.id}`} className="text-xs font-mono text-zinc-300 cursor-pointer">
-                                Inter-State Transaction (Apply IGST instead of CGST + SGST)
-                              </label>
+                            {/* Interstate Tax Toggle with State Place of Supply Badge */}
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 md:col-span-2 p-3.5 bg-zinc-950/80 border border-zinc-800 rounded-xl">
+                              <div className="flex items-center gap-3">
+                                <input
+                                  type="checkbox"
+                                  id={`interstate-${invoice.id}`}
+                                  checked={editIsInterstate}
+                                  onChange={e => setEditIsInterstate(e.target.checked)}
+                                  className="w-4 h-4 rounded bg-zinc-900 border-zinc-700 text-neon-cyan focus:ring-neon-cyan cursor-pointer"
+                                />
+                                <div>
+                                  <label htmlFor={`interstate-${invoice.id}`} className="text-xs font-mono text-white font-bold cursor-pointer block">
+                                    {editIsInterstate ? 'Inter-State Supply (IGST 18% Applicable)' : 'Intra-State Supply (CGST 9% + SGST 9% Applicable)'}
+                                  </label>
+                                  <span className="text-[10.5px] text-zinc-400 font-mono">
+                                    {editIsInterstate 
+                                      ? 'Client is outside Maharashtra ➔ Single IGST 18% applies.' 
+                                      : 'Client is in Maharashtra ➔ Splits equally into CGST 9% + SGST 9%.'}
+                                  </span>
+                                </div>
+                              </div>
+                              <span className={`px-2.5 py-1 rounded text-[10px] font-mono font-bold uppercase tracking-wider shrink-0 ${editIsInterstate ? 'bg-amber-950/60 border border-amber-500/40 text-amber-300' : 'bg-cyan-950/60 border border-cyan-500/40 text-cyan-300'}`}>
+                                {editIsInterstate ? 'Tax: IGST (18%)' : 'Tax: CGST (9%) + SGST (9%)'}
+                              </span>
                             </div>
                           </div>
 
@@ -747,19 +848,24 @@ export default function InvoiceTable({
                           <div className="space-y-4 pt-4 border-t border-zinc-800">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div className="flex items-center gap-3">
-                                <h5 className="font-mono text-xs uppercase tracking-widest text-zinc-400">
-                                  Line Items & Item-Level Taxes
+                                <h5 className="font-mono text-xs uppercase tracking-widest text-zinc-400 font-bold">
+                                  Line Items & GST Rates
                                 </h5>
-                                <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 rounded px-2 py-1">
-                                  <span className="font-mono text-[10px] text-zinc-400 uppercase">Apply GST:</span>
+                                <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1">
+                                  <span className="font-mono text-[10px] text-zinc-400 uppercase">Apply All:</span>
                                   {[0, 5, 12, 18, 28].map(rate => (
                                     <button
                                       key={rate}
                                       type="button"
                                       onClick={() => handleApplyGlobalTaxRate(rate)}
-                                      className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-zinc-800 hover:bg-neon-cyan/20 text-zinc-300 hover:text-neon-cyan border border-zinc-700 transition cursor-pointer"
+                                      title={editIsInterstate ? `Apply ${rate}% IGST` : `Apply ${rate}% (${rate / 2}% CGST + ${rate / 2}% SGST)`}
+                                      className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border transition cursor-pointer ${
+                                        rate === 18 
+                                          ? 'bg-neon-cyan/20 border-neon-cyan/50 text-neon-cyan' 
+                                          : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border-zinc-700'
+                                      }`}
                                     >
-                                      {rate}%
+                                      {rate}% {rate === 18 ? (!editIsInterstate ? '(9+9)' : '(IGST)') : ''}
                                     </button>
                                   ))}
                                 </div>
@@ -777,10 +883,10 @@ export default function InvoiceTable({
                                   className="bg-zinc-900 border border-zinc-800 text-zinc-300 font-mono text-[11px] rounded px-2 py-1 focus:outline-none focus:border-neon-cyan cursor-pointer"
                                   title="Add pre-configured service or part from catalog"
                                 >
-                                  <option value="" disabled>+ Add from Catalog...</option>
+                                  <option value="" disabled>+ Add from Service Catalog...</option>
                                   {DEFAULT_CATALOG_ITEMS.map((cat, idx) => (
                                     <option key={idx} value={cat.description}>
-                                      {cat.description} (₹{cat.unitPrice})
+                                      {cat.description} (₹{cat.unitPrice} | SAC: {cat.hsnSac})
                                     </option>
                                   ))}
                                 </select>
@@ -794,142 +900,231 @@ export default function InvoiceTable({
                               </div>
                             </div>
 
-                            <div className="space-y-3 bg-zinc-950/40 p-4 border border-zinc-800/80 rounded-xl">
-                              {editLineItems.map((item, index) => (
-                                <div key={index} className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end border-b border-zinc-800/60 pb-3 last:border-0 last:pb-0">
-                                  <div className="md:col-span-4">
-                                    <label className="block font-mono text-[10px] text-zinc-600 mb-1 uppercase">
-                                      Description
-                                    </label>
-                                    <input
-                                      type="text"
-                                      value={item.description}
-                                      onChange={e => handleLineItemChange(index, 'description', e.target.value)}
-                                      className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-neon-cyan"
-                                    />
-                                  </div>
+                            <div className="space-y-3 bg-zinc-950/60 p-4 border border-zinc-800/80 rounded-xl">
+                              {editLineItems.map((item, index) => {
+                                const itemQty = Math.max(1, Number(item.quantity) || 1);
+                                const itemPrice = Math.max(0, Number(item.unitPrice) || 0);
+                                const itemSubtotal = Math.round(itemQty * itemPrice * 100) / 100;
+                                const itemTaxRate = item.taxRate !== undefined ? Number(item.taxRate) : 18;
+                                const itemTaxAmount = item.taxAmount !== undefined ? item.taxAmount : Math.round((itemSubtotal * (itemTaxRate / 100)) * 100) / 100;
+                                const itemCgst = editIsInterstate ? 0 : Math.round((itemTaxAmount / 2) * 100) / 100;
+                                const itemSgst = editIsInterstate ? 0 : Math.round((itemTaxAmount - itemCgst) * 100) / 100;
+                                const itemLineTotal = Math.round((itemSubtotal + itemTaxAmount) * 100) / 100;
 
-                                  <div className="md:col-span-2">
-                                    <label className="block font-mono text-[10px] text-zinc-600 mb-1 uppercase">
-                                      HSN/SAC
-                                    </label>
-                                    <input
-                                      type="text"
-                                      value={item.hsnSac || '9987'}
-                                      onChange={e => handleLineItemChange(index, 'hsnSac', e.target.value)}
-                                      className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-neon-cyan"
-                                    />
-                                  </div>
+                                return (
+                                  <div key={index} className="p-3.5 bg-zinc-900/40 border border-zinc-800/80 rounded-xl space-y-2.5">
+                                    <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                                      <div className="md:col-span-4">
+                                        <label className="block font-mono text-[10px] text-zinc-500 mb-1 uppercase">
+                                          Description
+                                        </label>
+                                        <input
+                                          type="text"
+                                          value={item.description}
+                                          onChange={e => handleLineItemChange(index, 'description', e.target.value)}
+                                          className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-neon-cyan"
+                                        />
+                                      </div>
 
-                                  <div className="md:col-span-1">
-                                    <label className="block font-mono text-[10px] text-zinc-600 mb-1 uppercase">
-                                      Qty
-                                    </label>
-                                    <input
-                                      type="number"
-                                      min="1"
-                                      value={item.quantity}
-                                      onChange={e => handleLineItemChange(index, 'quantity', Number(e.target.value))}
-                                      className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-neon-cyan"
-                                    />
-                                  </div>
+                                      <div className="md:col-span-2">
+                                        <div className="flex justify-between items-center mb-1">
+                                          <label className="block font-mono text-[10px] text-zinc-500 uppercase">
+                                            HSN / SAC
+                                          </label>
+                                          <select
+                                            className="bg-transparent text-[9px] font-mono text-neon-cyan cursor-pointer focus:outline-none"
+                                            value=""
+                                            onChange={e => {
+                                              if (e.target.value) handleLineItemChange(index, 'hsnSac', e.target.value);
+                                            }}
+                                            title="Quick SAC preset"
+                                          >
+                                            <option value="" disabled>Presets</option>
+                                            {COMMON_SAC_CODES.map(sac => (
+                                              <option key={sac.code} value={sac.code} className="bg-zinc-900 text-white">
+                                                {sac.code}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        </div>
+                                        <input
+                                          type="text"
+                                          value={item.hsnSac || '9987'}
+                                          onChange={e => handleLineItemChange(index, 'hsnSac', e.target.value)}
+                                          className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-neon-cyan"
+                                        />
+                                      </div>
 
-                                  <div className="md:col-span-2">
-                                    <label className="block font-mono text-[10px] text-zinc-600 mb-1 uppercase">
-                                      Unit Rate (₹)
-                                    </label>
-                                    <input
-                                      type="number"
-                                      step="0.01"
-                                      min="0"
-                                      value={item.unitPrice}
-                                      onChange={e => handleLineItemChange(index, 'unitPrice', Number(e.target.value))}
-                                      className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-neon-cyan"
-                                    />
-                                  </div>
+                                      <div className="md:col-span-1">
+                                        <label className="block font-mono text-[10px] text-zinc-500 mb-1 uppercase">
+                                          Qty
+                                        </label>
+                                        <input
+                                          type="number"
+                                          min="1"
+                                          value={item.quantity}
+                                          onChange={e => handleLineItemChange(index, 'quantity', Number(e.target.value))}
+                                          className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-xs font-mono text-white text-center focus:outline-none focus:border-neon-cyan"
+                                        />
+                                      </div>
 
-                                  <div className="md:col-span-1">
-                                    <label className="block font-mono text-[10px] text-zinc-600 mb-1 uppercase">
-                                      GST %
-                                    </label>
-                                    <input
-                                      type="number"
-                                      step="1"
-                                      min="0"
-                                      max="28"
-                                      value={item.taxRate !== undefined ? item.taxRate : 18}
-                                      onChange={e => handleLineItemChange(index, 'taxRate', Number(e.target.value))}
-                                      className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-neon-cyan"
-                                    />
-                                  </div>
+                                      <div className="md:col-span-2">
+                                        <label className="block font-mono text-[10px] text-zinc-500 mb-1 uppercase">
+                                          Unit Rate (₹)
+                                        </label>
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          min="0"
+                                          value={item.unitPrice}
+                                          onChange={e => handleLineItemChange(index, 'unitPrice', Number(e.target.value))}
+                                          className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-neon-cyan"
+                                        />
+                                      </div>
 
-                                  <div className="md:col-span-2 flex items-center justify-between gap-2">
-                                    <div className="text-right flex-grow">
-                                      <p className="font-mono text-[9px] text-zinc-600 uppercase">Amount + Tax</p>
-                                      <p className="font-mono text-xs font-bold text-neon-cyan">
-                                        ₹{((item.total || 0) + (item.taxAmount || ((item.total || 0) * (item.taxRate !== undefined ? item.taxRate : 18) / 100))).toFixed(2)}
-                                      </p>
+                                      <div className="md:col-span-1">
+                                        <label className="block font-mono text-[10px] text-zinc-500 mb-1 uppercase">
+                                          GST %
+                                        </label>
+                                        <input
+                                          type="number"
+                                          step="1"
+                                          min="0"
+                                          max="28"
+                                          value={itemTaxRate}
+                                          onChange={e => handleLineItemChange(index, 'taxRate', Number(e.target.value))}
+                                          className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-xs font-mono text-white text-center focus:outline-none focus:border-neon-cyan"
+                                        />
+                                      </div>
+
+                                      <div className="md:col-span-2 flex items-center justify-between gap-2">
+                                        <div className="text-right flex-grow">
+                                          <p className="font-mono text-[9px] text-zinc-500 uppercase">Item Total (Inc. Tax)</p>
+                                          <p className="font-mono text-xs font-bold text-neon-cyan">
+                                            ₹{itemLineTotal.toFixed(2)}
+                                          </p>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={() => removeLineItem(index)}
+                                          className="text-red-400 hover:text-red-300 p-1.5 hover:bg-red-950/40 rounded transition-colors cursor-pointer"
+                                          title="Remove item"
+                                        >
+                                          <Trash2 size={16} />
+                                        </button>
+                                      </div>
                                     </div>
-                                    <button
-                                      onClick={() => removeLineItem(index)}
-                                      className="text-red-400 hover:text-red-300 p-1.5 hover:bg-red-950/40 rounded transition-colors cursor-pointer"
-                                    >
-                                      <Trash2 size={16} />
-                                    </button>
+
+                                    {/* Item-Level Live GST Split Strip */}
+                                    <div className="flex flex-wrap items-center justify-between text-[10px] font-mono bg-zinc-950 px-3 py-1.5 rounded-lg border border-zinc-800/70 text-zinc-400">
+                                      <div>
+                                        Taxable Subtotal: <strong className="text-white">₹{itemSubtotal.toFixed(2)}</strong>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        {editIsInterstate ? (
+                                          <span>IGST ({itemTaxRate}%): <strong className="text-amber-400">₹{itemTaxAmount.toFixed(2)}</strong></span>
+                                        ) : (
+                                          <>
+                                            <span>CGST ({(itemTaxRate / 2).toFixed(1)}%): <strong className="text-neon-cyan">₹{itemCgst.toFixed(2)}</strong></span>
+                                            <span>+</span>
+                                            <span>SGST ({(itemTaxRate / 2).toFixed(1)}%): <strong className="text-neon-cyan">₹{itemSgst.toFixed(2)}</strong></span>
+                                            <span className="text-zinc-600">•</span>
+                                            <span>Tax: <strong className="text-cyan-300">₹{itemTaxAmount.toFixed(2)}</strong></span>
+                                          </>
+                                        )}
+                                      </div>
+                                    </div>
                                   </div>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </div>
 
                             {/* Authoritative Live Totals Breakdown */}
-                            <div className="p-3 bg-zinc-900/80 border border-zinc-800 rounded-xl grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
-                              <div>
-                                <span className="text-zinc-500 block text-[10px] uppercase">Subtotal</span>
-                                <span className="text-white font-bold">
-                                  ₹{editLineItems.reduce((sum, item) => sum + item.total, 0).toFixed(2)}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-zinc-500 block text-[10px] uppercase">
-                                  {editIsInterstate ? 'IGST' : 'CGST + SGST'}
-                                </span>
-                                <span className="text-neon-cyan font-bold">
-                                  ₹{editLineItems.reduce((sum, item) => sum + (item.taxAmount || (item.total * (item.taxRate !== undefined ? item.taxRate : 18) / 100)), 0).toFixed(2)}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-zinc-500 block text-[10px] uppercase">Grand Total</span>
-                                <span className="text-emerald-400 font-bold text-sm">
-                                  ₹{(editLineItems.reduce((sum, item) => sum + item.total, 0) + editLineItems.reduce((sum, item) => sum + (item.taxAmount || (item.total * (item.taxRate !== undefined ? item.taxRate : 18) / 100)), 0)).toFixed(2)}
-                                </span>
-                              </div>
-                              <div className="flex items-center justify-end gap-2">
+                            {(() => {
+                              const subtotal = editLineItems.reduce((sum, item) => sum + item.total, 0);
+                              const totalGst = editLineItems.reduce((sum, item) => sum + (item.taxAmount || (item.total * (item.taxRate !== undefined ? item.taxRate : 18) / 100)), 0);
+                              const cgstTotal = editIsInterstate ? 0 : Math.round((totalGst / 2) * 100) / 100;
+                              const sgstTotal = editIsInterstate ? 0 : Math.round((totalGst - cgstTotal) * 100) / 100;
+                              const igstTotal = editIsInterstate ? totalGst : 0;
+                              const grandTotal = Math.round((subtotal + totalGst) * 100) / 100;
+                              const effectiveRate = subtotal > 0 ? Math.round((totalGst / subtotal) * 10000) / 100 : 18;
+
+                              return (
+                                <div className="p-4 bg-zinc-900/90 border border-zinc-800 rounded-2xl grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs font-mono items-center">
+                                  <div className="bg-zinc-950/80 p-2.5 rounded-xl border border-zinc-800">
+                                    <span className="text-zinc-500 block text-[10px] uppercase">Taxable Subtotal</span>
+                                    <span className="text-white font-bold text-sm">
+                                      ₹{subtotal.toFixed(2)}
+                                    </span>
+                                  </div>
+
+                                  {editIsInterstate ? (
+                                    <div className="bg-amber-950/30 p-2.5 rounded-xl border border-amber-500/30">
+                                      <span className="text-amber-400 block text-[10px] uppercase">IGST ({effectiveRate.toFixed(1)}%)</span>
+                                      <span className="text-amber-300 font-bold text-sm">
+                                        ₹{igstTotal.toFixed(2)}
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <div className="bg-cyan-950/30 p-2.5 rounded-xl border border-cyan-500/30">
+                                        <span className="text-cyan-400 block text-[10px] uppercase">CGST ({(effectiveRate / 2).toFixed(1)}%)</span>
+                                        <span className="text-neon-cyan font-bold text-sm">
+                                          ₹{cgstTotal.toFixed(2)}
+                                        </span>
+                                      </div>
+                                      <div className="bg-cyan-950/30 p-2.5 rounded-xl border border-cyan-500/30">
+                                        <span className="text-cyan-400 block text-[10px] uppercase">SGST ({(effectiveRate / 2).toFixed(1)}%)</span>
+                                        <span className="text-neon-cyan font-bold text-sm">
+                                          ₹{sgstTotal.toFixed(2)}
+                                        </span>
+                                      </div>
+                                    </>
+                                  )}
+
+                                  <div className="bg-zinc-950/80 p-2.5 rounded-xl border border-zinc-800">
+                                    <span className="text-zinc-500 block text-[10px] uppercase">Total Tax (GST)</span>
+                                    <span className="text-cyan-300 font-bold text-sm">
+                                      ₹{totalGst.toFixed(2)}
+                                    </span>
+                                  </div>
+
+                                  <div className="bg-emerald-950/30 p-2.5 rounded-xl border border-emerald-500/30">
+                                    <span className="text-emerald-400 block text-[10px] uppercase font-bold">Grand Total</span>
+                                    <span className="text-emerald-400 font-black text-base">
+                                      ₹{grandTotal.toFixed(2)}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+
+                            <div className="flex items-center justify-end gap-2 pt-2">
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await handleFullInvoiceUpdate(invoice.id);
+                                  setPreviewInvoiceId(editInvoiceNumber.trim() || invoice.id);
+                                }}
+                                className="px-3.5 py-2 rounded-lg bg-cyan-950/80 border border-cyan-500/40 hover:bg-cyan-900/50 text-cyan-300 font-bold text-xs uppercase font-mono tracking-wider transition-all cursor-pointer flex items-center gap-1.5"
+                              >
+                                <Eye size={14} /> Preview Canonical Bill
+                              </button>
+                              {invoice.status === 'Draft' && onFinalizeInvoice && (
                                 <button
                                   type="button"
-                                  onClick={async () => {
-                                    await handleFullInvoiceUpdate(invoice.id);
-                                    setPreviewInvoiceId(editInvoiceNumber.trim() || invoice.id);
+                                  disabled={Boolean(finalizingInvoiceId)}
+                                  onClick={() => {
+                                    setInvoiceToFinalize({
+                                      id: invoice.id,
+                                      targetId: editInvoiceNumber.trim() || invoice.id,
+                                    });
                                   }}
-                                  className="px-3 py-1.5 rounded-lg bg-cyan-950/80 border border-cyan-500/40 hover:bg-cyan-900/50 text-cyan-300 font-bold text-xs uppercase font-mono tracking-wider transition-all cursor-pointer flex items-center gap-1.5"
+                                  className="px-3.5 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase font-mono tracking-wider transition-all cursor-pointer disabled:opacity-50"
                                 >
-                                  <Eye size={14} /> Preview Bill
+                                  {finalizingInvoiceId === invoice.id ? 'Finalizing & Releasing...' : 'Finalize & Release'}
                                 </button>
-                                {invoice.status === 'Draft' && onFinalizeInvoice && (
-                                  <button
-                                    type="button"
-                                    disabled={Boolean(finalizingInvoiceId)}
-                                    onClick={() => {
-                                      setInvoiceToFinalize({
-                                        id: invoice.id,
-                                        targetId: editInvoiceNumber.trim() || invoice.id,
-                                      });
-                                    }}
-                                    className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase font-mono tracking-wider transition-all cursor-pointer disabled:opacity-50"
-                                  >
-                                    {finalizingInvoiceId === invoice.id ? 'Finalizing & Releasing...' : 'Finalize & Release'}
-                                  </button>
-                                )}
-                              </div>
+                              )}
                             </div>
                           </div>
 

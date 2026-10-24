@@ -1136,10 +1136,18 @@ export const notificationApi = {
 // ── Billing API Methods (backed by Express /api/billing routes) ──────────────
 
 export interface InvoiceLineItem {
+  id?: number | string;
   description: string;
+  hsnSac?: string;
+  hsn_sac?: string;
   quantity: number;
   unitPrice: number;
+  unit_price?: number;
   total: number;
+  taxRate?: number;
+  tax_rate?: number;
+  taxAmount?: number;
+  tax_amount?: number;
 }
 
 export interface Invoice {
@@ -1149,14 +1157,27 @@ export interface Invoice {
   ticket_id?: number | string | null;
   ticketNumber?: string | null;
   ticket_number?: string | null;
+  deviceBrand?: string | null;
+  deviceModel?: string | null;
+  deviceCategory?: string | null;
   clientName: string;
   amount: number;
+  subtotal?: number;
+  taxAmount?: number;
+  cgstAmount?: number;
+  sgstAmount?: number;
+  igstAmount?: number;
+  isInterstate?: boolean;
+  is_interstate?: boolean;
+  originalEstimate?: number | null;
   currency: string;
   invoiceDate: string;
   dueDate: string;
   status: string;
   lineItems: InvoiceLineItem[];
   notes: string;
+  finalizedAt?: string | null;
+  finalizedBy?: number | null;
   createdAt: string;
   lastUpdatedAt?: string;
   updatedAt?: string;
@@ -1187,6 +1208,16 @@ export const billingApi = {
     return safeFetch<any>(getUrl(ENDPOINTS.BILLING.INVOICE_BY_ID(id)), {
       method: 'GET',
       headers,
+    });
+  },
+
+  createInvoice: async (token: string | undefined | null, payload: any): Promise<SafeResponse<any>> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return safeFetch<any>(getUrl(ENDPOINTS.BILLING.INVOICES), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
     });
   },
 

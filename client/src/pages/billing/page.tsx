@@ -5,6 +5,7 @@ import { useSearchParams, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import InvoiceHeader from './components/InvoiceHeader';
 import InvoiceTable from './components/InvoiceTable';
+import { CreateInvoiceModal } from './components/CreateInvoiceModal';
 import { AlertCircle } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { billingApi } from '@/services/api';
@@ -24,6 +25,7 @@ export default function BillingPage() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
 
   const fetchInvoices = useCallback(async () => {
     try {
@@ -152,15 +154,29 @@ export default function BillingPage() {
   };
 
   const totalInvoices = invoices.length;
-  const totalRevenue = invoices
+  const totalBilled = invoices.reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
+  const totalPaid = invoices
     .filter(inv => inv.status === 'Paid')
-    .reduce((sum, inv) => sum + inv.amount, 0);
+    .reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
+  const totalPending = invoices
+    .filter(inv => inv.status !== 'Paid' && inv.status !== 'Void')
+    .reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
+  const totalGst = invoices
+    .reduce((sum, inv) => sum + Number(inv.taxAmount || 0), 0);
 
   return (
     <div className="min-h-screen bg-black text-white py-12">
       <div className="max-w-7xl mx-auto px-6">
         {/* Header */}
-        <InvoiceHeader totalInvoices={totalInvoices} totalRevenue={totalRevenue} />
+        <InvoiceHeader
+          totalInvoices={totalInvoices}
+          totalBilled={totalBilled}
+          totalPaid={totalPaid}
+          totalPending={totalPending}
+          totalGst={totalGst}
+          canCreate={isAuthenticated && user?.role === 'admin'}
+          onCreateClick={() => setShowCreateModal(true)}
+        />
 
         {/* Auth Notice */}
         {!isAuthenticated && (
@@ -220,11 +236,14 @@ export default function BillingPage() {
           </div>
         )}
 
-        {/* Footer Info */}
-        {/* <div className="mt-12 text-center text-xs text-zinc-600 font-mono">
-          <p>BILLING_SYSTEM • INVOICE_MANAGEMENT_v1.0</p>
-          <p className="mt-2">© {new Date().getFullYear()} {flattenedSettings.company_name || 'TekDoctor'}. All rights reserved.</p>
-        </div> */}
+        {/* Create Commercial Invoice Modal */}
+        <CreateInvoiceModal
+          isOpen={showCreateModal}
+          onClose={() => setShowCreateModal(false)}
+          token={token}
+          currentUserId={user?.id}
+          onInvoiceCreated={fetchInvoices}
+        />
       </div>
     </div>
   );
