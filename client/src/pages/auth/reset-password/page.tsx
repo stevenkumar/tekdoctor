@@ -169,12 +169,11 @@ export default function ResetPassword() {
                 className="h-12 max-h-14 max-w-[220px] w-auto object-contain mx-auto"
               />
             ) : (
-              <div className="flex items-center justify-center gap-2">
-                <div className="w-10 h-10 bg-black border border-neon-cyan/50 rounded flex items-center justify-center shadow-[0_0_15px_rgba(var(--neon-cyan-rgb),0.2)]">
-                  <span className="text-neon-cyan font-bold text-xl uppercase">{appName.charAt(0)}</span>
-                </div>
-                <span className="text-xl font-bold tracking-tight text-white">{appName}</span>
-              </div>
+              <img
+                src="/tekdoctor_logo.png"
+                alt={`${appName} Logo`}
+                className="h-12 max-h-14 max-w-[220px] w-auto object-contain mx-auto"
+              />
             )}
           </Link>
           <h1 className="text-3xl sm:text-4xl font-black uppercase tracking-tighter mb-2">

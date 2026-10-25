@@ -71,18 +71,15 @@ export default function TitleManager() {
             document.title = baseTitle;
         }
 
-        // Update favicon if provided
-        if (flattenedSettings.favicon_url) {
-            let link: HTMLLinkElement | null = document.querySelector("link[rel~='icon']");
-            if (!link) {
-                link = document.createElement('link');
-                link.rel = 'icon';
-                document.head.appendChild(link);
-            }
-            link.href = getMediaUrl(flattenedSettings.favicon_url);
-            // Remove 'type' attribute to allow browser auto-detection of PNG/JPEG/ICO formats
-            link.removeAttribute('type');
+        // Update favicon (use dynamic if uploaded, otherwise official /favicon.png)
+        let link: HTMLLinkElement | null = document.querySelector("link[rel~='icon']");
+        if (!link) {
+            link = document.createElement('link');
+            link.rel = 'icon';
+            document.head.appendChild(link);
         }
+        link.href = flattenedSettings.favicon_url ? getMediaUrl(flattenedSettings.favicon_url) : '/favicon.png';
+        link.removeAttribute('type');
 
         // Update meta description (only on public pages to avoid polluting admin dashboards)
         if (!path.startsWith('/admin') && !path.startsWith('/company') && !path.startsWith('/technician')) {

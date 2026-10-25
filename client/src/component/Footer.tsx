@@ -16,14 +16,9 @@ const Footer = () => {
         <div className="flex flex-col md:flex-row justify-between items-center gap-8">
           <div className="flex flex-col items-center md:items-start text-center md:text-left">
             {flattenedSettings.logo_url ? (
-              <img src={getMediaUrl(flattenedSettings.logo_url)} alt={`${appName} Logo`} className="h-12 w-auto object-contain mb-2" />
+              <img src={getMediaUrl(flattenedSettings.logo_url)} alt={`${appName} Logo`} className="h-10 sm:h-12 w-auto object-contain mb-2" />
             ) : (
-              <div className="flex items-center gap-2 mb-2">
-                <div className="w-10 h-10 bg-black border border-neon-cyan/50 rounded flex items-center justify-center">
-                  <span className="text-neon-cyan font-bold text-xl uppercase">{appName.charAt(0)}</span>
-                </div>
-                <h2 className="text-white font-bold text-lg tracking-tight">{appName}</h2>
-              </div>
+              <img src="/tekdoctor_logo.png" alt={`${appName} Logo`} className="h-10 sm:h-12 w-auto object-contain mb-2" />
             )}
             {flattenedSettings.company_email && <p className="text-zinc-400 text-xs mt-1">E: {flattenedSettings.company_email}</p>}
             {flattenedSettings.company_phone && (

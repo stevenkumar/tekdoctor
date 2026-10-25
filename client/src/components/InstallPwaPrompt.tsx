@@ -140,9 +140,9 @@ export default function InstallPwaPrompt() {
             {/* App Icon */}
             <div className="w-12 h-12 rounded-xl bg-black border border-neon-cyan/50 p-1 shrink-0 shadow-[0_0_12px_rgba(0,229,255,0.3)] flex items-center justify-center overflow-hidden">
               <img
-                src="/pwa-192.png"
+                src="/favicon.png"
                 alt="TekDoctor App Icon"
-                className="w-full h-full object-cover rounded-lg"
+                className="w-full h-full object-contain p-1 rounded-lg"
               />
             </div>
 

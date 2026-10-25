@@ -134,15 +134,7 @@ export default function AdminLayout() {
                             {flattenedSettings.logo_url ? (
                                 <img src={getMediaUrl(flattenedSettings.logo_url)} alt="Logo" className="h-8 w-auto object-contain" />
                             ) : (
-                                <div className="flex items-center gap-2">
-                                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-neon-cyan to-blue-600 flex items-center justify-center">
-                                        <Wrench size={16} className="text-white" />
-                                    </div>
-                                    <div>
-                                        <div className="text-sm font-bold text-white font-outfit tracking-tight">{flattenedSettings.company_name || 'TekDoctor'}</div>
-                                        <div className="text-[9px] font-mono text-neon-cyan uppercase tracking-widest">{user?.role === 'technician' ? 'Technician Portal' : 'Admin Panel'}</div>
-                                    </div>
-                                </div>
+                                <img src="/tekdoctor_logo.png" alt="Logo" className="h-8 w-auto object-contain" />
                             )}
                         </div>
                     )}
@@ -150,9 +142,7 @@ export default function AdminLayout() {
                         flattenedSettings.logo_url ? (
                             <img src={getMediaUrl(flattenedSettings.logo_url)} alt="Logo" className="h-8 w-auto object-contain mx-auto" />
                         ) : (
-                            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-neon-cyan to-blue-600 flex items-center justify-center mx-auto">
-                                <Wrench size={16} className="text-white" />
-                            </div>
+                            <img src="/favicon.png" alt="Logo" className="w-8 h-8 rounded-lg object-contain mx-auto" />
                         )
                     )}
                     <button
@@ -281,12 +271,7 @@ export default function AdminLayout() {
                         {flattenedSettings.logo_url ? (
                             <img src={getMediaUrl(flattenedSettings.logo_url)} alt="Logo" className="h-6 w-auto object-contain" />
                         ) : (
-                            <div className="flex items-center gap-1.5">
-                                <div className="w-6 h-6 rounded-md bg-gradient-to-br from-neon-cyan to-blue-600 flex items-center justify-center">
-                                    <Wrench size={12} className="text-white" />
-                                </div>
-                                <span className="text-xs font-bold text-white font-outfit tracking-tight">{flattenedSettings.company_name || 'TekDoctor'}</span>
-                            </div>
+                            <img src="/tekdoctor_logo.png" alt="Logo" className="h-6 w-auto object-contain" />
                         )}
                     </div>
                     <div className="flex items-center gap-2">

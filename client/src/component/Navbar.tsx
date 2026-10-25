@@ -185,14 +185,9 @@ const Navbar = () => {
       <div className="container mx-auto px-6 flex items-center justify-between">
         <Link to={ROUTES.HOME} className="flex items-center gap-2 group">
           {flattenedSettings.logo_url ? (
-            <img src={getMediaUrl(flattenedSettings.logo_url)} alt={`${appName} Logo`} className="h-12 w-auto object-contain" />
+            <img src={getMediaUrl(flattenedSettings.logo_url)} alt={`${appName} Logo`} className="h-10 sm:h-12 w-auto object-contain" />
           ) : (
-            <div className="flex items-center gap-2">
-              <div className="w-10 h-10 bg-black border border-neon-cyan/50 rounded flex items-center justify-center group-hover:border-neon-cyan transition-colors">
-                <span className="text-neon-cyan font-bold text-xl uppercase">{appName.charAt(0)}</span>
-              </div>
-              <h1 className="text-lg font-bold tracking-tight text-white group-hover:text-neon-cyan transition-colors">{appName}</h1>
-            </div>
+            <img src="/tekdoctor_logo.png" alt={`${appName} Logo`} className="h-10 sm:h-12 w-auto object-contain" />
           )}
         </Link>
 
