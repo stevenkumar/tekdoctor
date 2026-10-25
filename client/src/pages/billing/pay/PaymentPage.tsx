@@ -13,6 +13,7 @@ import { useAuth } from '@/context/AuthContext';
 import { ROUTES } from '@/config/routes';
 import { triggerRazorpayCheckout } from '@/utils/payment';
 import { downloadPaymentBillPdf, printPaymentBill } from '@/utils/billGenerator';
+import { SkeletonPaymentCheckout } from '@/components/Skeleton';
 
 export default function PaymentPage() {
   const { invoiceId: paramInvoiceId } = useParams();
@@ -237,15 +238,7 @@ export default function PaymentPage() {
   };
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
-          className="w-12 h-12 border-4 border-neon-cyan/30 border-t-neon-cyan rounded-full"
-        />
-      </div>
-    );
+    return <SkeletonPaymentCheckout />;
   }
 
   if (error && !invoice) {

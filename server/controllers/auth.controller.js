@@ -143,12 +143,14 @@ const signin = async (req, res, next) => {
         [user.id, otpHash]
       );
 
-      // Dispatch OTP to registered Admin email
-      await sendOtpEmail({
+      // Dispatch OTP to registered Admin email asynchronously so the UI transitions instantly
+      sendOtpEmail({
         toEmail: user.email,
         otpCode: otp,
         purpose: 'login',
         expiresInMinutes: 5
+      }).catch(err => {
+        logger.error(`[Admin Login OTP Delivery Error] Failed to send OTP to ${user.email}: ${err.message}`);
       });
 
       if (config.env === 'development' || config.env === 'test') {
@@ -351,11 +353,14 @@ const resendOtp = async (req, res, next) => {
       [decoded.id, newOtpHash, otpRecord.resend_count + 1]
     );
 
-    await sendOtpEmail({
+    // Dispatch OTP asynchronously so response returns immediately
+    sendOtpEmail({
       toEmail: decoded.email,
       otpCode: newOtp,
       purpose: 'login',
       expiresInMinutes: 5
+    }).catch(err => {
+      logger.error(`[Admin Resend OTP Delivery Error] Failed to send OTP to ${decoded.email}: ${err.message}`);
     });
 
     if (config.env === 'development' || config.env === 'test') {
@@ -530,11 +535,14 @@ const forgotPassword = async (req, res, next) => {
         [user.id, otpHash]
       );
 
-      await sendOtpEmail({
+      // Dispatch OTP asynchronously so response returns immediately
+      sendOtpEmail({
         toEmail: user.email,
         otpCode: otp,
         purpose: 'password_reset',
         expiresInMinutes: 15
+      }).catch(err => {
+        logger.error(`[Admin Password Reset OTP Error] Failed to send OTP to ${user.email}: ${err.message}`);
       });
 
       if (config.env === 'development' || config.env === 'test') {

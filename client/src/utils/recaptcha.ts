@@ -238,3 +238,20 @@ export const getRecaptchaToken = async (action: string): Promise<string | null> 
     throw err instanceof Error ? err : new Error('Security verification failed. Please refresh the page and try again.');
   }
 };
+
+/**
+ * Proactively preloads Google reCAPTCHA script in the background.
+ * Call this when mounting auth or contact forms so the script is already downloaded
+ * and ready in browser memory before the user submits the form.
+ */
+export const preloadRecaptcha = (): void => {
+  if (typeof window === 'undefined') return;
+  if (runtimeEnabled === false) return;
+  const siteKey = (runtimeSiteKey && runtimeSiteKey.trim()) ? runtimeSiteKey.trim() : appConfig.recaptchaSiteKey;
+  if (siteKey && siteKey.trim() !== '') {
+    loadRecaptchaScript(siteKey).catch(() => {
+      // Preload errors silently ignored; getRecaptchaToken will retry upon submit
+    });
+  }
+};
+

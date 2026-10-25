@@ -43,7 +43,7 @@ import {
 import { useAuth } from '@/context/AuthContext';
 import { authApi, repairApi, billingApi } from '@/services/api';
 import type { ServiceRequest, Invoice } from '@/services/api';
-import { SkeletonTable, SkeletonCard, SkeletonList } from '@/components/Skeleton';
+import { SkeletonTable, SkeletonCard, SkeletonList, SkeletonCustomerHeader } from '@/components/Skeleton';
 import { ROUTES } from '@/config/routes';
 import { VALIDATION, validatePassword, validatePasswordMatch } from '@/config/constants';
 import { appConfig } from '@/config/appConfig';
@@ -169,13 +169,13 @@ export default function ProfilePage() {
 
   // Data States
   const [history, setHistory] = useState<ServiceRequest[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState<boolean>(() => Boolean(sessionStorage.getItem('tekdoctor_token')));
   const [historyPage, setHistoryPage] = useState(1);
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyTotalPages, setHistoryTotalPages] = useState(1);
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [loadingInvoices, setLoadingInvoices] = useState(false);
+  const [loadingInvoices, setLoadingInvoices] = useState<boolean>(() => Boolean(sessionStorage.getItem('tekdoctor_token')));
 
   // Approval / Rejection States
   const [approvingId, setApprovingId] = useState<number | null>(null);
@@ -589,7 +589,16 @@ export default function ProfilePage() {
     logout();
   };
 
-  if (!user) return null;
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-[#050505] text-zinc-300 font-sans py-6 sm:py-8 md:py-14 px-3 sm:px-6 lg:px-8 2xl:px-10 overflow-x-hidden">
+        <div className="w-full max-w-6xl xl:max-w-7xl 2xl:max-w-[1580px] mx-auto space-y-6">
+          <SkeletonCustomerHeader />
+          <SkeletonTable rows={5} columns={6} hasHeaderFilter={false} />
+        </div>
+      </div>
+    );
+  }
 
   const customerIdFormatted = user.role === 'company' 
     ? (user.company_id || `CMP-${String(user.id).padStart(3, '0')}`) 
@@ -1245,7 +1254,11 @@ export default function ProfilePage() {
             </div>
 
             {/* Pending Approvals Section */}
-            {pendingApprovals.length > 0 ? (
+            {loadingHistory ? (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-6">
+                <SkeletonCard count={4} />
+              </div>
+            ) : pendingApprovals.length > 0 ? (
               <div className="space-y-4">
                 <div className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-xs text-amber-300 font-mono">
                   <AlertTriangle size={16} className="text-amber-400 shrink-0" />

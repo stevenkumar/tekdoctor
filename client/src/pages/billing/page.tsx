@@ -11,6 +11,7 @@ import { toast } from 'react-hot-toast';
 import { billingApi } from '@/services/api';
 import type { Invoice } from '@/services/api';
 import { useSiteContext } from '../../context/SiteContext';
+import { SkeletonMetrics } from '@/components/Skeleton';
 
 export default function BillingPage() {
   const { token, user, isAuthenticated } = useAuth();
@@ -168,15 +169,21 @@ export default function BillingPage() {
     <div className="min-h-screen bg-black text-white py-12">
       <div className="max-w-7xl mx-auto px-6">
         {/* Header */}
-        <InvoiceHeader
-          totalInvoices={totalInvoices}
-          totalBilled={totalBilled}
-          totalPaid={totalPaid}
-          totalPending={totalPending}
-          totalGst={totalGst}
-          canCreate={isAuthenticated && user?.role === 'admin'}
-          onCreateClick={() => setShowCreateModal(true)}
-        />
+        {loading ? (
+          <div className="mb-8">
+            <SkeletonMetrics count={4} />
+          </div>
+        ) : (
+          <InvoiceHeader
+            totalInvoices={totalInvoices}
+            totalBilled={totalBilled}
+            totalPaid={totalPaid}
+            totalPending={totalPending}
+            totalGst={totalGst}
+            canCreate={isAuthenticated && user?.role === 'admin'}
+            onCreateClick={() => setShowCreateModal(true)}
+          />
+        )}
 
         {/* Auth Notice */}
         {!isAuthenticated && (

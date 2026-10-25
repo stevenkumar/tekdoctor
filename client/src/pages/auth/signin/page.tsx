@@ -11,7 +11,7 @@ import { authApi } from '@/services/api';
 import { ROUTES } from '@/config/routes';
 import { VALIDATION, isValidEmail } from '@/config/constants';
 import GoogleSignInButton from '@/components/auth/GoogleSignInButton';
-import { getRecaptchaToken } from '@/utils/recaptcha';
+import { getRecaptchaToken, preloadRecaptcha } from '@/utils/recaptcha';
 
 // ── Validation helpers ──────────────────────────────────────────────────────
 
@@ -63,6 +63,11 @@ export default function SignIn() {
   const { login } = useAuth();
   const { flattenedSettings } = useSiteContext();
   const appName = flattenedSettings.company_name || 'TekDoctor';
+
+  // Pre-warm Google reCAPTCHA so credentials submission is instant
+  useEffect(() => {
+    preloadRecaptcha();
+  }, []);
 
   // Resend cooldown timer
   useEffect(() => {

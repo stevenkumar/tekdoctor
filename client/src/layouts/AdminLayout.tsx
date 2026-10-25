@@ -1,7 +1,8 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { Suspense, useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { ROUTES } from '@/config/routes';
-import { useState, useEffect, useRef } from 'react';
+import { SkeletonDashboard } from '@/components/Skeleton';
 import { useSiteContext } from '@/context/SiteContext';
 import { appConfig } from '@/config/appConfig';
 import { getMediaUrl } from '@/utils/media';
@@ -319,7 +320,9 @@ export default function AdminLayout() {
 
                 {/* Page content */}
                 <div className="flex-1 p-2.5 sm:p-4 md:p-6 lg:p-8 overflow-x-hidden">
-                    <Outlet />
+                    <Suspense fallback={<SkeletonDashboard />}>
+                        <Outlet />
+                    </Suspense>
                 </div>
             </main>
         </div>

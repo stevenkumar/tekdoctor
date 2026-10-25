@@ -1,4 +1,5 @@
 import { Navigate, Outlet, Link, useLocation } from 'react-router-dom';
+import { Suspense } from 'react';
 import Navbar from '../component/Navbar';
 import Footer from '../component/Footer';
 import { useAuth } from '../context/AuthContext';
@@ -6,6 +7,7 @@ import { ROUTES } from '../config/routes';
 import FeedbackWidget from '../components/FeedbackWidget';
 import { useSiteContext } from '../context/SiteContext';
 import { Wrench } from 'lucide-react';
+import { SkeletonPublicPage } from '../components/Skeleton';
 
 /**
  * PublicLayout — wraps all customer-facing pages with
@@ -74,7 +76,9 @@ export default function PublicLayout() {
     <div className="min-h-screen flex flex-col bg-[#050505] text-white">
       <Navbar />
       <main className="flex-grow">
-        <Outlet />
+        <Suspense fallback={<SkeletonPublicPage />}>
+          <Outlet />
+        </Suspense>
       </main>
       <Footer />
       <FeedbackWidget />

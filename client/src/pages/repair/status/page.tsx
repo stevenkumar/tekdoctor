@@ -22,7 +22,7 @@ import { triggerRazorpayCheckout } from '@/utils/payment';
 import { downloadPaymentBillPdf } from '@/utils/billGenerator';
 import RepairStepProgress, { type WorkflowStepKey } from '@/components/RepairStepProgress';
 import PaymentMethodModal from '@/components/PaymentMethodModal';
-import { SkeletonTicketWorkspace } from '@/components/Skeleton';
+import { SkeletonTicketWorkspace, SkeletonList } from '@/components/Skeleton';
 
 const getFileUrl = (path: string | null) => {
   if (!path) return null;
@@ -34,13 +34,15 @@ const getFileUrl = (path: string | null) => {
 export default function ServiceTracker() {
   const { user, token, isAuthenticated } = useAuth();
   const [searchParams] = useSearchParams();
-  const [ticketId, setTicketId] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
+  const queryTicketParam = searchParams.get('id') || searchParams.get('ticket') || searchParams.get('ticketId') || '';
+  const [ticketId, setTicketId] = useState(queryTicketParam);
+  const [isSearching, setIsSearching] = useState(Boolean(queryTicketParam));
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showStatus, setShowStatus] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [trackingData, setTrackingData] = useState<any>(null);
   const [history, setHistory] = useState<ServiceRequest[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [showPaymentMethodModal, setShowPaymentMethodModal] = useState(false);
@@ -146,11 +148,12 @@ export default function ServiceTracker() {
 
   useEffect(() => {
     if (isAuthenticated && token) {
+      setLoadingHistory(true);
       repairApi.getMyHistory(token).then((res) => {
         if (res.ok && res.data) {
           setHistory(res.data.data.data);
         }
-      });
+      }).finally(() => setLoadingHistory(false));
     }
   }, [isAuthenticated, token]);
 
@@ -1273,44 +1276,52 @@ export default function ServiceTracker() {
                 </div>
 
                 <div className="p-4 sm:p-6 max-h-[70vh] overflow-y-auto space-y-3 sm:space-y-4 scrollbar-thin">
-                  {history.map((req) => (
-                    <div key={req.id} className="bg-black/50 border border-zinc-800/80 rounded-xl sm:rounded-2xl p-4 sm:p-5 hover:border-neon-cyan/30 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 min-w-0 overflow-hidden">
-                      <div className="min-w-0 flex-1 space-y-1.5 overflow-hidden">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-[10px] font-mono text-neon-cyan uppercase tracking-widest font-bold break-all">{req.ticketNumber || `#${req.id}`}</span>
-                          <span className={`px-2 py-0.5 rounded text-[9px] font-mono uppercase tracking-widest border shrink-0 ${
-                            req.status === 'completed' ? 'bg-green-500/10 text-green-400 border-green-500/30' :
-                            req.status === 'delivered' ? 'bg-blue-500/10 text-blue-400 border-blue-500/30' :
-                            req.status === 'in_progress' ? 'bg-neon-cyan/10 text-neon-cyan border-neon-cyan/30' :
-                            req.status === 'cancelled' ? 'bg-red-500/10 text-red-400 border-red-500/30' :
-                            'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                          }`}>
-                            {req.status.replace('_', ' ')}
-                          </span>
-                        </div>
-                        <p className="text-xs sm:text-sm font-bold text-white break-words">{req.brand} {req.modelNumber && `(${req.modelNumber})`}</p>
-                        <p className="text-xs text-zinc-400 break-words line-clamp-2 leading-relaxed">{req.problemDescription}</p>
-                        {req.customerRepairDescription && (
-                          <p className="text-xs text-neon-cyan/70 break-words line-clamp-2 mt-1">📝 {req.customerRepairDescription}</p>
-                        )}
-                      </div>
-                      <div className="text-left sm:text-right shrink-0 self-start sm:self-center pt-2 sm:pt-0 border-t sm:border-t-0 border-zinc-800/60 w-full sm:w-auto flex sm:flex-col items-center sm:items-end justify-between sm:justify-center">
-                        <div className="text-[10px] font-mono text-zinc-500 sm:mb-2">{new Date(req.createdAt).toLocaleDateString()}</div>
-                        <button
-                          onClick={() => {
-                            setTicketId(req.ticketNumber || req.id.toString());
-                            setShowHistoryModal(false);
-                            setTimeout(() => {
-                              handleSearch({ preventDefault: () => { } } as any);
-                            }, 100);
-                          }}
-                          className="text-[10px] font-mono uppercase tracking-widest text-neon-cyan hover:text-white transition-colors flex items-center justify-end gap-1 cursor-pointer"
-                        >
-                          Track <ExternalLink size={10} />
-                        </button>
-                      </div>
+                  {loadingHistory ? (
+                    <SkeletonList count={4} />
+                  ) : history.length === 0 ? (
+                    <div className="text-center py-10 space-y-2">
+                      <p className="text-xs font-mono text-zinc-500">No previous repair requests found under this account.</p>
                     </div>
-                  ))}
+                  ) : (
+                    history.map((req) => (
+                      <div key={req.id} className="bg-black/50 border border-zinc-800/80 rounded-xl sm:rounded-2xl p-4 sm:p-5 hover:border-neon-cyan/30 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 min-w-0 overflow-hidden">
+                        <div className="min-w-0 flex-1 space-y-1.5 overflow-hidden">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-[10px] font-mono text-neon-cyan uppercase tracking-widest font-bold break-all">{req.ticketNumber || `#${req.id}`}</span>
+                            <span className={`px-2 py-0.5 rounded text-[9px] font-mono uppercase tracking-widest border shrink-0 ${
+                              req.status === 'completed' ? 'bg-green-500/10 text-green-400 border-green-500/30' :
+                              req.status === 'delivered' ? 'bg-blue-500/10 text-blue-400 border-blue-500/30' :
+                              req.status === 'in_progress' ? 'bg-neon-cyan/10 text-neon-cyan border-neon-cyan/30' :
+                              req.status === 'cancelled' ? 'bg-red-500/10 text-red-400 border-red-500/30' :
+                              'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                            }`}>
+                              {req.status.replace('_', ' ')}
+                            </span>
+                          </div>
+                          <p className="text-xs sm:text-sm font-bold text-white break-words">{req.brand} {req.modelNumber && `(${req.modelNumber})`}</p>
+                          <p className="text-xs text-zinc-400 break-words line-clamp-2 leading-relaxed">{req.problemDescription}</p>
+                          {req.customerRepairDescription && (
+                            <p className="text-xs text-neon-cyan/70 break-words line-clamp-2 mt-1">📝 {req.customerRepairDescription}</p>
+                          )}
+                        </div>
+                        <div className="text-left sm:text-right shrink-0 self-start sm:self-center pt-2 sm:pt-0 border-t sm:border-t-0 border-zinc-800/60 w-full sm:w-auto flex sm:flex-col items-center sm:items-end justify-between sm:justify-center">
+                          <div className="text-[10px] font-mono text-zinc-500 sm:mb-2">{new Date(req.createdAt).toLocaleDateString()}</div>
+                          <button
+                            onClick={() => {
+                              setTicketId(req.ticketNumber || req.id.toString());
+                              setShowHistoryModal(false);
+                              setTimeout(() => {
+                                handleSearch({ preventDefault: () => { } } as any);
+                              }, 100);
+                            }}
+                            className="text-[10px] font-mono uppercase tracking-widest text-neon-cyan hover:text-white transition-colors flex items-center justify-end gap-1 cursor-pointer"
+                          >
+                            Track <ExternalLink size={10} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </motion.div>
             </div>

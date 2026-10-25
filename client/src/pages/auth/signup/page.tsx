@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { User, Mail, Lock, ArrowRight, Loader2, AlertCircle, CheckCircle2, Eye, EyeOff } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -10,7 +10,7 @@ import { authApi } from '@/services/api';
 import { ROUTES } from '@/config/routes';
 import { VALIDATION, isValidEmail, isStrongPassword } from '@/config/constants';
 import GoogleSignInButton from '@/components/auth/GoogleSignInButton';
-import { getRecaptchaToken } from '@/utils/recaptcha';
+import { getRecaptchaToken, preloadRecaptcha } from '@/utils/recaptcha';
 
 // ── Validation helpers ──────────────────────────────────────────────────────
 
@@ -98,6 +98,10 @@ export default function SignUp() {
   const { login } = useAuth();
   const { flattenedSettings } = useSiteContext();
   const appName = flattenedSettings.company_name || 'TekDoctor';
+
+  useEffect(() => {
+    preloadRecaptcha();
+  }, []);
 
   const validate = (data = formData) => validateSignUp(data);
 

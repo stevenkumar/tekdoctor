@@ -7,7 +7,7 @@ import { getMediaUrl } from '@/utils/media';
 import { authApi } from '@/services/api';
 import { ROUTES } from '@/config/routes';
 import { isValidEmail } from '@/config/constants';
-import { getRecaptchaToken } from '@/utils/recaptcha';
+import { getRecaptchaToken, preloadRecaptcha } from '@/utils/recaptcha';
 
 export default function ForgotPassword() {
   const navigate = useNavigate();
@@ -32,6 +32,10 @@ export default function ForgotPassword() {
 
   const { flattenedSettings } = useSiteContext();
   const appName = flattenedSettings.company_name || 'TekDoctor';
+
+  useEffect(() => {
+    preloadRecaptcha();
+  }, []);
 
   // Resend cooldown timer
   useEffect(() => {

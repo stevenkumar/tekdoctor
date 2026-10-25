@@ -70,49 +70,16 @@ const CompanyBilling = lazy(() => import('./pages/company/CompanyBilling'));
 import { ROUTES } from './config/routes';
 import { Skeleton } from './components/Skeleton';
 
-// Instant Skeleton App Shell fallback for slow networks / lazy chunk hydration
+// Clean branded app bootloader fallback for initial bundle hydration
 const PageLoader = () => (
-  <div className="min-h-screen bg-[#050505] text-white flex flex-col">
-    {/* Nav Skeleton */}
-    <div className="h-16 border-b border-zinc-900 px-6 flex items-center justify-between bg-[#0a0a0c]/80 backdrop-blur-md">
-      <div className="flex items-center gap-3">
-        <Skeleton variant="rounded" width={34} height={34} />
-        <Skeleton variant="text" width={110} height={18} />
+  <div className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center p-6">
+    <div className="max-w-sm w-full space-y-6 text-center">
+      <div className="relative mx-auto w-14 h-14 rounded-2xl bg-zinc-900 border border-neon-cyan/30 flex items-center justify-center shadow-[0_0_25px_rgba(0,242,255,0.15)]">
+        <div className="w-5 h-5 rounded-md bg-neon-cyan/30 border border-neon-cyan animate-pulse" />
       </div>
-      <div className="hidden md:flex items-center gap-6">
-        <Skeleton variant="text" width={60} height={12} />
-        <Skeleton variant="text" width={70} height={12} />
-        <Skeleton variant="text" width={80} height={12} />
-      </div>
-      <div className="flex items-center gap-3">
-        <Skeleton variant="rounded" width={90} height={32} />
-      </div>
-    </div>
-
-    {/* Body Content Skeleton */}
-    <div className="flex-1 max-w-7xl w-full mx-auto p-6 md:p-8 space-y-8 animate-fadeIn">
-      <div className="space-y-3 pt-4">
-        <Skeleton variant="text" width="40%" height={32} />
-        <Skeleton variant="text" width="65%" height={16} />
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="p-5 rounded-2xl bg-[#0c0c0e] border border-zinc-900 space-y-3">
-            <Skeleton variant="text" width="50%" height={12} />
-            <Skeleton variant="text" width="70%" height={24} />
-            <Skeleton variant="text" width="40%" height={10} />
-          </div>
-        ))}
-      </div>
-
-      <div className="p-6 rounded-2xl bg-[#0c0c0e] border border-zinc-900 space-y-4">
-        <Skeleton variant="text" width="30%" height={18} />
-        <div className="space-y-3">
-          <Skeleton variant="rounded" width="100%" height={44} />
-          <Skeleton variant="rounded" width="100%" height={44} />
-          <Skeleton variant="rounded" width="100%" height={44} />
-        </div>
+      <div className="space-y-2.5">
+        <Skeleton variant="text" width={180} height={18} className="mx-auto" />
+        <Skeleton variant="text" width={240} height={12} className="mx-auto" />
       </div>
     </div>
   </div>

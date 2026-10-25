@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Star, Quote, CheckCircle2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { testimonialApi } from '@/services/api';
+import { SkeletonTestimonials } from '@/components/Skeleton';
 
 const staticReviews = [
   {
@@ -48,6 +49,7 @@ function useWindowWidth() {
 
 export default function Testimonials() {
   const [dbReviews, setDbReviews] = useState<any[]>([]);
+  const [loadingReviews, setLoadingReviews] = useState(true);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [direction, setDirection] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
@@ -65,6 +67,8 @@ export default function Testimonials() {
         }
       } catch (err) {
         console.error('Failed to fetch testimonials:', err);
+      } finally {
+        setLoadingReviews(false);
       }
     };
     fetchReviews();
@@ -173,7 +177,10 @@ export default function Testimonials() {
 
           {/* Cards Slider */}
           <div className="overflow-hidden px-2 sm:px-12">
-            <AnimatePresence initial={false} custom={direction} mode="wait">
+            {loadingReviews ? (
+              <SkeletonTestimonials count={cardsPerView} />
+            ) : (
+              <AnimatePresence initial={false} custom={direction} mode="wait">
               <motion.div
                 key={currentIndex}
                 custom={direction}
@@ -235,6 +242,7 @@ export default function Testimonials() {
                 ))}
               </motion.div>
             </AnimatePresence>
+            )}
           </div>
 
           {/* Dot Indicators */}

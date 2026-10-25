@@ -49,15 +49,38 @@ const resolveTlsConfig = (host) => {
     return { rejectUnauthorized: true };
 };
 
+let cachedEmailConfig = null;
+let lastConfigFetchTime = 0;
+const CACHE_TTL_MS = 60 * 1000; // 60s cache TTL
+
+/**
+ * Invalidate the cached transporter connection pool.
+ */
+const clearEmailConfigCache = () => {
+    if (cachedEmailConfig && cachedEmailConfig.transporter && typeof cachedEmailConfig.transporter.close === 'function') {
+        try { cachedEmailConfig.transporter.close(); } catch (_) {}
+    }
+    cachedEmailConfig = null;
+    lastConfigFetchTime = 0;
+};
+
 /**
  * Dynamically resolves SMTP configuration from:
  * 1. `site_settings` database (Admin Dashboard > Email Settings)
  * 2. Standard SMTP environment variables (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD)
  * 3. Direct Gmail service fallback (EMAIL_USER, EMAIL_PASS)
  *
+ * Employs connection pooling, IPv4 affinity (preventing 30s-60s DNS lookup hangs on dual-stack hosts),
+ * and an in-memory cached transporter singleton.
+ *
  * @returns {Promise<{ transporter: any, fromHeader: string, adminEmail: string, isConfigured: boolean, source: string }>}
  */
 const getEmailConfig = async () => {
+    const now = Date.now();
+    if (cachedEmailConfig && (now - lastConfigFetchTime < CACHE_TTL_MS)) {
+        return cachedEmailConfig;
+    }
+
     // ── Tier 1: Database-configured custom SMTP (Admin Dashboard) ──
     try {
         const [rows] = await pool.query(
@@ -86,23 +109,29 @@ const getEmailConfig = async () => {
                 const isSecure = port === 465;
 
                 const transporter = nodemailer.createTransport({
+                    pool: true,
+                    maxConnections: 3,
+                    maxMessages: 100,
                     host: settings.smtp_host,
                     port: port,
                     secure: isSecure,
+                    family: 4, // Prevents dual-stack IPv6 DNS lookup hangs
                     auth: {
                         user: settings.smtp_user,
                         pass: decryptedPass
                     },
-                    connectionTimeout: 10000,
-                    greetingTimeout: 10000,
-                    socketTimeout: 15000,
+                    connectionTimeout: 8000,
+                    greetingTimeout: 8000,
+                    socketTimeout: 12000,
                     tls: resolveTlsConfig(settings.smtp_host)
                 });
 
                 const fromHeader = `"${settings.from_name || 'TekDoctor'}" <${settings.from_email || settings.smtp_user}>`;
                 const adminEmail = settings.admin_email || config.email.adminEmail || settings.from_email || settings.smtp_user;
 
-                return { transporter, fromHeader, adminEmail, isConfigured: true, source: 'database_smtp' };
+                cachedEmailConfig = { transporter, fromHeader, adminEmail, isConfigured: true, source: 'database_smtp' };
+                lastConfigFetchTime = now;
+                return cachedEmailConfig;
             }
         }
     } catch (dbErr) {
@@ -115,23 +144,29 @@ const getEmailConfig = async () => {
         const isSecure = config.email.smtpSecure;
 
         const transporter = nodemailer.createTransport({
+            pool: true,
+            maxConnections: 3,
+            maxMessages: 100,
             host: config.email.smtpHost,
             port: port,
             secure: isSecure,
+            family: 4,
             auth: {
                 user: config.email.smtpUser,
                 pass: config.email.smtpPassword
             },
-            connectionTimeout: 10000,
-            greetingTimeout: 10000,
-            socketTimeout: 15000,
+            connectionTimeout: 8000,
+            greetingTimeout: 8000,
+            socketTimeout: 12000,
             tls: resolveTlsConfig(config.email.smtpHost)
         });
 
         const fromHeader = `"${config.email.fromName}" <${config.email.fromEmail || config.email.smtpUser}>`;
         const adminEmail = config.email.adminEmail || config.email.smtpUser;
 
-        return { transporter, fromHeader, adminEmail, isConfigured: true, source: 'env_smtp' };
+        cachedEmailConfig = { transporter, fromHeader, adminEmail, isConfigured: true, source: 'env_smtp' };
+        lastConfigFetchTime = now;
+        return cachedEmailConfig;
     }
 
     // ── Tier 3: Gmail Service from Environment Variables (EMAIL_USER / EMAIL_PASS) ──
@@ -141,31 +176,42 @@ const getEmailConfig = async () => {
 
     if (emailUser && emailPass && !placeholderEmails.includes(emailUser.toLowerCase())) {
         const transporter = nodemailer.createTransport({
-            service: 'gmail',
+            pool: true,
+            maxConnections: 3,
+            maxMessages: 100,
+            host: 'smtp.gmail.com',
+            port: 465,
+            secure: true,
+            family: 4, // Direct IPv4 bypasses the 30s-60s timeout on problematic routes
             auth: {
                 user: emailUser,
                 pass: emailPass
             },
-            connectionTimeout: 10000,
-            greetingTimeout: 10000,
-            socketTimeout: 15000
+            connectionTimeout: 8000,
+            greetingTimeout: 8000,
+            socketTimeout: 12000
         });
 
         const fromHeader = `"${config.email.fromName}" <${emailUser}>`;
         const adminEmail = config.email.adminEmail || emailUser;
 
-        return { transporter, fromHeader, adminEmail, isConfigured: true, source: 'env_gmail' };
+        cachedEmailConfig = { transporter, fromHeader, adminEmail, isConfigured: true, source: 'env_gmail' };
+        lastConfigFetchTime = now;
+        return cachedEmailConfig;
     }
 
     // ── No valid SMTP configuration resolved ──
-    return {
+    cachedEmailConfig = {
         transporter: null,
         fromHeader: `"TekDoctor" <noreply@tekdoctor.in>`,
         adminEmail: config.email.adminEmail || null,
         isConfigured: false,
         source: 'none'
     };
+    lastConfigFetchTime = now;
+    return cachedEmailConfig;
 };
+
 
 /**
  * Send an email notification to the admin
@@ -197,6 +243,7 @@ const sendAdminNotification = async (subject, htmlContent) => {
         logger.info(`Admin email notification sent via [${source}]: ${info.messageId}`);
         return true;
     } catch (error) {
+        clearEmailConfigCache();
         logger.error(`Error sending admin email: ${sanitizeErrorMessage(error.message)}`);
         return false;
     }
@@ -238,6 +285,7 @@ const sendCustomerNotification = async (toEmail, subject, htmlContent) => {
         logger.info(`Customer notification sent to ${toEmail} via [${source}]: ${info.messageId}`);
         return true;
     } catch (error) {
+        clearEmailConfigCache();
         logger.error(`Error sending customer email to ${toEmail}: ${sanitizeErrorMessage(error.message)}`);
         return false;
     }
@@ -299,6 +347,7 @@ module.exports = {
     sendCustomerNotification,
     sendOtpEmail,
     getEmailConfig,
+    clearEmailConfigCache,
     resolveTlsConfig,
     sanitizeErrorMessage
 };

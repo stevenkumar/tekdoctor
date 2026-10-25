@@ -1,8 +1,9 @@
 import { Outlet, NavLink, useNavigate, Link } from 'react-router-dom';
+import { Suspense, useState, useEffect, useRef, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { ROUTES } from '../config/routes';
 import FeedbackWidget from '../components/FeedbackWidget';
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { SkeletonDashboard } from '@/components/Skeleton';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSiteContext } from '@/context/SiteContext';
 import { getMediaUrl } from '@/utils/media';
@@ -759,7 +760,9 @@ function CompanyLayoutInner() {
 
                 {/* Page content */}
                 <div className="flex-1 p-4 md:p-6 lg:p-8 overflow-auto">
-                    <Outlet />
+                    <Suspense fallback={<SkeletonDashboard />}>
+                        <Outlet />
+                    </Suspense>
                 </div>
             </main>
             <FeedbackWidget />
