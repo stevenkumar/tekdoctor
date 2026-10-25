@@ -4,6 +4,7 @@ import { AuthProvider } from './context/AuthContext';
 import { SiteProvider } from './context/SiteContext';
 import ScrollToTop from './component/ScrollToTop';
 import TitleManager from './components/TitleManager';
+import InstallPwaPrompt from './components/InstallPwaPrompt';
 import { Toaster } from 'react-hot-toast';
 import { Loader2 } from 'lucide-react';
 
@@ -92,6 +93,7 @@ function App() {
       <AuthProvider>
         <SiteProvider>
           <TitleManager />
+          <InstallPwaPrompt />
           <Toaster position="bottom-right" toastOptions={{ style: { background: '#18181b', color: '#fff', border: '1px solid #27272a' } }} />
           <Suspense fallback={<PageLoader />}>
             <Routes>
