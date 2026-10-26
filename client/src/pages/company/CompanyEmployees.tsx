@@ -28,10 +28,16 @@ interface Employee {
     designation: string;
     branch_id: number;
     branch_name: string;
-    is_active?: boolean;
+    is_active?: boolean | number;
     status?: string;
     deactivation_reason?: string;
 }
+
+const isEmployeeActive = (emp: Employee): boolean => {
+    if (emp.status === 'inactive') return false;
+    if (emp.is_active === false || (emp.is_active as any) === 0 || (emp.is_active as any) === '0') return false;
+    return true;
+};
 
 export default function CompanyEmployees() {
     const { token } = useAuth();
@@ -308,9 +314,13 @@ export default function CompanyEmployees() {
         }
     };
 
+    const activeCount = employees.filter(isEmployeeActive).length;
+    const inactiveCount = employees.length - activeCount;
+
     const filteredEmployees = employees.filter(emp => {
-        if (statusFilter === 'active' && emp.is_active === false) return false;
-        if (statusFilter === 'inactive' && emp.is_active !== false) return false;
+        const active = isEmployeeActive(emp);
+        if (statusFilter === 'active' && !active) return false;
+        if (statusFilter === 'inactive' && active) return false;
         if (searchQuery.trim()) {
             const q = searchQuery.toLowerCase();
             const nameMatch = (emp.name || '').toLowerCase().includes(q);
@@ -335,9 +345,9 @@ export default function CompanyEmployees() {
                 <div className="flex flex-wrap items-center gap-3">
                     <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-xl p-1">
                         {[
-                            { label: 'All', value: '' },
-                            { label: 'Active', value: 'active' },
-                            { label: 'Inactive', value: 'inactive' },
+                            { label: `All (${employees.length})`, value: '' },
+                            { label: `Active (${activeCount})`, value: 'active' },
+                            { label: `Inactive (${inactiveCount})`, value: 'inactive' },
                         ].map(st => (
                             <button
                                 key={st.value}
@@ -458,86 +468,121 @@ export default function CompanyEmployees() {
                 </div>
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {filteredEmployees.map(emp => (
-                        <div key={emp.id} className={`bg-[#0c0c0c] border border-zinc-900/60 rounded-2xl p-5 hover:border-zinc-800 transition-all flex flex-col justify-between space-y-6 ${emp.is_active === false ? 'opacity-70 bg-zinc-950/30' : ''}`}>
-                            <div className="space-y-3">
-                                <div className="flex justify-between items-start gap-4">
-                                    <div className="flex items-center gap-3">
-                                        <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 font-bold font-mono text-sm shrink-0">
-                                            {emp.name.charAt(0).toUpperCase()}
-                                        </div>
-                                        <div>
-                                            <h3 className="font-bold text-white text-base tracking-tight truncate">{emp.name}</h3>
-                                            <div className="flex items-center gap-2 mt-0.5">
-                                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold ${emp.is_active !== false ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'}`}>
-                                                    {emp.is_active !== false ? 'ACTIVE' : 'INACTIVE'}
-                                                </span>
-                                                {emp.deactivation_reason && (
-                                                    <span className="text-[10px] text-zinc-500 font-mono truncate" title={emp.deactivation_reason}>
-                                                        {emp.deactivation_reason}
+                    {filteredEmployees.map(emp => {
+                        const active = isEmployeeActive(emp);
+                        return (
+                            <div
+                                key={emp.id}
+                                className={`bg-[#0c0c0c] border rounded-2xl p-5 hover:border-zinc-800 transition-all flex flex-col justify-between space-y-5 ${
+                                    !active
+                                        ? 'border-amber-500/25 bg-amber-500/[0.02] opacity-90'
+                                        : 'border-zinc-900/60'
+                                }`}
+                            >
+                                <div className="space-y-4">
+                                    <div className="flex justify-between items-start gap-3">
+                                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                                            <div
+                                                className={`w-10 h-10 rounded-xl border flex items-center justify-center font-bold font-mono text-sm shrink-0 ${
+                                                    active
+                                                        ? 'bg-indigo-500/10 border-indigo-500/20 text-indigo-400'
+                                                        : 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+                                                }`}
+                                            >
+                                                {emp.name.charAt(0).toUpperCase()}
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <h3 className="font-bold text-white text-base tracking-tight truncate" title={emp.name}>
+                                                    {emp.name}
+                                                </h3>
+                                                <div className="flex items-center gap-2 mt-1">
+                                                    <span
+                                                        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] font-mono font-bold tracking-wider ${
+                                                            active
+                                                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                                                : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                                        }`}
+                                                    >
+                                                        <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                                                        {active ? 'ACTIVE' : 'INACTIVE'}
                                                     </span>
-                                                )}
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
-                                    <div className="flex items-center gap-1 shrink-0">
-                                        <button
-                                            onClick={() => handleSingleExport(emp.id, emp.name)}
-                                            className="p-1.5 rounded-lg hover:bg-zinc-900 text-zinc-500 hover:text-emerald-400 transition-colors cursor-pointer"
-                                            title="Export Single Employee (CSV)"
-                                        >
-                                            <Download size={13} />
-                                        </button>
-                                        <button
-                                            onClick={() => handleOpenEditModel(emp)}
-                                            className="p-1.5 rounded-lg hover:bg-zinc-900 text-zinc-500 hover:text-zinc-200 transition-colors cursor-pointer"
-                                            title="Edit Employee"
-                                        >
-                                            <Edit2 size={13} />
-                                        </button>
-                                        {emp.is_active !== false ? (
-                                            <button
-                                                onClick={() => handleDeactivate(emp.id, emp.name)}
-                                                className="p-1.5 rounded-lg hover:bg-amber-500/10 text-zinc-500 hover:text-amber-400 transition-colors cursor-pointer"
-                                                title="Deactivate Profile"
-                                            >
-                                                <ShieldOff size={13} />
-                                            </button>
-                                        ) : (
-                                            <button
-                                                onClick={() => handleReactivate(emp.id, emp.name)}
-                                                className="p-1.5 rounded-lg hover:bg-emerald-500/10 text-zinc-500 hover:text-emerald-400 transition-colors cursor-pointer"
-                                                title="Reactivate Profile"
-                                            >
-                                                <ShieldCheck size={13} />
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
 
-                                <div className="space-y-2 text-xs font-medium text-zinc-500">
-                                    <div className="flex items-center gap-2">
-                                        <Mail size={14} className="shrink-0 text-zinc-650" />
-                                        <span className="truncate text-zinc-400">{emp.email}</span>
+                                        <div className="flex items-center gap-1 shrink-0">
+                                            <button
+                                                onClick={() => handleSingleExport(emp.id, emp.name)}
+                                                className="p-1.5 rounded-lg hover:bg-zinc-900 text-zinc-500 hover:text-emerald-400 transition-colors cursor-pointer"
+                                                title="Export Single Employee (CSV)"
+                                            >
+                                                <Download size={14} />
+                                            </button>
+                                            <button
+                                                onClick={() => handleOpenEditModel(emp)}
+                                                className="p-1.5 rounded-lg hover:bg-zinc-900 text-zinc-500 hover:text-zinc-200 transition-colors cursor-pointer"
+                                                title="Edit Employee"
+                                            >
+                                                <Edit2 size={14} />
+                                            </button>
+                                            {active ? (
+                                                <button
+                                                    onClick={() => handleDeactivate(emp.id, emp.name)}
+                                                    className="p-1.5 rounded-lg hover:bg-amber-500/10 text-zinc-500 hover:text-amber-400 transition-colors cursor-pointer"
+                                                    title="Deactivate Profile"
+                                                >
+                                                    <ShieldOff size={14} />
+                                                </button>
+                                            ) : (
+                                                <button
+                                                    onClick={() => handleReactivate(emp.id, emp.name)}
+                                                    className="p-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 transition-colors cursor-pointer"
+                                                    title="Reactivate Profile"
+                                                >
+                                                    <ShieldCheck size={14} />
+                                                </button>
+                                            )}
+                                        </div>
                                     </div>
-                                    {emp.phone && (
-                                        <div className="flex items-center gap-2">
-                                            <Phone size={14} className="shrink-0 text-zinc-650" />
-                                            <span>{emp.phone}</span>
+
+                                    {!active && emp.deactivation_reason && (
+                                        <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-3 text-xs flex items-start gap-2.5">
+                                            <AlertCircle size={14} className="shrink-0 mt-0.5 text-amber-400" />
+                                            <div className="min-w-0 flex-1">
+                                                <span className="text-[10px] font-mono uppercase tracking-wider text-amber-400 font-semibold block">
+                                                    Inactive Reason
+                                                </span>
+                                                <p className="text-zinc-300 text-xs mt-0.5 leading-relaxed break-words">
+                                                    {emp.deactivation_reason}
+                                                </p>
+                                            </div>
                                         </div>
                                     )}
-                                    <div className="flex items-center gap-2">
-                                        <Briefcase size={14} className="shrink-0 text-zinc-650" />
-                                        <span>{emp.designation || 'Staff'} • {emp.department || 'General'}</span>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <Building size={14} className="shrink-0 text-zinc-650" />
-                                        <span>{emp.branch_name || 'Main Office'}</span>
+
+                                    <div className="space-y-2 text-xs font-medium text-zinc-500">
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <Mail size={14} className="shrink-0 text-zinc-650" />
+                                            <span className="truncate text-zinc-400">{emp.email}</span>
+                                        </div>
+                                        {emp.phone && (
+                                            <div className="flex items-center gap-2 min-w-0">
+                                                <Phone size={14} className="shrink-0 text-zinc-650" />
+                                                <span className="truncate">{emp.phone}</span>
+                                            </div>
+                                        )}
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <Briefcase size={14} className="shrink-0 text-zinc-650" />
+                                            <span className="truncate">{emp.designation || 'Staff'} • {emp.department || 'General'}</span>
+                                        </div>
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <Building size={14} className="shrink-0 text-zinc-650" />
+                                            <span className="truncate">{emp.branch_name || 'Main Office'}</span>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
 

@@ -2151,7 +2151,8 @@ export const companyApi = {
   reactivateBranch: async (token: string, id: number): Promise<SafeResponse<any>> => {
     return safeFetch<any>(getUrl(`/api/company/branches/${id}/reactivate`), {
       method: 'PUT',
-      headers: { 'Authorization': `Bearer ${token}` },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ isActive: true }),
     });
   },
 
@@ -2198,7 +2199,8 @@ export const companyApi = {
   reactivateEmployee: async (token: string, id: number): Promise<SafeResponse<any>> => {
     return safeFetch<any>(getUrl(`/api/company/employees/${id}/reactivate`), {
       method: 'PUT',
-      headers: { 'Authorization': `Bearer ${token}` },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ isActive: true }),
     });
   },
 

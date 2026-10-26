@@ -19,10 +19,16 @@ interface Branch {
     name: string;
     address: string;
     phone: string;
-    is_active?: boolean;
+    is_active?: boolean | number;
     status?: string;
     deactivation_reason?: string;
 }
+
+const isBranchActive = (b: Branch): boolean => {
+    if (b.status === 'inactive') return false;
+    if (b.is_active === false || (b.is_active as any) === 0 || (b.is_active as any) === '0') return false;
+    return true;
+};
 
 export default function CompanyBranches() {
     const { token } = useAuth();
@@ -278,9 +284,13 @@ export default function CompanyBranches() {
         }
     };
 
+    const activeCount = branches.filter(isBranchActive).length;
+    const inactiveCount = branches.length - activeCount;
+
     const filteredBranches = branches.filter(b => {
-        if (statusFilter === 'active' && b.is_active === false) return false;
-        if (statusFilter === 'inactive' && b.is_active !== false) return false;
+        const active = isBranchActive(b);
+        if (statusFilter === 'active' && !active) return false;
+        if (statusFilter === 'inactive' && active) return false;
         if (searchQuery.trim()) {
             const q = searchQuery.toLowerCase();
             const nameMatch = (b.name || '').toLowerCase().includes(q);
@@ -302,9 +312,9 @@ export default function CompanyBranches() {
                 <div className="flex flex-wrap items-center gap-3">
                     <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-xl p-1">
                         {[
-                            { label: 'All', value: '' },
-                            { label: 'Active', value: 'active' },
-                            { label: 'Inactive', value: 'inactive' },
+                            { label: `All (${branches.length})`, value: '' },
+                            { label: `Active (${activeCount})`, value: 'active' },
+                            { label: `Inactive (${inactiveCount})`, value: 'inactive' },
                         ].map(st => (
                             <button
                                 key={st.value}
@@ -427,73 +437,102 @@ export default function CompanyBranches() {
                 </div>
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {filteredBranches.map(branch => (
-                        <div key={branch.id} className={`bg-[#0c0c0c] border border-zinc-900/60 rounded-2xl p-5 hover:border-zinc-800 transition-all flex flex-col justify-between space-y-6 ${branch.is_active === false ? 'opacity-70 bg-zinc-950/30' : ''}`}>
-                            <div className="space-y-3">
-                                <div className="flex justify-between items-start gap-4">
-                                    <div>
-                                        <h3 className="font-bold text-white text-lg tracking-tight truncate">{branch.name}</h3>
-                                        <div className="flex items-center gap-2 mt-1">
-                                            <span className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold ${branch.is_active !== false ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'}`}>
-                                                {branch.is_active !== false ? 'ACTIVE' : 'INACTIVE'}
-                                            </span>
-                                            {branch.deactivation_reason && (
-                                                <span className="text-[10px] text-zinc-500 font-mono truncate" title={branch.deactivation_reason}>
-                                                    {branch.deactivation_reason}
+                    {filteredBranches.map(branch => {
+                        const active = isBranchActive(branch);
+                        return (
+                            <div
+                                key={branch.id}
+                                className={`bg-[#0c0c0c] border rounded-2xl p-5 hover:border-zinc-800 transition-all flex flex-col justify-between space-y-5 ${
+                                    !active
+                                        ? 'border-amber-500/25 bg-amber-500/[0.02] opacity-90'
+                                        : 'border-zinc-900/60'
+                                }`}
+                            >
+                                <div className="space-y-4">
+                                    <div className="flex justify-between items-start gap-3">
+                                        <div className="min-w-0 flex-1">
+                                            <h3 className="font-bold text-white text-lg tracking-tight truncate" title={branch.name}>
+                                                {branch.name}
+                                            </h3>
+                                            <div className="flex items-center gap-2 mt-1">
+                                                <span
+                                                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] font-mono font-bold tracking-wider ${
+                                                        active
+                                                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                                            : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                                    }`}
+                                                >
+                                                    <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                                                    {active ? 'ACTIVE' : 'INACTIVE'}
                                                 </span>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center gap-1 shrink-0">
+                                            <button
+                                                onClick={() => handleSingleExport(branch.id, branch.name)}
+                                                className="p-1.5 rounded-lg hover:bg-zinc-900 text-zinc-500 hover:text-emerald-400 transition-colors cursor-pointer"
+                                                title="Export Single Branch (CSV)"
+                                            >
+                                                <Download size={14} />
+                                            </button>
+                                            <button
+                                                onClick={() => handleOpenEditModel(branch)}
+                                                className="p-1.5 rounded-lg hover:bg-zinc-900 text-zinc-500 hover:text-zinc-200 transition-colors cursor-pointer"
+                                                title="Edit Branch"
+                                            >
+                                                <Edit2 size={14} />
+                                            </button>
+                                            {active ? (
+                                                <button
+                                                    onClick={() => handleDeactivate(branch.id, branch.name)}
+                                                    className="p-1.5 rounded-lg hover:bg-amber-500/10 text-zinc-500 hover:text-amber-400 transition-colors cursor-pointer"
+                                                    title="Deactivate Branch"
+                                                >
+                                                    <ShieldOff size={14} />
+                                                </button>
+                                            ) : (
+                                                <button
+                                                    onClick={() => handleReactivate(branch.id, branch.name)}
+                                                    className="p-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 transition-colors cursor-pointer"
+                                                    title="Reactivate Branch"
+                                                >
+                                                    <ShieldCheck size={14} />
+                                                </button>
                                             )}
                                         </div>
                                     </div>
-                                    <div className="flex items-center gap-1 shrink-0">
-                                        <button
-                                            onClick={() => handleSingleExport(branch.id, branch.name)}
-                                            className="p-1.5 rounded-lg hover:bg-zinc-900 text-zinc-500 hover:text-emerald-400 transition-colors cursor-pointer"
-                                            title="Export Single Branch (CSV)"
-                                        >
-                                            <Download size={13} />
-                                        </button>
-                                        <button
-                                            onClick={() => handleOpenEditModel(branch)}
-                                            className="p-1.5 rounded-lg hover:bg-zinc-900 text-zinc-500 hover:text-zinc-200 transition-colors cursor-pointer"
-                                            title="Edit Branch"
-                                        >
-                                            <Edit2 size={13} />
-                                        </button>
-                                        {branch.is_active !== false ? (
-                                            <button
-                                                onClick={() => handleDeactivate(branch.id, branch.name)}
-                                                className="p-1.5 rounded-lg hover:bg-amber-500/10 text-zinc-500 hover:text-amber-400 transition-colors cursor-pointer"
-                                                title="Deactivate Branch"
-                                            >
-                                                <ShieldOff size={13} />
-                                            </button>
-                                        ) : (
-                                            <button
-                                                onClick={() => handleReactivate(branch.id, branch.name)}
-                                                className="p-1.5 rounded-lg hover:bg-emerald-500/10 text-zinc-500 hover:text-emerald-400 transition-colors cursor-pointer"
-                                                title="Reactivate Branch"
-                                            >
-                                                <ShieldCheck size={13} />
-                                            </button>
+
+                                    {!active && branch.deactivation_reason && (
+                                        <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-3 text-xs flex items-start gap-2.5">
+                                            <AlertCircle size={14} className="shrink-0 mt-0.5 text-amber-400" />
+                                            <div className="min-w-0 flex-1">
+                                                <span className="text-[10px] font-mono uppercase tracking-wider text-amber-400 font-semibold block">
+                                                    Inactive Reason
+                                                </span>
+                                                <p className="text-zinc-300 text-xs mt-0.5 leading-relaxed break-words">
+                                                    {branch.deactivation_reason}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <div className="space-y-2 text-xs font-medium text-zinc-500">
+                                        <div className="flex items-start gap-2 min-w-0">
+                                            <MapPin size={14} className="shrink-0 text-zinc-650 mt-0.5" />
+                                            <span className="text-zinc-400 leading-relaxed break-words">{branch.address}</span>
+                                        </div>
+                                        {branch.phone && (
+                                            <div className="flex items-center gap-2 min-w-0">
+                                                <Phone size={14} className="shrink-0 text-zinc-650" />
+                                                <span className="truncate">{branch.phone}</span>
+                                            </div>
                                         )}
                                     </div>
                                 </div>
-
-                                <div className="space-y-2 text-xs font-medium text-zinc-500">
-                                    <div className="flex items-start gap-2">
-                                        <MapPin size={14} className="shrink-0 text-zinc-650 mt-0.5" />
-                                        <span className="leading-relaxed">{branch.address}</span>
-                                    </div>
-                                    {branch.phone && (
-                                        <div className="flex items-center gap-2">
-                                            <Phone size={14} className="shrink-0 text-zinc-650" />
-                                            <span>{branch.phone}</span>
-                                        </div>
-                                    )}
-                                </div>
                             </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
 

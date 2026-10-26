@@ -169,13 +169,13 @@ export default function ProfilePage() {
 
   // Data States
   const [history, setHistory] = useState<ServiceRequest[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState<boolean>(() => Boolean(sessionStorage.getItem('tekdoctor_token')));
+  const [loadingHistory, setLoadingHistory] = useState<boolean>(() => Boolean(localStorage.getItem('token')));
   const [historyPage, setHistoryPage] = useState(1);
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyTotalPages, setHistoryTotalPages] = useState(1);
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [loadingInvoices, setLoadingInvoices] = useState<boolean>(() => Boolean(sessionStorage.getItem('tekdoctor_token')));
+  const [loadingInvoices, setLoadingInvoices] = useState<boolean>(() => Boolean(localStorage.getItem('token')));
 
   // Approval / Rejection States
   const [approvingId, setApprovingId] = useState<number | null>(null);

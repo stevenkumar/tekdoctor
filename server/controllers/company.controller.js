@@ -350,7 +350,11 @@ const getBranches = async (req, res, next) => {
             'SELECT * FROM company_branches WHERE company_id = ? ORDER BY name ASC',
             [targetCompanyId]
         );
-        return res.json(formatResponse(true, 'Branches fetched.', rows));
+        const normalized = rows.map(r => ({
+            ...r,
+            is_active: Boolean(r.is_active) && r.status !== 'inactive'
+        }));
+        return res.json(formatResponse(true, 'Branches fetched.', normalized));
     } catch (error) {
         next(error);
     } finally {
@@ -506,7 +510,11 @@ const getEmployees = async (req, res, next) => {
        WHERE e.company_id = ? ORDER BY e.name ASC`,
             [targetCompanyId]
         );
-        return res.json(formatResponse(true, 'Employees fetched.', rows));
+        const normalized = rows.map(r => ({
+            ...r,
+            is_active: Boolean(r.is_active) && r.status !== 'inactive'
+        }));
+        return res.json(formatResponse(true, 'Employees fetched.', normalized));
     } catch (error) {
         next(error);
     } finally {

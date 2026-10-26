@@ -117,7 +117,7 @@ export default function AdminProfile() {
             setInitialProfile(updated);
             if (user) {
                 const updatedUser = { ...user, ...updated };
-                sessionStorage.setItem('user', JSON.stringify(updatedUser));
+                localStorage.setItem('user', JSON.stringify(updatedUser));
             }
             fetchUser(token);
             setTimeout(() => setProfileMsg(''), 3000);

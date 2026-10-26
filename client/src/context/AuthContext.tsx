@@ -37,32 +37,46 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(() => {
     try {
-      const savedUser = sessionStorage.getItem(STORAGE_KEYS.USER);
+      const savedUser = localStorage.getItem(STORAGE_KEYS.USER) || sessionStorage.getItem(STORAGE_KEYS.USER);
       return savedUser ? (JSON.parse(savedUser) as AuthUser) : null;
     } catch { return null; }
   });
   const [token, setToken] = useState<string | null>(() => {
-    return sessionStorage.getItem(STORAGE_KEYS.TOKEN) || null;
+    return localStorage.getItem(STORAGE_KEYS.TOKEN) || sessionStorage.getItem(STORAGE_KEYS.TOKEN) || null;
   });
   const [role, setRole] = useState<UserRole | null>(() => {
     try {
-      const savedUser = sessionStorage.getItem(STORAGE_KEYS.USER);
+      const savedUser = localStorage.getItem(STORAGE_KEYS.USER) || sessionStorage.getItem(STORAGE_KEYS.USER);
       return savedUser ? ((JSON.parse(savedUser) as AuthUser).role || null) : null;
     } catch { return null; }
   });
   const navigate = useNavigate();
 
-  // Validate session from sessionStorage on mount and clear if broken
+  // Validate session on mount, migrate legacy sessionStorage to localStorage, and clear if broken
   useEffect(() => {
     try {
-      const savedToken = sessionStorage.getItem(STORAGE_KEYS.TOKEN);
-      const savedUser = sessionStorage.getItem(STORAGE_KEYS.USER);
+      // Migrate from sessionStorage if present
+      const sessionTok = sessionStorage.getItem(STORAGE_KEYS.TOKEN);
+      const sessionUsr = sessionStorage.getItem(STORAGE_KEYS.USER);
+      if (sessionTok && sessionUsr) {
+        if (!localStorage.getItem(STORAGE_KEYS.TOKEN)) {
+          localStorage.setItem(STORAGE_KEYS.TOKEN, sessionTok);
+          localStorage.setItem(STORAGE_KEYS.USER, sessionUsr);
+        }
+        sessionStorage.removeItem(STORAGE_KEYS.TOKEN);
+        sessionStorage.removeItem(STORAGE_KEYS.USER);
+      }
+
+      const savedToken = localStorage.getItem(STORAGE_KEYS.TOKEN);
+      const savedUser = localStorage.getItem(STORAGE_KEYS.USER);
 
       if (savedToken && savedUser) {
         JSON.parse(savedUser); // dry parse test
       }
     } catch {
-      // Corrupted sessionStorage — clear and start fresh
+      // Corrupted localStorage — clear and start fresh
+      localStorage.removeItem(STORAGE_KEYS.TOKEN);
+      localStorage.removeItem(STORAGE_KEYS.USER);
       sessionStorage.removeItem(STORAGE_KEYS.TOKEN);
       sessionStorage.removeItem(STORAGE_KEYS.USER);
       setUser(null); setToken(null); setRole(null);
@@ -83,8 +97,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(userData);
     setRole(userData.role);
 
-    sessionStorage.setItem(STORAGE_KEYS.TOKEN, newToken);
-    sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userData));
+    localStorage.setItem(STORAGE_KEYS.TOKEN, newToken);
+    localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userData));
+    sessionStorage.removeItem(STORAGE_KEYS.TOKEN);
+    sessionStorage.removeItem(STORAGE_KEYS.USER);
 
     if (!skipNavigation) {
       if (redirectPath) {
@@ -110,6 +126,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
     setUser(null);
     setRole(null);
+    localStorage.removeItem(STORAGE_KEYS.TOKEN);
+    localStorage.removeItem(STORAGE_KEYS.USER);
     sessionStorage.removeItem(STORAGE_KEYS.TOKEN);
     sessionStorage.removeItem(STORAGE_KEYS.USER);
     navigate(ROUTES.SIGN_IN);
@@ -117,11 +135,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const updateToken = (newToken: string, userData?: AuthUser) => {
     setToken(newToken);
-    sessionStorage.setItem(STORAGE_KEYS.TOKEN, newToken);
+    localStorage.setItem(STORAGE_KEYS.TOKEN, newToken);
     if (userData) {
       setUser(userData);
       setRole(userData.role);
-      sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userData));
+      localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userData));
     }
   };
 
@@ -134,7 +152,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchUser = async (tokenVal: string) => {
     try {
-      const savedUser = sessionStorage.getItem(STORAGE_KEYS.USER);
+      const savedUser = localStorage.getItem(STORAGE_KEYS.USER);
       if (savedUser) {
         setUser(JSON.parse(savedUser) as AuthUser);
       }

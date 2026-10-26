@@ -4,7 +4,7 @@
  */
 
 export const STORAGE_KEYS = {
-  // Session storage keys
+  // Local storage keys for persistent authentication
   TOKEN: 'token',
   USER: 'user',
 } as const;

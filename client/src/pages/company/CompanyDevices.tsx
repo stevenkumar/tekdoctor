@@ -338,9 +338,17 @@ export default function CompanyDevices() {
         }
     };
 
+    const isDeviceDecommissioned = (dev: Device) => {
+        return dev.is_active === false || dev.is_active === 0 || (dev.is_active as any) === '0' || dev.status === 'decommissioned' || dev.status === 'inactive';
+    };
+
+    const decommissionedCount = devices.filter(isDeviceDecommissioned).length;
+    const activeDevicesCount = devices.length - decommissionedCount;
+
     const filteredDevices = devices.filter(dev => {
-        if (statusFilter === 'active' && (dev.is_active === false || dev.status === 'decommissioned')) return false;
-        if (statusFilter === 'inactive' && !(dev.is_active === false || dev.status === 'decommissioned')) return false;
+        const isDecomm = isDeviceDecommissioned(dev);
+        if (statusFilter === 'active' && isDecomm) return false;
+        if (statusFilter === 'inactive' && !isDecomm) return false;
         if (searchQuery.trim()) {
             const q = searchQuery.toLowerCase();
             const tagMatch = (dev.asset_tag || dev.asset_id || '').toLowerCase().includes(q);
@@ -364,9 +372,9 @@ export default function CompanyDevices() {
                 <div className="flex flex-wrap items-center gap-3">
                     <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-xl p-1">
                         {[
-                            { label: 'All', value: '' },
-                            { label: 'Active', value: 'active' },
-                            { label: 'Decommissioned', value: 'inactive' },
+                            { label: `All (${devices.length})`, value: '' },
+                            { label: `Active (${activeDevicesCount})`, value: 'active' },
+                            { label: `Decommissioned (${decommissionedCount})`, value: 'inactive' },
                         ].map(st => (
                             <button
                                 key={st.value}
