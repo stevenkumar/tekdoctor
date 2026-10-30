@@ -27,6 +27,7 @@ const adminRoutes = require('./routes/admin.routes');
 const publicRoutes = require('./routes/public.routes');
 const companyRoutes = require('./routes/company.routes');
 const testimonialRoutes = require('./routes/testimonial.routes');
+const amcRoutes = require('./routes/amc.routes');
 
 const app = express();
 
@@ -148,6 +149,7 @@ app.use(`${config.server.apiPrefix}/admin`, adminRoutes);
 app.use(`${config.server.apiPrefix}/public`, publicRoutes);
 app.use(`${config.server.apiPrefix}/company`, companyRoutes);
 app.use(`${config.server.apiPrefix}/testimonials`, testimonialRoutes);
+app.use(`${config.server.apiPrefix}/amc`, amcRoutes);
 
 // Health Check Endpoint
 app.get('/health', async (req, res) => {

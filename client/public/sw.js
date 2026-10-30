@@ -51,16 +51,25 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Network-only for API and Uploads to always guarantee real-time data
-  if (url.pathname.startsWith('/api') || url.pathname.startsWith('/uploads')) {
+  // Network-only for API, uploads, and Vite development requests
+  if (
+    url.pathname.startsWith('/api') ||
+    url.pathname.startsWith('/uploads') ||
+    url.pathname.startsWith('/src') ||
+    url.pathname.startsWith('/@') ||
+    url.pathname.includes('node_modules') ||
+    url.searchParams.has('token') ||
+    url.searchParams.has('t')
+  ) {
     return;
   }
 
   // Navigation requests (HTML pages): Network-first with offline fallback to /index.html
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request).catch(() => {
-        return caches.match('/index.html') || caches.match('/');
+      fetch(request).catch(async () => {
+        const cached = await caches.match('/index.html') || await caches.match('/');
+        return cached || new Response('Offline', { status: 503, headers: { 'Content-Type': 'text/html' } });
       })
     );
     return;
@@ -68,8 +77,23 @@ self.addEventListener('fetch', (event) => {
 
   // Static assets (scripts, styles, images): Stale-While-Revalidate
   event.respondWith(
-    caches.match(request).then((cachedResponse) => {
-      const fetchPromise = fetch(request).then((networkResponse) => {
+    (async () => {
+      const cachedResponse = await caches.match(request);
+      if (cachedResponse) {
+        // Refresh cache in background
+        fetch(request).then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
+            const responseToCache = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(request, responseToCache);
+            });
+          }
+        }).catch(() => {});
+        return cachedResponse;
+      }
+
+      try {
+        const networkResponse = await fetch(request);
         if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
           const responseToCache = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => {
@@ -77,9 +101,10 @@ self.addEventListener('fetch', (event) => {
           });
         }
         return networkResponse;
-      }).catch(() => cachedResponse);
-
-      return cachedResponse || fetchPromise;
-    })
+      } catch (err) {
+        // Always return a valid Response object to prevent "Failed to convert value to 'Response'"
+        return new Response('Network unavailable', { status: 503, statusText: 'Service Unavailable' });
+      }
+    })()
   );
 });

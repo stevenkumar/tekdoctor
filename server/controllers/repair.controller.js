@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const config = require('../config/app.config');
 const { pool } = require('../config/db.config');
 const { formatResponse, generateTicketNumber, generateInvoiceId } = require('../utils/helpers');
+const { resolveDeviceAmcEligibility } = require('../services/amc.service');
 const logger = require('../utils/logger');
 const { sendAdminNotification, sendCustomerNotification } = require('../utils/email.utils');
 const { logActivity } = require('../utils/activity.logger');
@@ -370,16 +371,12 @@ const createRepairRequest = async (req, res, next) => {
     }
 
     let isAmc = false;
-    if (targetCompanyId) {
-      const [profiles] = await connection.query(
-        'SELECT amc_status, company_type FROM company_profiles WHERE user_id = ? LIMIT 1',
-        [targetCompanyId]
-      );
-      isAmc = (profiles[0]?.amc_status || '').toLowerCase() === 'active' || (profiles[0]?.company_type || '').toUpperCase() === 'AMC';
-      if (!isAmc && targetDeviceId) {
-        const [devRows] = await connection.query('SELECT is_amc FROM company_devices WHERE id = ? LIMIT 1', [targetDeviceId]);
-        if (devRows[0]?.is_amc === 1) isAmc = true;
-      }
+    if (targetCompanyId && targetDeviceId) {
+      const amcEligibility = await resolveDeviceAmcEligibility(connection, {
+        companyId: targetCompanyId,
+        deviceId: targetDeviceId
+      });
+      isAmc = amcEligibility.isEligible;
     }
 
     // Authoritative per-account sequential ticket number generation (TD-xxx-01, CMP-xxx-xxx)

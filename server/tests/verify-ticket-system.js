@@ -41,7 +41,7 @@ async function runTests() {
     // -------------------------------------------------------------------------
     console.log('[Test Group 1A] Existing Ticket Format & Uniqueness Validation');
     const [allTickets] = await connection.query(
-      "SELECT id, ticket_number, user_id, company_id, customer_name, created_at FROM service_requests WHERE ticket_number NOT LIKE 'TD-TEST-%' ORDER BY id ASC"
+      "SELECT id, ticket_number, user_id, company_id, customer_name, created_at FROM service_requests WHERE ticket_number NOT LIKE 'TD-TEST-%' AND ticket_number NOT LIKE 'TD-P3-%' AND ticket_number NOT LIKE 'TD-BUDGET-%' AND ticket_number NOT LIKE 'TD-SWITCH-%' AND ticket_number NOT LIKE 'TD-SRCH-%' ORDER BY id ASC"
     );
     assert(allTickets.length > 0, `Total service requests in database: ${allTickets.length}`);
 
@@ -202,11 +202,11 @@ async function runTests() {
     // -------------------------------------------------------------------------
     console.log('\n[Test Group 5] AMC Company Independent Starting Sequence (Isolated Fixture)');
     const fixture5CompId = await allocateIsolatedFixtureId(connection, 9500);
-    const fixture5SeqName = `tkt:CMP-${fixture5CompId}`;
+    const fixture5SeqName = `tkt:TD-AMC-C${fixture5CompId}`;
 
     try {
       const amcNext = await generateTicketNumber(connection, { companyId: fixture5CompId, isAmc: true });
-      assert(amcNext === `CMP-${fixture5CompId}-001`, `AMC Company TD-AMC-C${fixture5CompId} starts independently at TD-AMC-C${fixture5CompId}-01 (got ${amcNext})`);
+      assert(amcNext === `TD-AMC-C${fixture5CompId}-01`, `AMC Company TD-AMC-C${fixture5CompId} starts independently at TD-AMC-C${fixture5CompId}-01 (got ${amcNext})`);
     } finally {
       await connection.query('DELETE FROM app_sequences WHERE sequence_name = ?', [fixture5SeqName]);
     }
@@ -273,11 +273,11 @@ async function runTests() {
       assert(multiAccountResults[0].startsWith(`TD-${id1}-`), `Account 1 isolated: ${multiAccountResults[0]}`);
       assert(multiAccountResults[1].startsWith(`TD-${id2}-`), `Account 2 isolated: ${multiAccountResults[1]}`);
       assert(multiAccountResults[2].startsWith(`CMP-${compId1}-`), `Account 3 isolated (Company): ${multiAccountResults[2]}`);
-      assert(multiAccountResults[3].startsWith(`CMP-${compId2}-`), `Account 4 isolated (AMC Company): ${multiAccountResults[3]}`);
+      assert(multiAccountResults[3].startsWith(`TD-AMC-C${compId2}-`), `Account 4 isolated (AMC Company): ${multiAccountResults[3]}`);
     } finally {
       // Clean up
       await connection.query('DELETE FROM app_sequences WHERE sequence_name IN (?, ?, ?, ?)', [
-        `tkt:TD-${id1}`, `tkt:TD-${id2}`, `tkt:CMP-${compId1}`, `tkt:CMP-${compId2}`
+        `tkt:TD-${id1}`, `tkt:TD-${id2}`, `tkt:CMP-${compId1}`, `tkt:TD-AMC-C${compId2}`
       ]);
     }
 

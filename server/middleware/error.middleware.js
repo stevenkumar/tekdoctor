@@ -45,7 +45,7 @@ const errorHandler = (err, req, res, next) => {
   }
 
   // Handle validation or explicit application errors
-  if (err.message && statusCode !== 500) {
+  if (err.message && (statusCode !== 500 || config.env === 'development')) {
     message = err.message;
   }
   

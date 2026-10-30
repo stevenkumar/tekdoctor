@@ -7,7 +7,7 @@ import { ROUTES } from '../config/routes';
  *
  * Rules:
  *  - Not authenticated  → redirect to /auth/signin
- *  - Authenticated, not admin → redirect to / (home)
+ *  - Authenticated, not admin → redirect to their respective portal or / (home)
  *  - Admin → render nested routes via <Outlet />
  */
 export default function ProtectedAdminRoute() {
@@ -18,6 +18,8 @@ export default function ProtectedAdminRoute() {
     }
 
     if (!hasRole('admin')) {
+        if (hasRole('company')) return <Navigate to={ROUTES.COMPANY_DASHBOARD} replace />;
+        if (hasRole('technician')) return <Navigate to={ROUTES.TECHNICIAN_DASHBOARD} replace />;
         return <Navigate to={ROUTES.HOME} replace />;
     }
 

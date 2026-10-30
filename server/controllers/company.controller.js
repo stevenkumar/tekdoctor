@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const { pool } = require('../config/db.config');
 const config = require('../config/app.config');
 const { formatResponse, generateTicketNumber, generateCompanyId } = require('../utils/helpers');
+const { resolveDeviceAmcEligibility } = require('../services/amc.service');
 const logger = require('../utils/logger');
 const fs = require('fs');
 const { generateToken } = require('../utils/auth.helpers');
@@ -773,29 +774,12 @@ const createDevice = async (req, res, next) => {
             }));
         }
 
-        let finalAmcTag = amcTag || null;
-        if (isAmc && !finalAmcTag) {
-            const [maxRows] = await connection.query(
-                `SELECT amc_tag FROM company_devices 
-                 WHERE company_id = ? AND amc_tag LIKE 'td-amc-%' 
-                 ORDER BY CAST(SUBSTRING(amc_tag, 8) AS UNSIGNED) DESC 
-                 LIMIT 1`,
-                [targetCompanyId]
-            );
-            let nextNum = 1;
-            if (maxRows.length > 0) {
-                const match = maxRows[0].amc_tag.match(/td-amc-(\d+)/);
-                if (match) {
-                    nextNum = parseInt(match[1], 10) + 1;
-                }
-            }
-            finalAmcTag = `td-amc-${String(nextNum).padStart(3, '0')}`;
-        }
-
+        // Fleet inventory devices are registered without client self-entitled AMC coverage.
+        // AMC coverage is granted strictly via contract device selection.
         const [result] = await connection.query(
             `INSERT INTO company_devices 
          (company_id, branch_id, employee_id, device_category, brand, model_number, serial_number, asset_id, purchase_date, warranty_expiry, notes, is_amc, amc_tag) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)`,
             [
                 targetCompanyId,
                 branchId || null,
@@ -807,13 +791,11 @@ const createDevice = async (req, res, next) => {
                 assetId,
                 purchaseDate || null,
                 warrantyExpiry || null,
-                notes || null,
-                isAmc ? 1 : 0,
-                finalAmcTag
+                notes || null
             ]
         );
         await logCompanyActivity(connection, req.user.id, 'create_device', 'company_devices', result.insertId, { brand, modelNumber, serialNumber }, req.ip);
-        return res.status(201).json(formatResponse(true, 'Device registered successfully.', { id: result.insertId, assetId, amcTag: finalAmcTag }));
+        return res.status(201).json(formatResponse(true, 'Device registered successfully.', { id: result.insertId, assetId, amcTag: null }));
     } catch (error) {
         next(error);
     } finally {
@@ -1438,11 +1420,15 @@ const createCompanyRepairRequest = async (req, res, next) => {
         const profile = profiles[0] || { company_name: companyUser[0]?.name || target.companyName, phone_number: companyUser[0]?.phone || '', address: '', amc_status: 'Inactive', company_id: companyUser[0]?.company_id };
         const companyName = profile.company_name || target.companyName || companyUser[0]?.name || 'Corporate Client';
 
-        // AMC Source of Truth Detection (Section 17):
-        // Check company's profile amc_status OR specific device's is_amc
-        const isCompanyAmc = (profile.amc_status || '').toLowerCase() === 'active' || (profile.company_type || '').toUpperCase() === 'AMC' || device.is_amc === 1;
+        // Authoritative AMC Source of Truth Detection:
+        // Validates active, approved, paid AMC contract and active covered device registration
+        const amcEligibility = await resolveDeviceAmcEligibility(connection, {
+            companyId: targetCompanyId,
+            deviceId: device.id
+        });
+        const isCompanyAmc = amcEligibility.isEligible;
 
-        // Generate authoritative per-company sequential ticket number (CMP-xxx-xxx)
+        // Generate authoritative per-company sequential ticket number (TD-AMC-Cxxx-xx or CMP-xxx-xxx)
         const ticketNumber = await generateTicketNumber(connection, {
             companyId: profile.company_id || targetCompanyId,
             isAmc: isCompanyAmc
@@ -1880,7 +1866,9 @@ const importBulkDevices = async (req, res, next) => {
         const skippedDuplicates = [];
         const errors = [];
         const seenInFileSerials = new Map();
+        const validRows = [];
 
+        // ── Phase 1: Upfront Batch Validation (All-or-Nothing Atomicity) ─────
         for (let idx = 0; idx < parsed.data.length; idx++) {
             const rowNumber = idx + 2;
             const device = parsed.data[idx];
@@ -1894,8 +1882,6 @@ const importBulkDevices = async (req, res, next) => {
             const empRaw = (device.assigned_employee_email || device.assigned_employee || device.employee_email || device.employee || '').trim();
             const rawPurchaseDate = device.purchase_date || device.purchased_on || '';
             const rawWarrantyExpiry = device.warranty_expiry || device.warranty_end || '';
-            const isAmcRaw = (device.amc_covered || device.is_amc || device.amc_active || '').trim().toLowerCase();
-            const amcTagInput = (device.amc_tag || '').trim();
             const statusRaw = (device.status || device.is_active || 'active').trim().toLowerCase();
             const notes = (device.notes || device.comments || device.remarks || '').trim();
 
@@ -1967,21 +1953,49 @@ const importBulkDevices = async (req, res, next) => {
                 }
             }
 
-            // AMC logic
-            const isAmc = isAmcRaw === 'yes' || isAmcRaw === 'true' || isAmcRaw === '1';
-            let finalAmcTag = null;
-            if (isAmc) {
-                finalAmcTag = amcTagInput || `TD-AMC-${String(nextAmcNum++).padStart(3, '0')}`;
-            }
-
             // Status logic
             const isActive = !(statusRaw === 'inactive' || statusRaw === 'decommissioned' || statusRaw === '0' || statusRaw === 'false');
             const statusVal = isActive ? 'active' : 'decommissioned';
 
-            if (existingSerialMap.has(cleanSerialKey)) {
+            validRows.push({
+                rowNumber,
+                category,
+                brand,
+                modelNumber,
+                serialNumber,
+                cleanSerialKey,
+                assetId,
+                resolvedBranchId,
+                resolvedEmployeeId,
+                purchaseDate,
+                warrantyExpiry,
+                notes,
+                isActive,
+                statusVal
+            });
+        }
+
+        // Complete rejection on any error (all-or-nothing atomicity: 0 rows inserted)
+        if (errors.length > 0) {
+            await connection.rollback();
+            try {
+                if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+            } catch (_) {}
+            return res.status(400).json(formatResponse(false, `Bulk import failed validation with ${errors.length} error(s). Batch was rejected completely without partial imports.`, {
+                errors,
+                totalRows: parsed.data.length,
+                imported: 0,
+                updated: 0,
+                failed: errors.length
+            }));
+        }
+
+        // ── Phase 2: Persistence Pass (Strict Fleet Registration: is_amc = 0) ──
+        for (const item of validRows) {
+            if (existingSerialMap.has(item.cleanSerialKey)) {
                 // Update existing record
-                const existingRec = existingSerialMap.get(cleanSerialKey);
-                const finalAssetId = assetId || existingRec.asset_id || `AST-${Math.floor(Math.random() * 899999 + 100000)}`;
+                const existingRec = existingSerialMap.get(item.cleanSerialKey);
+                const finalAssetId = item.assetId || existingRec.asset_id || `AST-${Math.floor(Math.random() * 899999 + 100000)}`;
 
                 await connection.query(
                     `UPDATE company_devices 
@@ -1991,40 +2005,35 @@ const importBulkDevices = async (req, res, next) => {
                          purchase_date = COALESCE(?, purchase_date),
                          warranty_expiry = COALESCE(?, warranty_expiry),
                          notes = COALESCE(NULLIF(?, ''), notes),
-                         is_amc = ?,
-                         amc_tag = COALESCE(?, amc_tag),
                          is_active = ?,
                          status = ?
                      WHERE id = ? AND company_id = ?`,
                     [
-                        category, brand, modelNumber, finalAssetId,
-                        resolvedBranchId, resolvedEmployeeId,
-                        purchaseDate, warrantyExpiry,
-                        notes, isAmc ? 1 : 0, finalAmcTag,
-                        isActive ? 1 : 0, statusVal,
+                        item.category, item.brand, item.modelNumber, finalAssetId,
+                        item.resolvedBranchId, item.resolvedEmployeeId,
+                        item.purchaseDate, item.warrantyExpiry,
+                        item.notes,
+                        item.isActive ? 1 : 0, item.statusVal,
                         existingRec.id, targetCompanyId
                     ]
                 );
                 updatedCount++;
-                skippedDuplicates.push({ row: rowNumber, serialNumber, action: 'Updated existing fleet record' });
+                skippedDuplicates.push({ row: item.rowNumber, serialNumber: item.serialNumber, action: 'Updated existing fleet record' });
             } else {
-                // Insert new record
-                if (!assetId) {
-                    assetId = `AST-${Math.floor(Math.random() * 899999 + 100000)}`;
-                }
+                // Insert new record with is_amc = 0, amc_tag = NULL (no self-entitlement)
+                const finalAssetId = item.assetId || `AST-${Math.floor(Math.random() * 899999 + 100000)}`;
                 const [insertRes] = await connection.query(
                     `INSERT INTO company_devices 
                      (company_id, branch_id, employee_id, device_category, brand, model_number, serial_number, asset_id, purchase_date, warranty_expiry, notes, is_amc, amc_tag, is_active, status) 
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)`,
                     [
-                        targetCompanyId, resolvedBranchId, resolvedEmployeeId,
-                        category, brand, modelNumber, serialNumber, assetId,
-                        purchaseDate, warrantyExpiry, notes,
-                        isAmc ? 1 : 0, finalAmcTag,
-                        isActive ? 1 : 0, statusVal
+                        targetCompanyId, item.resolvedBranchId, item.resolvedEmployeeId,
+                        item.category, item.brand, item.modelNumber, item.serialNumber, finalAssetId,
+                        item.purchaseDate, item.warrantyExpiry, item.notes,
+                        item.isActive ? 1 : 0, item.statusVal
                     ]
                 );
-                existingSerialMap.set(cleanSerialKey, { id: insertRes.insertId, serial_number: serialNumber, asset_id: assetId });
+                existingSerialMap.set(item.cleanSerialKey, { id: insertRes.insertId, serial_number: item.serialNumber, asset_id: finalAssetId });
                 importedCount++;
             }
         }
@@ -2034,20 +2043,20 @@ const importBulkDevices = async (req, res, next) => {
         await logCompanyActivity(connection, req.user.id, 'bulk_import_devices', 'company_devices', null, { 
             imported: importedCount, 
             updated: updatedCount, 
-            failed: errors.length 
+            failed: 0 
         }, req.ip);
 
         try {
             if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
         } catch (_) {}
 
-        return res.json(formatResponse(true, `Processed ${parsed.data.length} device rows: ${importedCount} created, ${updatedCount} updated, ${errors.length} failed.`, {
+        return res.json(formatResponse(true, `Successfully processed ${parsed.data.length} device rows: ${importedCount} created, ${updatedCount} updated.`, {
             count: importedCount,
             imported: importedCount,
             updated: updatedCount,
-            failed: errors.length,
+            failed: 0,
             totalRows: parsed.data.length,
-            errors,
+            errors: [],
             duplicates: skippedDuplicates
         }));
     } catch (error) {
@@ -2253,17 +2262,24 @@ const importBulkRequests = async (req, res, next) => {
         // ── Phase 2: Create Tickets for Valid Rows ─────────────────────────────
         await connection.beginTransaction();
 
-        const isCompanyAmc = (profile.amc_status || '').toLowerCase() === 'active' || (profile.company_type || '').toUpperCase() === 'AMC';
         const batchKey = (req.body?.clientSubmissionId || req.headers['x-submission-id'] || '').trim();
         const batchId = batchKey || `bulk_${Date.now()}_${targetCompanyId}_${Math.random().toString(36).substring(2, 7)}`;
         let importedCount = 0;
 
         for (let idx = 0; idx < validBatch.length; idx++) {
             const item = validBatch[idx];
+            let rowIsAmc = false;
+            if (item.deviceId) {
+                const eligibility = await resolveDeviceAmcEligibility(connection, {
+                    companyId: targetCompanyId,
+                    deviceId: item.deviceId
+                });
+                rowIsAmc = eligibility.isEligible;
+            }
             // Generate sequence only for fully validated records (zero sequence waste!)
             const ticketNumber = await generateTicketNumber(connection, {
                 companyId: profile.company_id || targetCompanyId,
-                isAmc: isCompanyAmc
+                isAmc: rowIsAmc
             });
             const slaHours = item.priority === 'Urgent' ? 48 : 120;
             const slaDeadline = new Date(Date.now() + slaHours * 60 * 60 * 1000);

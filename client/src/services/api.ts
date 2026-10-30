@@ -3,8 +3,9 @@
  * Resolves all API endpoints using appConfig.apiUrl and safeFetch.
  */
 
-import { safeFetch, getApiCompanyContext } from '@/utils/api';
+import { safeFetch, getApiCompanyContext, extractResponseList, extractResponseData, formatDisplayDate } from '@/utils/api';
 import type { SafeResponse } from '@/utils/api';
+export { extractResponseList, extractResponseData, formatDisplayDate };
 import { appConfig } from '@/config/appConfig';
 import { broadcastPaymentSettled } from '@/utils/paymentSync';
 import { getRecaptchaToken } from '@/utils/recaptcha';
@@ -108,6 +109,35 @@ export const ENDPOINTS = {
     EXPORT_REPAIRS: '/api/company/repairs/export',
     TEMPLATES: '/api/company/templates',
     ACTIVITY_LOGS: '/api/company/activity-logs',
+  },
+  AMC: {
+    PLANS: '/api/amc/plans',
+    ELIGIBILITY: '/api/amc/eligibility',
+    ADMIN_OVERVIEW: '/api/amc/admin/overview',
+    ADMIN_PLANS: '/api/amc/admin/plans',
+    ADMIN_PLAN_BY_ID: (id: number | string) => `/api/amc/admin/plans/${id}`,
+    ADMIN_PLAN_TOGGLE: (id: number | string) => `/api/amc/admin/plans/${id}/toggle-status`,
+    ADMIN_REQUESTS: '/api/amc/admin/requests',
+    ADMIN_REQUEST_REVIEW: (id: number | string) => `/api/amc/admin/requests/${id}/review`,
+    ADMIN_CONTRACTS: '/api/amc/admin/contracts',
+    ADMIN_CONTRACT_BY_ID: (id: number | string) => `/api/amc/admin/contracts/${id}`,
+    ADMIN_CONTRACT_APPROVE: (id: number | string) => `/api/amc/admin/contracts/${id}/approve`,
+    ADMIN_CONTRACT_STATUS: (id: number | string) => `/api/amc/admin/contracts/${id}/status`,
+    ADMIN_VERIFY_OFFLINE: (id: number | string) => `/api/amc/admin/contracts/${id}/verify-offline-payment`,
+    ADMIN_REPLACEMENTS: '/api/amc/admin/replacements',
+    ADMIN_REPLACEMENT_REVIEW: (id: number | string) => `/api/amc/admin/replacements/${id}/review`,
+    COMPANY_PLANS: '/api/amc/company/plans',
+    COMPANY_REQUESTS: '/api/amc/company/requests',
+    COMPANY_CONTRACTS: '/api/amc/company/contracts',
+    COMPANY_CONTRACT_BY_ID: (id: number | string) => `/api/amc/company/contracts/${id}`,
+    COMPANY_CONTRACT_ACCEPT: (id: number | string) => `/api/amc/company/contracts/${id}/accept`,
+    COMPANY_CONTRACT_REJECT: (id: number | string) => `/api/amc/company/contracts/${id}/reject`,
+    COMPANY_CONTRACT_CAPACITY: (id: number | string) => `/api/amc/company/contracts/${id}/capacity`,
+    COMPANY_CONTRACT_DEVICES: (id: number | string) => `/api/amc/company/contracts/${id}/devices`,
+    COMPANY_CREATE_ORDER: (id: number | string) => `/api/amc/company/contracts/${id}/create-payment-order`,
+    COMPANY_VERIFY_PAYMENT: (id: number | string) => `/api/amc/company/contracts/${id}/verify-payment`,
+    COMPANY_OFFLINE_PAYMENT: (id: number | string) => `/api/amc/company/contracts/${id}/offline-payment`,
+    COMPANY_REPLACEMENTS: '/api/amc/company/replacements',
   }
 } as const;
 
@@ -2479,6 +2509,256 @@ export const companyApi = {
     return safeFetch<any>(getUrl(`${ENDPOINTS.COMPANY.ACTIVITY_LOGS}?page=${page}&limit=${limit}`), {
       method: 'GET',
       headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+};
+
+// ── AMC (Annual Maintenance Contract) API Methods ─────────────────────────────
+
+export const amcApi = {
+  // Public
+  getPublicPlans: async (): Promise<SafeResponse<any[]>> => {
+    return safeFetch<any[]>(getUrl(ENDPOINTS.AMC.PLANS), {
+      method: 'GET',
+    });
+  },
+
+  // Eligibility
+  checkEligibility: async (token: string, companyId?: number | string, deviceId?: number | string): Promise<SafeResponse<any>> => {
+    const params = new URLSearchParams();
+    if (companyId) params.append('companyId', String(companyId));
+    if (deviceId) params.append('deviceId', String(deviceId));
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return safeFetch<any>(getUrl(`${ENDPOINTS.AMC.ELIGIBILITY}${qs}`), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  // Admin Methods
+  getAdminOverview: async (token: string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_OVERVIEW), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  getAdminPlans: async (token: string): Promise<SafeResponse<any[]>> => {
+    return safeFetch<any[]>(getUrl(ENDPOINTS.AMC.ADMIN_PLANS), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  createPlan: async (token: string, data: any): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_PLANS), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+  },
+
+  updatePlan: async (token: string, planId: number | string, data: any): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_PLAN_BY_ID(planId)), {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+  },
+
+  togglePlanStatus: async (token: string, planId: number | string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_PLAN_TOGGLE(planId)), {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  getAdminRequests: async (token: string, params?: { status?: string; companyId?: number | string }): Promise<SafeResponse<any[]>> => {
+    const q = new URLSearchParams();
+    if (params?.status) q.append('status', params.status);
+    if (params?.companyId) q.append('companyId', String(params.companyId));
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return safeFetch<any[]>(getUrl(`${ENDPOINTS.AMC.ADMIN_REQUESTS}${qs}`), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  reviewRequest: async (token: string, requestId: number | string, data: { status: string; adminNotes?: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_REQUEST_REVIEW(requestId)), {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+  },
+
+  getAdminContracts: async (token: string, params?: { status?: string; companyId?: number | string }): Promise<SafeResponse<any[]>> => {
+    const q = new URLSearchParams();
+    if (params?.status) q.append('status', params.status);
+    if (params?.companyId) q.append('companyId', String(params.companyId));
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return safeFetch<any[]>(getUrl(`${ENDPOINTS.AMC.ADMIN_CONTRACTS}${qs}`), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  getAdminContractDetails: async (token: string, contractId: number | string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_CONTRACT_BY_ID(contractId)), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  createContract: async (token: string, data: any): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_CONTRACTS), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+
+  approveContract: async (token: string, contractId: number | string, data?: { startDate?: string; endDate?: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_CONTRACT_APPROVE(contractId)), {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(data || {}),
+    });
+  },
+
+  updateContractStatus: async (token: string, contractId: number | string, data: { status: string; reason?: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_CONTRACT_STATUS(contractId)), {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+  },
+
+  verifyOfflinePayment: async (token: string, contractId: number | string, data: { decision: 'verified' | 'rejected'; adminNotes?: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_VERIFY_OFFLINE(contractId)), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+  },
+
+  getAdminReplacements: async (token: string, params?: { status?: string; contractId?: number | string }): Promise<SafeResponse<any[]>> => {
+    const q = new URLSearchParams();
+    if (params?.status) q.append('status', params.status);
+    if (params?.contractId) q.append('contractId', String(params.contractId));
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return safeFetch<any[]>(getUrl(`${ENDPOINTS.AMC.ADMIN_REPLACEMENTS}${qs}`), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  reviewReplacement: async (token: string, replacementId: number | string, data: { decision: 'approved' | 'rejected'; adminNotes?: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_REPLACEMENT_REVIEW(replacementId)), {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+  },
+
+  // Company Methods
+  getCompanyRequests: async (token: string): Promise<SafeResponse<any[]>> => {
+    return safeFetch<any[]>(getUrl(ENDPOINTS.AMC.COMPANY_REQUESTS), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  createRequest: async (token: string, data: { planId?: number; requestedDeviceCount: number; notes?: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.COMPANY_REQUESTS), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+  },
+
+  getCompanyContracts: async (token: string, params?: { status?: string }): Promise<SafeResponse<any[]>> => {
+    const q = new URLSearchParams();
+    if (params?.status) q.append('status', params.status);
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return safeFetch<any[]>(getUrl(`${ENDPOINTS.AMC.COMPANY_CONTRACTS}${qs}`), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  getCompanyContractDetails: async (token: string, contractId: number | string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.COMPANY_CONTRACT_BY_ID(contractId)), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  acceptOffer: async (token: string, contractId: number | string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.COMPANY_CONTRACT_ACCEPT(contractId)), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  rejectOffer: async (token: string, contractId: number | string, reason?: string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.COMPANY_CONTRACT_REJECT(contractId)), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ reason }),
+    });
+  },
+
+  getContractCapacity: async (token: string, contractId: number | string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.COMPANY_CONTRACT_CAPACITY(contractId)), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  assignDevices: async (token: string, contractId: number | string, deviceIds: number[]): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.COMPANY_CONTRACT_DEVICES(contractId)), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ deviceIds }),
+    });
+  },
+
+  createPaymentOrder: async (token: string, contractId: number | string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.COMPANY_CREATE_ORDER(contractId)), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  verifyPayment: async (token: string, contractId: number | string, data: { razorpayOrderId: string; razorpayPaymentId: string; razorpaySignature?: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.COMPANY_VERIFY_PAYMENT(contractId)), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+  },
+
+  initiateOfflinePayment: async (token: string, contractId: number | string, data: { paymentMethod?: string; referenceNumber?: string; notes?: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.COMPANY_OFFLINE_PAYMENT(contractId)), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+  },
+
+  getCompanyReplacements: async (token: string): Promise<SafeResponse<any[]>> => {
+    return safeFetch<any[]>(getUrl(ENDPOINTS.AMC.COMPANY_REPLACEMENTS), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  requestReplacement: async (token: string, data: { contractId: number; oldDeviceId: number; newDeviceId: number; reason: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.COMPANY_REPLACEMENTS), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(data),
     });
   },
 };

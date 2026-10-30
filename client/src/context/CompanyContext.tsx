@@ -1,8 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { useAuth } from './AuthContext';
-import { adminApi, companyApi } from '../services/api';
-import { setApiCompanyContext, getApiCompanyContext } from '../utils/api';
-import { useLocation } from 'react-router-dom';
+import { companyApi } from '../services/api';
 
 export interface CompanyItem {
   id: number;
@@ -58,74 +56,8 @@ interface CompanyContextType {
 const CompanyContext = createContext<CompanyContextType | undefined>(undefined);
 
 export const CompanyProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const { user, token, hasRole } = useAuth();
-  const location = useLocation();
-
-  const isAdmin = hasRole('admin');
-  const [companies, setCompanies] = useState<CompanyItem[]>([]);
+  const { user, token } = useAuth();
   const [companyProfile, setCompanyProfile] = useState<CompanyProfileDetails | null>(null);
-  const [loadingCompanies, setLoadingCompanies] = useState<boolean>(false);
-  const [selectedCompanyId, setSelectedCompanyIdState] = useState<number | null>(() => {
-    if (!isAdmin) {
-      return user?.id || null;
-    }
-    // Check URL search param first
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const urlId = params.get('companyId');
-      if (urlId && !isNaN(parseInt(urlId, 10))) {
-        return parseInt(urlId, 10);
-      }
-    }
-    return getApiCompanyContext();
-  });
-
-  // Sync API layer context whenever selectedCompanyId changes
-  const setSelectedCompanyId = useCallback((id: number | null) => {
-    setSelectedCompanyIdState(id);
-    setApiCompanyContext(id);
-  }, []);
-
-  // Fetch company list for Admin
-  const fetchCompanies = useCallback(async () => {
-    if (!isAdmin || !token) return;
-    setLoadingCompanies(true);
-    try {
-      const res = await adminApi.getCompanies(token, 1, 100, '', '');
-      if (res.ok && res.data) {
-        const payload: any = res.data.data || res.data;
-        const list: CompanyItem[] = Array.isArray(payload)
-          ? payload
-          : (payload.data || payload.companies || []);
-
-        // Normalize company display name
-        const normalized = list.map((c: any) => ({
-          ...c,
-          company_name: c.company_name || c.name || `Company #${c.id}`
-        }));
-
-        setCompanies(normalized);
-
-        // Auto-select if none currently selected or current selection is invalid
-        setSelectedCompanyIdState((current) => {
-          if (current && normalized.some(c => c.id === current)) {
-            setApiCompanyContext(current);
-            return current;
-          }
-          if (normalized.length > 0) {
-            const firstId = normalized[0].id;
-            setApiCompanyContext(firstId);
-            return firstId;
-          }
-          return null;
-        });
-      }
-    } catch (err) {
-      console.error('[CompanyContext] Failed to fetch companies list:', err);
-    } finally {
-      setLoadingCompanies(false);
-    }
-  }, [isAdmin, token]);
 
   // Fetch specific company profile for company users
   const fetchCompanyProfile = useCallback(async () => {
@@ -142,32 +74,14 @@ export const CompanyProvider: React.FC<{ children: ReactNode }> = ({ children })
   }, [token]);
 
   useEffect(() => {
-    if (isAdmin) {
-      fetchCompanies();
-    } else if (user) {
-      setSelectedCompanyIdState(user.id);
-      setApiCompanyContext(null); // Company users don't need header override
+    if (user && user.role === 'company') {
       fetchCompanyProfile();
     }
-  }, [isAdmin, user, fetchCompanies, fetchCompanyProfile]);
+  }, [user, fetchCompanyProfile]);
 
-  // Read URL query parameter changes if user switches via URL
-  useEffect(() => {
-    if (!isAdmin) return;
-    const params = new URLSearchParams(location.search);
-    const urlCompId = params.get('companyId');
-    if (urlCompId) {
-      const parsed = parseInt(urlCompId, 10);
-      if (!isNaN(parsed) && parsed !== selectedCompanyId) {
-        setSelectedCompanyId(parsed);
-      }
-    }
-  }, [location.search, isAdmin, selectedCompanyId, setSelectedCompanyId]);
+  const selectedCompanyId = user?.id || null;
 
   const selectedCompany: CompanyItem | null = useMemo(() => {
-    if (isAdmin) {
-      return companies.find(c => c.id === selectedCompanyId) || null;
-    }
     if (!user) return null;
     const canonicalCompId = user.company_id || user.permanent_company_id || companyProfile?.company_id || (companyProfile as any)?.permanent_company_id || (user.id ? `CMP-${String(user.id).padStart(3, '0')}` : 'CMP-001');
     return {
@@ -184,20 +98,20 @@ export const CompanyProvider: React.FC<{ children: ReactNode }> = ({ children })
       company_id: canonicalCompId,
       permanent_company_id: canonicalCompId,
     };
-  }, [isAdmin, companies, selectedCompanyId, user, companyProfile]);
+  }, [user, companyProfile]);
 
   return (
     <CompanyContext.Provider
       value={{
         selectedCompanyId,
         selectedCompany,
-        companies,
+        companies: [],
         companyProfile,
-        loadingCompanies,
-        setSelectedCompanyId,
-        refreshCompanies: fetchCompanies,
+        loadingCompanies: false,
+        setSelectedCompanyId: () => {},
+        refreshCompanies: async () => {},
         refreshCompanyProfile: fetchCompanyProfile,
-        isAdminManagingCompany: isAdmin,
+        isAdminManagingCompany: false,
       }}
     >
       {children}

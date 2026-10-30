@@ -51,20 +51,29 @@ export async function safeFetch<T = Record<string, unknown>>(
 ): Promise<SafeResponse<T>> {
   try {
     let finalOptions = options;
-    if (activeCompanyIdContext) {
-      const headersRecord: Record<string, string> = {};
-      if (options?.headers) {
-        if (options.headers instanceof Headers) {
-          options.headers.forEach((v, k) => { headersRecord[k] = v; });
-        } else if (Array.isArray(options.headers)) {
-          options.headers.forEach(([k, v]) => { headersRecord[k] = v; });
-        } else {
-          Object.assign(headersRecord, options.headers);
-        }
+    const headersRecord: Record<string, string> = {};
+    if (options?.headers) {
+      if (options.headers instanceof Headers) {
+        options.headers.forEach((v, k) => { headersRecord[k] = v; });
+      } else if (Array.isArray(options.headers)) {
+        options.headers.forEach(([k, v]) => { headersRecord[k] = v; });
+      } else {
+        Object.assign(headersRecord, options.headers);
       }
+    }
+    if (activeCompanyIdContext) {
       if (!headersRecord['X-Company-ID'] && !headersRecord['x-company-id']) {
         headersRecord['X-Company-ID'] = String(activeCompanyIdContext);
       }
+    }
+    // Automatically set application/json for stringified JSON payloads if not explicitly set
+    if (options?.body && typeof options.body === 'string' && !headersRecord['Content-Type'] && !headersRecord['content-type']) {
+      const trimmed = options.body.trim();
+      if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+        headersRecord['Content-Type'] = 'application/json';
+      }
+    }
+    if (Object.keys(headersRecord).length > 0) {
       finalOptions = {
         ...options,
         headers: headersRecord,
@@ -129,6 +138,92 @@ export async function safeFetch<T = Record<string, unknown>>(
 export function authHeader(token: string | null): Record<string, string> {
   if (!token) return {};
   return { Authorization: `Bearer ${token}` };
+}
+
+/**
+ * Safely extracts an array/list payload from a SafeResponse.
+ * Unpacks backend envelope { success: true, data: [...] } or direct array [...],
+ * returning fallback [] if not an array.
+ */
+export function extractResponseList<T = any>(res: SafeResponse<any> | null | undefined): T[] {
+  if (!res || !res.ok || !res.data) return [];
+  // Case 1: Backend standard formatResponse envelope { success: true, data: [...] }
+  if (res.data && typeof res.data === 'object' && 'data' in res.data && Array.isArray((res.data as any).data)) {
+    return (res.data as any).data as T[];
+  }
+  // Case 2: Direct array in res.data
+  if (Array.isArray(res.data)) {
+    return res.data as T[];
+  }
+  // Case 3: Paginated backend envelope { success: true, data: { data: [...], pagination: {...} } }
+  if (res.data && typeof res.data === 'object' && 'data' in res.data && (res.data as any).data && typeof (res.data as any).data === 'object') {
+    const inner = (res.data as any).data;
+    if (Array.isArray(inner.data)) return inner.data as T[];
+    if (Array.isArray(inner.companies)) return inner.companies as T[];
+    if (Array.isArray(inner.contracts)) return inner.contracts as T[];
+    if (Array.isArray(inner.requests)) return inner.requests as T[];
+    if (Array.isArray(inner.plans)) return inner.plans as T[];
+    if (Array.isArray(inner.replacements)) return inner.replacements as T[];
+    if (Array.isArray(inner.devices)) return inner.devices as T[];
+  }
+  // Case 4: Named entity collections in res.data
+  if (res.data && typeof res.data === 'object') {
+    const obj = res.data as any;
+    if (Array.isArray(obj.companies)) return obj.companies as T[];
+    if (Array.isArray(obj.contracts)) return obj.contracts as T[];
+    if (Array.isArray(obj.requests)) return obj.requests as T[];
+    if (Array.isArray(obj.plans)) return obj.plans as T[];
+    if (Array.isArray(obj.replacements)) return obj.replacements as T[];
+    if (Array.isArray(obj.devices)) return obj.devices as T[];
+  }
+  return [];
+}
+
+/**
+ * Safely extracts an object payload from a SafeResponse.
+ * Unpacks backend envelope { success: true, data: {...} } or direct object {...}.
+ */
+export function extractResponseData<T = any>(res: SafeResponse<any> | null | undefined, fallback: T): T {
+  if (!res || !res.ok || !res.data) return fallback;
+  if (res.data && typeof res.data === 'object' && 'data' in res.data && (res.data as any).data !== null && (res.data as any).data !== undefined) {
+    return (res.data as any).data as T;
+  }
+  if (typeof res.data === 'object' && res.data !== null) {
+    return res.data as T;
+  }
+  return fallback;
+}
+
+/**
+ * Formats a date value (ISO string, YYYY-MM-DD, or Date object) into a clean, human-readable date.
+ * Example: "2026-10-30" or "2026-10-29T18:30:00.000Z" -> "30 Oct 2026"
+ * Protects against raw ISO strings and timezone shifting on date-only values.
+ */
+export function formatDisplayDate(dateInput: string | Date | null | undefined, fallback: string = 'N/A'): string {
+  if (!dateInput) return fallback;
+  try {
+    let d: Date;
+    if (typeof dateInput === 'string') {
+      const clean = dateInput.trim();
+      if (!clean) return fallback;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+        const [year, month, day] = clean.split('-').map(Number);
+        d = new Date(year, month - 1, day);
+      } else {
+        d = new Date(clean);
+      }
+    } else {
+      d = new Date(dateInput);
+    }
+    if (isNaN(d.getTime())) return String(dateInput);
+    return d.toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric'
+    });
+  } catch {
+    return String(dateInput);
+  }
 }
 
 /**

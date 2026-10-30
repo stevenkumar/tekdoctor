@@ -613,6 +613,168 @@ const createBaseTables = async (connection) => {
       INDEX idx_otps_lookup (user_id, purpose, is_used, expires_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
+  // 23. AMC Plans Table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS amc_plans (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      plan_code VARCHAR(50) UNIQUE NOT NULL,
+      name VARCHAR(150) NOT NULL,
+      description TEXT NULL,
+      base_price DECIMAL(12,2) NOT NULL,
+      duration_months INT NOT NULL DEFAULT 12,
+      default_device_capacity INT NOT NULL DEFAULT 10,
+      coverage_terms JSON NULL,
+      is_active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_plans_active (is_active),
+      INDEX idx_plans_code (plan_code)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  // 24. AMC Requests Table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS amc_requests (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      request_number VARCHAR(50) UNIQUE NOT NULL,
+      company_id INT NOT NULL,
+      plan_id INT NULL,
+      requested_device_count INT NOT NULL DEFAULT 1,
+      notes TEXT NULL,
+      status ENUM('pending', 'under_review', 'offered', 'rejected', 'cancelled') DEFAULT 'pending',
+      admin_notes TEXT NULL,
+      reviewed_by INT NULL,
+      reviewed_at TIMESTAMP NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (company_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (plan_id) REFERENCES amc_plans(id) ON DELETE SET NULL,
+      FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
+      INDEX idx_amc_req_company (company_id),
+      INDEX idx_amc_req_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  // 25. AMC Contracts Table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS amc_contracts (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      contract_number VARCHAR(50) UNIQUE NOT NULL,
+      company_id INT NOT NULL,
+      request_id INT NULL,
+      plan_id INT NULL,
+      contract_type ENUM('standard', 'custom', 'renewal') DEFAULT 'standard',
+      plan_name VARCHAR(150) NOT NULL,
+      device_capacity INT NOT NULL,
+      price DECIMAL(12,2) NOT NULL,
+      discount_amount DECIMAL(12,2) DEFAULT 0.00,
+      tax_amount DECIMAL(12,2) DEFAULT 0.00,
+      total_amount DECIMAL(12,2) NOT NULL,
+      currency VARCHAR(10) DEFAULT 'INR',
+      terms_and_conditions TEXT NULL,
+      offer_valid_until DATE NULL,
+      selection_deadline DATE NULL,
+      start_date DATE NULL,
+      end_date DATE NULL,
+      status ENUM('draft', 'offered', 'accepted', 'rejected', 'active', 'expired', 'cancelled', 'suspended') DEFAULT 'draft',
+      approval_status ENUM('pending_approval', 'approved', 'rejected') DEFAULT 'pending_approval',
+      approved_by INT NULL,
+      approved_at TIMESTAMP NULL,
+      payment_status ENUM('unpaid', 'pending_verification', 'paid', 'failed') DEFAULT 'unpaid',
+      invoice_id VARCHAR(50) NULL,
+      previous_contract_id INT NULL,
+      is_renewal BOOLEAN DEFAULT FALSE,
+      created_by INT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (company_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (request_id) REFERENCES amc_requests(id) ON DELETE SET NULL,
+      FOREIGN KEY (plan_id) REFERENCES amc_plans(id) ON DELETE SET NULL,
+      FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE SET NULL,
+      FOREIGN KEY (previous_contract_id) REFERENCES amc_contracts(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+      INDEX idx_amc_cnt_company (company_id),
+      INDEX idx_amc_cnt_status (status),
+      INDEX idx_amc_cnt_dates (start_date, end_date),
+      INDEX idx_amc_cnt_approval (approval_status),
+      INDEX idx_amc_cnt_payment (payment_status),
+      INDEX idx_amc_cnt_invoice (invoice_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  // 26. AMC Covered Devices Table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS amc_covered_devices (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      contract_id INT NOT NULL,
+      device_id INT NOT NULL,
+      company_id INT NOT NULL,
+      amc_tag VARCHAR(50) NOT NULL,
+      coverage_start_date DATE NOT NULL,
+      coverage_end_date DATE NOT NULL,
+      status ENUM('active', 'decommissioned', 'replaced') DEFAULT 'active',
+      selected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      selected_by INT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (contract_id) REFERENCES amc_contracts(id) ON DELETE CASCADE,
+      FOREIGN KEY (device_id) REFERENCES company_devices(id) ON DELETE RESTRICT,
+      FOREIGN KEY (company_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (selected_by) REFERENCES users(id) ON DELETE SET NULL,
+      UNIQUE KEY uk_contract_device (contract_id, device_id),
+      INDEX idx_cov_dev_id (device_id),
+      INDEX idx_cov_amc_tag (amc_tag),
+      INDEX idx_cov_company (company_id),
+      INDEX idx_cov_status (status),
+      INDEX idx_cov_dates (coverage_start_date, coverage_end_date)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  // 27. AMC Device Replacements Table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS amc_device_replacements (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      replacement_number VARCHAR(50) UNIQUE NOT NULL,
+      contract_id INT NOT NULL,
+      company_id INT NOT NULL,
+      old_device_id INT NOT NULL,
+      new_device_id INT NOT NULL,
+      reason TEXT NOT NULL,
+      status ENUM('pending', 'approved', 'rejected', 'cancelled') DEFAULT 'pending',
+      admin_notes TEXT NULL,
+      reviewed_by INT NULL,
+      reviewed_at TIMESTAMP NULL,
+      effective_date DATE NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (contract_id) REFERENCES amc_contracts(id) ON DELETE CASCADE,
+      FOREIGN KEY (company_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (old_device_id) REFERENCES company_devices(id) ON DELETE RESTRICT,
+      FOREIGN KEY (new_device_id) REFERENCES company_devices(id) ON DELETE RESTRICT,
+      FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
+      INDEX idx_amc_rep_contract (contract_id),
+      INDEX idx_amc_rep_company (company_id),
+      INDEX idx_amc_rep_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  // 28. AMC Contract History (Audit Trail) Table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS amc_contract_history (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      contract_id INT NOT NULL,
+      action VARCHAR(50) NOT NULL,
+      performed_by INT NULL,
+      details JSON NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (contract_id) REFERENCES amc_contracts(id) ON DELETE CASCADE,
+      FOREIGN KEY (performed_by) REFERENCES users(id) ON DELETE SET NULL,
+      INDEX idx_amc_hist_contract (contract_id),
+      INDEX idx_amc_hist_action (action)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
 };
 
 // ─── Default Repair Protocol Homepage Content ────────────────────────────────
@@ -803,6 +965,77 @@ const seedDefaultDataIfEmpty = async (connection) => {
     }
   } catch (idBackfillErr) {
     console.error('[Seed Error] Failed to backfill entity IDs:', idBackfillErr.message);
+  }
+
+  // 5. Seed Default AMC Plans if empty
+  try {
+    const tableExists = await checkTableExists(connection, 'amc_plans');
+    if (tableExists) {
+      const [plansCount] = await connection.query('SELECT COUNT(*) as cnt FROM amc_plans');
+      if (plansCount[0].cnt === 0) {
+        const defaultPlans = [
+          [
+            'AMC-STD-10',
+            'Standard Business Fleet AMC',
+            'Comprehensive diagnostic, scheduled quarterly servicing, and standard hardware maintenance for up to 10 fleet devices.',
+            14999.00,
+            12,
+            10,
+            JSON.stringify({
+              quarterly_audit: true,
+              priority_level: 'Standard',
+              labor_discount_pct: 100,
+              parts_discount_pct: 10,
+              sla_turnaround_hours: 48
+            })
+          ],
+          [
+            'AMC-CORP-25',
+            'Corporate Premium Fleet AMC',
+            'Priority business repairs, free loaner hardware during extended service, and on-site inspection for up to 25 fleet devices.',
+            34999.00,
+            12,
+            25,
+            JSON.stringify({
+              quarterly_audit: true,
+              priority_level: 'High',
+              labor_discount_pct: 100,
+              parts_discount_pct: 15,
+              loaner_device: true,
+              sla_turnaround_hours: 24
+            })
+          ],
+          [
+            'AMC-ENT-50',
+            'Enterprise Dedicated Fleet AMC',
+            'Dedicated lead technician, monthly preventive checks, same-day dispatch, and full lifecycle tracking for up to 50 fleet devices.',
+            64999.00,
+            12,
+            50,
+            JSON.stringify({
+              quarterly_audit: true,
+              priority_level: 'Urgent',
+              labor_discount_pct: 100,
+              parts_discount_pct: 20,
+              loaner_device: true,
+              dedicated_technician: true,
+              sla_turnaround_hours: 12
+            })
+          ]
+        ];
+
+        for (const [code, name, desc, price, dur, cap, terms] of defaultPlans) {
+          await connection.query(
+            `INSERT INTO amc_plans (plan_code, name, description, base_price, duration_months, default_device_capacity, coverage_terms)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [code, name, desc, price, dur, cap, terms]
+          );
+        }
+        console.log('[Seed] Default AMC plans seeded.');
+      }
+    }
+  } catch (amcSeedErr) {
+    console.warn('[Seed Notice] AMC plan seed skipped:', amcSeedErr.message);
   }
 };
 
@@ -1308,6 +1541,178 @@ const MIGRATIONS = [
         // Table may not exist or already updated
       }
       console.log('[Migration:2026_11] Expanded device_category columns to VARCHAR(100).');
+    }
+  },
+  {
+    version: '2026_12_amc_contract_management',
+    name: 'AMC Contract Management, Plans, Coverage & Replacements Foundation',
+    isSatisfied: async (connection) => {
+      const hasPlans = await checkTableExists(connection, 'amc_plans');
+      const hasRequests = await checkTableExists(connection, 'amc_requests');
+      const hasContracts = await checkTableExists(connection, 'amc_contracts');
+      const hasCovered = await checkTableExists(connection, 'amc_covered_devices');
+      const hasReplacements = await checkTableExists(connection, 'amc_device_replacements');
+      const hasHistory = await checkTableExists(connection, 'amc_contract_history');
+      return hasPlans && hasRequests && hasContracts && hasCovered && hasReplacements && hasHistory;
+    },
+    apply: async (connection) => {
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS amc_plans (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          plan_code VARCHAR(50) UNIQUE NOT NULL,
+          name VARCHAR(150) NOT NULL,
+          description TEXT NULL,
+          base_price DECIMAL(12,2) NOT NULL,
+          duration_months INT NOT NULL DEFAULT 12,
+          default_device_capacity INT NOT NULL DEFAULT 10,
+          coverage_terms JSON NULL,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_plans_active (is_active),
+          INDEX idx_plans_code (plan_code)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      `);
+
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS amc_requests (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          request_number VARCHAR(50) UNIQUE NOT NULL,
+          company_id INT NOT NULL,
+          plan_id INT NULL,
+          requested_device_count INT NOT NULL DEFAULT 1,
+          notes TEXT NULL,
+          status ENUM('pending', 'under_review', 'offered', 'rejected', 'cancelled') DEFAULT 'pending',
+          admin_notes TEXT NULL,
+          reviewed_by INT NULL,
+          reviewed_at TIMESTAMP NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (company_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (plan_id) REFERENCES amc_plans(id) ON DELETE SET NULL,
+          FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
+          INDEX idx_amc_req_company (company_id),
+          INDEX idx_amc_req_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      `);
+
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS amc_contracts (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          contract_number VARCHAR(50) UNIQUE NOT NULL,
+          company_id INT NOT NULL,
+          request_id INT NULL,
+          plan_id INT NULL,
+          contract_type ENUM('standard', 'custom', 'renewal') DEFAULT 'standard',
+          plan_name VARCHAR(150) NOT NULL,
+          device_capacity INT NOT NULL,
+          price DECIMAL(12,2) NOT NULL,
+          discount_amount DECIMAL(12,2) DEFAULT 0.00,
+          tax_amount DECIMAL(12,2) DEFAULT 0.00,
+          total_amount DECIMAL(12,2) NOT NULL,
+          currency VARCHAR(10) DEFAULT 'INR',
+          terms_and_conditions TEXT NULL,
+          offer_valid_until DATE NULL,
+          selection_deadline DATE NULL,
+          start_date DATE NULL,
+          end_date DATE NULL,
+          status ENUM('draft', 'offered', 'accepted', 'rejected', 'active', 'expired', 'cancelled', 'suspended') DEFAULT 'draft',
+          approval_status ENUM('pending_approval', 'approved', 'rejected') DEFAULT 'pending_approval',
+          approved_by INT NULL,
+          approved_at TIMESTAMP NULL,
+          payment_status ENUM('unpaid', 'pending_verification', 'paid', 'failed') DEFAULT 'unpaid',
+          invoice_id VARCHAR(50) NULL,
+          previous_contract_id INT NULL,
+          is_renewal BOOLEAN DEFAULT FALSE,
+          created_by INT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (company_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (request_id) REFERENCES amc_requests(id) ON DELETE SET NULL,
+          FOREIGN KEY (plan_id) REFERENCES amc_plans(id) ON DELETE SET NULL,
+          FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL,
+          FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE SET NULL,
+          FOREIGN KEY (previous_contract_id) REFERENCES amc_contracts(id) ON DELETE SET NULL,
+          FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+          INDEX idx_amc_cnt_company (company_id),
+          INDEX idx_amc_cnt_status (status),
+          INDEX idx_amc_cnt_dates (start_date, end_date),
+          INDEX idx_amc_cnt_approval (approval_status),
+          INDEX idx_amc_cnt_payment (payment_status),
+          INDEX idx_amc_cnt_invoice (invoice_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      `);
+
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS amc_covered_devices (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          contract_id INT NOT NULL,
+          device_id INT NOT NULL,
+          company_id INT NOT NULL,
+          amc_tag VARCHAR(50) NOT NULL,
+          coverage_start_date DATE NOT NULL,
+          coverage_end_date DATE NOT NULL,
+          status ENUM('active', 'decommissioned', 'replaced') DEFAULT 'active',
+          selected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          selected_by INT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (contract_id) REFERENCES amc_contracts(id) ON DELETE CASCADE,
+          FOREIGN KEY (device_id) REFERENCES company_devices(id) ON DELETE RESTRICT,
+          FOREIGN KEY (company_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (selected_by) REFERENCES users(id) ON DELETE SET NULL,
+          UNIQUE KEY uk_contract_device (contract_id, device_id),
+          INDEX idx_cov_dev_id (device_id),
+          INDEX idx_cov_amc_tag (amc_tag),
+          INDEX idx_cov_company (company_id),
+          INDEX idx_cov_status (status),
+          INDEX idx_cov_dates (coverage_start_date, coverage_end_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      `);
+
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS amc_device_replacements (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          replacement_number VARCHAR(50) UNIQUE NOT NULL,
+          contract_id INT NOT NULL,
+          company_id INT NOT NULL,
+          old_device_id INT NOT NULL,
+          new_device_id INT NOT NULL,
+          reason TEXT NOT NULL,
+          status ENUM('pending', 'approved', 'rejected', 'cancelled') DEFAULT 'pending',
+          admin_notes TEXT NULL,
+          reviewed_by INT NULL,
+          reviewed_at TIMESTAMP NULL,
+          effective_date DATE NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (contract_id) REFERENCES amc_contracts(id) ON DELETE CASCADE,
+          FOREIGN KEY (company_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (old_device_id) REFERENCES company_devices(id) ON DELETE RESTRICT,
+          FOREIGN KEY (new_device_id) REFERENCES company_devices(id) ON DELETE RESTRICT,
+          FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
+          INDEX idx_amc_rep_contract (contract_id),
+          INDEX idx_amc_rep_company (company_id),
+          INDEX idx_amc_rep_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      `);
+
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS amc_contract_history (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          contract_id INT NOT NULL,
+          action VARCHAR(50) NOT NULL,
+          performed_by INT NULL,
+          details JSON NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (contract_id) REFERENCES amc_contracts(id) ON DELETE CASCADE,
+          FOREIGN KEY (performed_by) REFERENCES users(id) ON DELETE SET NULL,
+          INDEX idx_amc_hist_contract (contract_id),
+          INDEX idx_amc_hist_action (action)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      `);
+
+      console.log('[Migration:2026_12] Created AMC plans, contracts, covered devices, replacements and history tables.');
     }
   }
 ];

@@ -7,6 +7,7 @@ import { ROUTES } from '../config/routes';
  *
  * Rules:
  *  - Not authenticated  → redirect to /auth/signin
+ *  - Authenticated as Admin → redirect to /admin/dashboard (strict isolation)
  *  - Authenticated, not company → redirect to / (home)
  *  - Company → render nested B2B dashboard pages via <Outlet />
  */
@@ -17,7 +18,12 @@ export default function ProtectedCompanyRoute() {
         return <Navigate to={ROUTES.SIGN_IN} replace />;
     }
 
-    if (!hasRole('company') && !hasRole('admin')) {
+    // Strict Isolation: Admin cannot access the company portal
+    if (hasRole('admin')) {
+        return <Navigate to={ROUTES.ADMIN_DASHBOARD} replace />;
+    }
+
+    if (!hasRole('company')) {
         return <Navigate to={ROUTES.HOME} replace />;
     }
 

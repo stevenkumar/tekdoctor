@@ -217,9 +217,10 @@ const generateCompanyId = async (connection) => {
 };
 
 /**
- * Resolves the permanent account ID based on customer or corporate identity:
+ * Resolves the permanent account ID based on customer, corporate identity, or AMC status:
  * - Customer: TD-001, TD-002, TD-170, TD-9103...
- * - Company: CMP-001, CMP-002, CMP-004...
+ * - Company (standard): CMP-001, CMP-002, CMP-004...
+ * - Company (AMC): TD-AMC-C001, TD-AMC-C002...
  *
  * @param {Object} connection - MySQL database connection
  * @param {Object} options - { userId, companyId, isAmc }
@@ -228,9 +229,28 @@ const generateCompanyId = async (connection) => {
 const resolvePermanentAccountId = async (connection, options = {}) => {
   const { userId, companyId, isAmc } = options;
 
+  const formatAmcCompanyId = (canonicalCompId) => {
+    const upper = String(canonicalCompId).trim().toUpperCase();
+    if (upper.startsWith('TD-AMC-C')) {
+      return upper;
+    }
+    if (upper.startsWith('CMP-')) {
+      return `TD-AMC-C${upper.substring(4)}`;
+    }
+    if (upper.startsWith('TD-C')) {
+      return `TD-AMC-C${upper.substring(4)}`;
+    }
+    if (upper.startsWith('C')) {
+      return `TD-AMC-${upper}`;
+    }
+    const padded = String(canonicalCompId).padStart(3, '0');
+    return `TD-AMC-C${padded}`;
+  };
+
   // 1. If an explicit canonical Company ID string was passed (e.g. 'CMP-001')
   if (typeof companyId === 'string' && companyId.trim().toUpperCase().startsWith('CMP-')) {
-    return companyId.trim().toUpperCase();
+    const canonical = companyId.trim().toUpperCase();
+    return isAmc ? formatAmcCompanyId(canonical) : canonical;
   }
 
   // 2. If companyId was passed (could be numeric users.id, company_profiles.id, or company code string)
@@ -241,7 +261,8 @@ const resolvePermanentAccountId = async (connection, options = {}) => {
         [companyId, companyId, String(companyId), String(companyId)]
       );
       if (profiles && profiles.length > 0 && profiles[0].canonical_company_id) {
-        return profiles[0].canonical_company_id;
+        const canonical = profiles[0].canonical_company_id;
+        return isAmc ? formatAmcCompanyId(canonical) : canonical;
       }
     } catch (e) {
       // fallback
@@ -249,12 +270,15 @@ const resolvePermanentAccountId = async (connection, options = {}) => {
 
     // Preserve explicit legacy test formats if specifically provided as string
     if (typeof companyId === 'string' && (companyId.startsWith('TD-C') || companyId.startsWith('TD-AMC-C'))) {
+      if (isAmc && companyId.startsWith('TD-C')) {
+        return formatAmcCompanyId(companyId);
+      }
       return companyId;
     }
 
     // Default canonical format for unpersisted company IDs
     const paddedCompId = String(companyId).padStart(3, '0');
-    return `CMP-${paddedCompId}`;
+    return isAmc ? `TD-AMC-C${paddedCompId}` : `CMP-${paddedCompId}`;
   }
 
   // 3. If userId was passed
@@ -266,31 +290,31 @@ const resolvePermanentAccountId = async (connection, options = {}) => {
       );
       if (users && users.length > 0) {
         if (users[0].role === 'company') {
-          if (users[0].canonical_company_id) {
-            return users[0].canonical_company_id;
-          }
-          return `CMP-${String(users[0].id).padStart(3, '0')}`;
+          const canonical = users[0].canonical_company_id || `CMP-${String(users[0].id).padStart(3, '0')}`;
+          return isAmc ? formatAmcCompanyId(canonical) : canonical;
         }
         // Customer
+        if (isAmc) {
+          return formatAmcCompanyId(users[0].id);
+        }
         return `TD-${String(users[0].id).padStart(3, '0')}`;
       }
     } catch (e) {
       // ignore
     }
     const paddedUserId = String(userId).padStart(3, '0');
-    return `TD-${paddedUserId}`;
+    return isAmc ? `TD-AMC-C${paddedUserId}` : `TD-${paddedUserId}`;
   }
 
-  return 'TD-001';
+  return isAmc ? 'TD-AMC-C001' : 'TD-001';
 };
 
 /**
  * Generates the authoritative per-customer / per-company sequential ticket ID:
  * Format:
- * - Company: PERMANENT_COMPANY_ID + "-" + 3-digit company-specific ticket serial
- *   Examples: CMP-001-001, CMP-001-002, CMP-002-001, CMP-003-001...
- * - Customer: PERMANENT_ACCOUNT_ID + "-" + 2-digit customer-specific ticket serial
- *   Examples: TD-001-01, TD-001-02, TD-170-01...
+ * - AMC Company: TD-AMC-C001-01, TD-AMC-C001-02, TD-AMC-C002-01... (2-digit serial)
+ * - Standard Company: CMP-001-001, CMP-001-002, CMP-002-001... (3-digit serial)
+ * - Customer: TD-001-01, TD-001-02, TD-170-01... (2-digit serial)
  *
  * Concurrency & Idempotency:
  * - MySQL atomic increment on app_sequences using sequence_name = 'tkt:' + permanentAccountId
@@ -305,7 +329,9 @@ const generateTicketNumber = async (connection, optionsOrType = {}) => {
 
   if (typeof optionsOrType === 'string') {
     // Legacy fallback for string type ('Individual', 'Company', 'AMC')
-    if (optionsOrType === 'AMC' || optionsOrType === 'Company') {
+    if (optionsOrType === 'AMC') {
+      permanentAccountId = 'TD-AMC-C001';
+    } else if (optionsOrType === 'Company') {
       permanentAccountId = 'CMP-001';
     } else {
       permanentAccountId = 'TD-001';
@@ -318,8 +344,8 @@ const generateTicketNumber = async (connection, optionsOrType = {}) => {
     permanentAccountId = 'TD-001';
   }
 
-  const isCompany = permanentAccountId.toUpperCase().startsWith('CMP-');
-  const seqPadding = isCompany ? 3 : 2;
+  const isCompanyNonAmc = permanentAccountId.toUpperCase().startsWith('CMP-');
+  const seqPadding = isCompanyNonAmc ? 3 : 2;
   const seqName = `tkt:${permanentAccountId}`;
 
   try {
@@ -353,7 +379,7 @@ const generateTicketNumber = async (connection, optionsOrType = {}) => {
     return candidate;
   } catch (error) {
     console.error('Error in generateTicketNumber:', error.message);
-    return `${permanentAccountId}-${uuidv4().substring(0, isCompany ? 3 : 4).toUpperCase()}`;
+    return `${permanentAccountId}-${uuidv4().substring(0, isCompanyNonAmc ? 3 : 4).toUpperCase()}`;
   }
 };
 

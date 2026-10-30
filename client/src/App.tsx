@@ -53,6 +53,7 @@ const EmailSettings = lazy(() => import('./pages/admin/EmailSettings'));
 const ReportsAnalytics = lazy(() => import('./pages/admin/ReportsAnalytics'));
 const ActivityLogs = lazy(() => import('./pages/admin/ActivityLogs'));
 const AdminProfile = lazy(() => import('./pages/admin/AdminProfile'));
+const AdminAmcManagement = lazy(() => import('./pages/admin/AdminAmcManagement'));
 
 // Technician Page (Lazy Loaded)
 const TechnicianDashboard = lazy(() => import('./pages/technician/TechnicianDashboard'));
@@ -67,6 +68,7 @@ const CompanyProfile = lazy(() => import('./pages/company/CompanyProfile'));
 const CompanyMessages = lazy(() => import('./pages/company/CompanyMessages'));
 const CompanyActivityLogs = lazy(() => import('./pages/company/CompanyActivityLogs'));
 const CompanyBilling = lazy(() => import('./pages/company/CompanyBilling'));
+const CompanyAmcManagement = lazy(() => import('./pages/company/CompanyAmcManagement'));
 
 import { ROUTES } from './config/routes';
 import { Skeleton } from './components/Skeleton';
@@ -109,6 +111,7 @@ function App() {
                   <Route path={ROUTES.ADMIN_TECHNICIANS} element={<TechnicianManagement />} />
                   <Route path={ROUTES.ADMIN_CUSTOMERS} element={<CustomerManagement />} />
                   <Route path={ROUTES.ADMIN_COMPANIES} element={<CompanyManagementDashboard />} />
+                  <Route path={ROUTES.ADMIN_AMC} element={<AdminAmcManagement />} />
                   <Route path={ROUTES.ADMIN_NOTIFICATIONS} element={<NotificationCenter />} />
                   <Route path={ROUTES.ADMIN_CONTACTS} element={<ContactMessages />} />
                   <Route path={ROUTES.ADMIN_WEBSITE_SETTINGS} element={<WebsiteSettings />} />
@@ -149,6 +152,7 @@ function App() {
                   <Route path={ROUTES.COMPANY_EMPLOYEES} element={<CompanyEmployees />} />
                   <Route path={ROUTES.COMPANY_DEVICES} element={<CompanyDevices />} />
                   <Route path={ROUTES.COMPANY_REPAIRS} element={<CompanyRepairs />} />
+                  <Route path={ROUTES.COMPANY_AMC} element={<CompanyAmcManagement />} />
                   <Route path={ROUTES.COMPANY_PROFILE} element={<CompanyProfile />} />
                   <Route path={ROUTES.COMPANY_MESSAGES} element={<CompanyMessages />} />
                   <Route path={ROUTES.COMPANY_BILLING} element={<CompanyBilling />} />

@@ -20,7 +20,7 @@ const { generateTicketNumber, resolvePermanentAccountId, generateCompanyId } = r
 const jwt = require('jsonwebtoken');
 const config = require('../config/app.config');
 
-const API_BASE = 'http://localhost:5000/api';
+const API_BASE = process.env.API_BASE || 'http://127.0.0.1:5000/api';
 
 let testsPassed = 0;
 let testsFailed = 0;
@@ -351,11 +351,12 @@ async function runAuditRegressionSuite() {
     );
 
     const amcResolvedId = await resolvePermanentAccountId(connection, { companyId: amcUserId, isAmc: true });
-    assert(amcResolvedId === amcCompCode, `AMC Company resolves canonical permanent ID: ${amcCompCode} (got ${amcResolvedId})`);
+    const expectedAmcPrefix = `TD-AMC-${amcCompCode.replace(/^CMP-/, 'C')}`;
+    assert(amcResolvedId === expectedAmcPrefix, `AMC Company resolves canonical permanent ID: ${expectedAmcPrefix} (got ${amcResolvedId})`);
 
     const amcTicket1 = await generateTicketNumber(connection, { companyId: amcUserId, isAmc: true });
-    assert(amcTicket1 === `${amcCompCode}-001`, `AMC Company ticket uses canonical prefix with 3-digit suffix: ${amcTicket1}`);
-    createdSeqNames.push(`tkt:${amcCompCode}`);
+    assert(amcTicket1 === `${expectedAmcPrefix}-01`, `AMC Company ticket uses canonical prefix with 2-digit suffix: ${amcTicket1}`);
+    createdSeqNames.push(`tkt:${expectedAmcPrefix}`);
 
     // -------------------------------------------------------------------------
     // 10. Unauthorized users being unable to access another company's tickets or device history

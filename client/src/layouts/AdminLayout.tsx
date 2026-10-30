@@ -10,7 +10,7 @@ import {
     LayoutDashboard, Wrench, Users, UserCog, Bell, MessageSquare,
     Settings, Globe, Mail, BarChart3, ScrollText, UserCircle,
     LogOut, ChevronLeft, ChevronRight, Menu, X, ChevronDown, Star, Building2,
-    ArrowUpRight, Trash2, ArrowRightLeft, ClipboardList, Cpu, Receipt
+    ArrowUpRight, Trash2, ArrowRightLeft, ClipboardList, Cpu, Receipt, ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -39,6 +39,7 @@ const navItems: NavItem[] = [
     { label: 'Technicians', icon: UserCog, path: ROUTES.ADMIN_TECHNICIANS },
     { label: 'Customers', icon: Users, path: `${ROUTES.ADMIN_CUSTOMERS}?type=individual` },
     { label: 'Companies', icon: Building2, path: ROUTES.ADMIN_COMPANIES },
+    { label: 'AMC Management', icon: ShieldCheck, path: ROUTES.ADMIN_AMC },
     { label: 'Billing / Invoices', icon: Receipt, path: ROUTES.BILLING },
     { label: 'Notifications', icon: Bell, path: ROUTES.ADMIN_NOTIFICATIONS },
     { label: 'Contact Messages', icon: MessageSquare, path: ROUTES.ADMIN_CONTACTS },
