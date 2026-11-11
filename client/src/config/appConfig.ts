@@ -7,10 +7,11 @@
  * changes here to reach the live site.
  */
 
-/** Strips any trailing slashes so `${apiUrl}/api/...` can never double up. */
+/** Strips any trailing slashes so `${url}/...` can never double up. */
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
 
 const rawApiUrl = (import.meta.env.VITE_API_URL || '').trim();
+const rawFrontendUrl = (import.meta.env.VITE_FRONTEND_URL || import.meta.env.VITE_PUBLIC_URL || '').trim();
 
 export const appConfig = {
   env: (import.meta.env.VITE_APP_ENV || 'development') as 'development' | 'production',
@@ -19,6 +20,11 @@ export const appConfig = {
    * Empty means "same origin", which is what local dev uses via the Vite proxy.
    */
   apiUrl: trimTrailingSlash(rawApiUrl),
+  /**
+   * Dedicated public frontend base URL used for public verification URLs and QR codes.
+   * In production, this must explicitly point to the live frontend domain (e.g. "https://thetekdoctor.com").
+   */
+  frontendUrl: trimTrailingSlash(rawFrontendUrl),
   appName: 'The Tek Doctor',
   googleClientId: (import.meta.env.VITE_GOOGLE_CLIENT_ID || '').trim(),
   recaptchaSiteKey: (import.meta.env.VITE_RECAPTCHA_SITE_KEY || '').trim(),

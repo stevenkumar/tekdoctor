@@ -10,6 +10,7 @@ import {
 import { toast } from 'react-hot-toast';
 import { SkeletonTable } from '@/components/Skeleton';
 import { ConfirmModal } from '@/components/ConfirmModal';
+import { downloadAmcCertificatePdf, printAmcCertificate } from '@/utils/amcCertificateGenerator';
 
 interface AmcOverview {
   totalRequests: number;
@@ -63,6 +64,10 @@ interface AmcContract {
   plan_name: string;
   device_capacity: number;
   active_covered_count?: number;
+  rejection_reason?: string | null;
+  rejection_source?: string | null;
+  rejected_at?: string | null;
+  rejected_by_name?: string | null;
   price: string | number;
   discount_amount: string | number;
   tax_amount: string | number;
@@ -115,9 +120,30 @@ interface CompanyOption {
   is_active?: number | boolean;
 }
 
+interface AmcReminderRecord {
+  id: number;
+  contract_id: number;
+  contract_number: string;
+  plan_name: string;
+  company_id: number;
+  company_name: string;
+  canonical_company_id?: string;
+  milestone_days: number;
+  expiry_date: string;
+  delivery_channel: string;
+  delivery_status: 'pending' | 'processing' | 'success' | 'failed' | 'partial' | string;
+  in_app_status?: string;
+  email_status?: string;
+  retry_count?: number;
+  next_retry_at?: string | null;
+  last_attempted_at?: string | null;
+  error_message?: string | null;
+  sent_at?: string | null;
+}
+
 export default function AdminAmcManagement() {
   const { token } = useAuth();
-  const [activeTab, setActiveTab] = useState<'overview' | 'contracts' | 'requests' | 'plans' | 'replacements'>('contracts');
+  const [activeTab, setActiveTab] = useState<'overview' | 'contracts' | 'requests' | 'plans' | 'replacements' | 'reminders'>('contracts');
 
   // Overview stats
   const [overview, setOverview] = useState<AmcOverview | null>(null);
@@ -146,6 +172,34 @@ export default function AdminAmcManagement() {
   const [replacements, setReplacements] = useState<AmcReplacement[]>([]);
   const [loadingReplacements, setLoadingReplacements] = useState(false);
   const [replacementStatusFilter, setReplacementStatusFilter] = useState('');
+
+  // Reminders (Phase 3 & Hardening)
+  const [reminders, setReminders] = useState<AmcReminderRecord[]>([]);
+  const [loadingReminders, setLoadingReminders] = useState(false);
+  const [remindersStatusFilter, setRemindersStatusFilter] = useState('');
+  const [retryingReminderId, setRetryingReminderId] = useState<number | null>(null);
+  const [isSweepingExpiries, setIsSweepingExpiries] = useState(false);
+  const [isSweepingReminders, setIsSweepingReminders] = useState(false);
+
+  // Certificate Download State (Phase 3)
+  const [isDownloadingCert, setIsDownloadingCert] = useState<number | null>(null);
+
+  // Renewal Offer Modal (Phase 3)
+  const [showRenewalModal, setShowRenewalModal] = useState(false);
+  const [renewalTargetContract, setRenewalTargetContract] = useState<AmcContract | null>(null);
+  const [renewalForm, setRenewalForm] = useState({
+    deviceCapacity: '10',
+    price: '',
+    discountAmount: '0',
+    taxAmount: '0',
+    totalAmount: '',
+    startDate: new Date().toISOString().slice(0, 10),
+    endDate: new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10),
+    selectionDeadline: new Date().toISOString().slice(0, 10),
+    offerValidUntil: new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
+    termsAndConditions: ''
+  });
+  const [isSubmittingRenewalOffer, setIsSubmittingRenewalOffer] = useState(false);
 
   // Companies for creation dropdown
   const [companiesList, setCompaniesList] = useState<CompanyOption[]>([]);
@@ -346,6 +400,204 @@ export default function AdminAmcManagement() {
     }
   };
 
+  // Load Reminders History (Phase 3 & Hardening)
+  const fetchReminders = async (statusOverride?: string) => {
+    if (!token) return;
+    setLoadingReminders(true);
+    try {
+      const activeStatus = statusOverride !== undefined ? statusOverride : remindersStatusFilter;
+      const res = await amcApi.getAdminReminders(token, {
+        status: activeStatus || undefined
+      });
+      if (res.ok) {
+        setReminders(extractResponseList<AmcReminderRecord>(res));
+      } else {
+        setReminders([]);
+      }
+    } catch (err) {
+      console.error(err);
+      setReminders([]);
+    } finally {
+      setLoadingReminders(false);
+    }
+  };
+
+  // Manual Retry for a Failed / Partial Reminder (Fix 2)
+  const handleRetryReminder = async (reminderId: number) => {
+    if (!token || retryingReminderId) return;
+    setRetryingReminderId(reminderId);
+    try {
+      const res = await amcApi.retryAdminReminder(token, reminderId);
+      if (res.ok) {
+        toast.success(res.data?.message || 'Reminder re-dispatched successfully.');
+        fetchReminders();
+      } else {
+        toast.error(res.error || 'Failed to retry reminder.');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Error retrying reminder.');
+    } finally {
+      setRetryingReminderId(null);
+    }
+  };
+
+  // Manual Expiries Sweep (Phase 3)
+  const handleTriggerExpiriesSweep = async () => {
+    if (!token) return;
+    setIsSweepingExpiries(true);
+    try {
+      const res = await amcApi.triggerExpiriesSweep(token);
+      if (res.ok && res.data) {
+        const data = extractResponseData<any>(res, {});
+        toast.success(`Expiry sweep completed: ${data.expiredContractsCount || 0} contracts transitioned to expired.`);
+        fetchOverview();
+        fetchContracts();
+      } else {
+        toast.error(res.error || 'Failed to trigger expiry sweep.');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Error sweeping expiries.');
+    } finally {
+      setIsSweepingExpiries(false);
+    }
+  };
+
+  // Manual Reminders Sweep (Phase 3)
+  const handleTriggerRemindersSweep = async () => {
+    if (!token) return;
+    setIsSweepingReminders(true);
+    try {
+      const res = await amcApi.triggerRemindersSweep(token);
+      if (res.ok && res.data) {
+        const data = extractResponseData<any>(res, {});
+        toast.success(`Reminder sweep completed: ${data.remindersSent || 0} expiry reminder(s) dispatched.`);
+        fetchReminders();
+      } else {
+        toast.error(res.error || 'Failed to trigger reminder sweep.');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Error sweeping reminders.');
+    } finally {
+      setIsSweepingReminders(false);
+    }
+  };
+
+  // Download AMC Certificate (Phase 3)
+  const handleDownloadCertificate = async (contract: AmcContract) => {
+    if (!token) return;
+    setIsDownloadingCert(contract.id);
+    try {
+      const res = await amcApi.getCertificate(token, contract.id);
+      if (res.ok && res.data) {
+        const certData = extractResponseData<any>(res, null);
+        if (certData) {
+          await downloadAmcCertificatePdf(certData);
+          toast.success('Official AMC Compliance Certificate downloaded!');
+        }
+      } else {
+        toast.error(res.error || 'Failed to download certificate.');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Certificate generation failed.');
+    } finally {
+      setIsDownloadingCert(null);
+    }
+  };
+
+  // Print AMC Certificate (Phase 3)
+  const handlePrintCertificate = async (contract: AmcContract) => {
+    if (!token) return;
+    setIsDownloadingCert(contract.id);
+    try {
+      const res = await amcApi.getCertificate(token, contract.id);
+      if (res.ok && res.data) {
+        const certData = extractResponseData<any>(res, null);
+        if (certData) {
+          await printAmcCertificate(certData);
+        }
+      } else {
+        toast.error(res.error || 'Failed to prepare certificate for printing.');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Certificate printing failed.');
+    } finally {
+      setIsDownloadingCert(null);
+    }
+  };
+
+  // Open Renewal Modal (Phase 3)
+  const handleOpenRenewalModal = (contract: AmcContract) => {
+    setRenewalTargetContract(contract);
+    const today = new Date().toISOString().split('T')[0];
+    const prevEnd = contract.end_date ? contract.end_date.slice(0, 10) : today;
+    const isExpired = prevEnd < today;
+
+    let defaultStart = today;
+    if (!isExpired) {
+      const d = new Date(prevEnd + 'T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() + 1);
+      defaultStart = d.toISOString().split('T')[0];
+    }
+
+    const endD = new Date(defaultStart + 'T00:00:00Z');
+    endD.setUTCDate(endD.getUTCDate() + 365);
+    const defaultEnd = endD.toISOString().split('T')[0];
+
+    const priceNum = parseFloat(String(contract.price || contract.total_amount)) || 14999;
+    const taxNum = Math.round(priceNum * 0.18);
+    const totalNum = priceNum + taxNum;
+
+    setRenewalForm({
+      deviceCapacity: String(contract.device_capacity),
+      price: String(priceNum),
+      discountAmount: '0',
+      taxAmount: String(taxNum),
+      totalAmount: String(totalNum),
+      startDate: defaultStart,
+      endDate: defaultEnd,
+      selectionDeadline: defaultStart,
+      offerValidUntil: new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
+      termsAndConditions: contract.terms_and_conditions || 'Comprehensive hardware maintenance & priority on-site support included.'
+    });
+    setShowRenewalModal(true);
+  };
+
+  // Submit Renewal Offer (Phase 3)
+  const handleSubmitRenewalOffer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token || !renewalTargetContract) return;
+
+    setIsSubmittingRenewalOffer(true);
+    try {
+      const res = await amcApi.createRenewalContract(token, renewalTargetContract.id, {
+        planName: renewalTargetContract.plan_name,
+        deviceCapacity: parseInt(renewalForm.deviceCapacity, 10),
+        price: parseFloat(renewalForm.price),
+        discountAmount: parseFloat(renewalForm.discountAmount || '0'),
+        taxAmount: parseFloat(renewalForm.taxAmount || '0'),
+        totalAmount: parseFloat(renewalForm.totalAmount),
+        startDate: renewalForm.startDate,
+        endDate: renewalForm.endDate,
+        selectionDeadline: renewalForm.selectionDeadline,
+        offerValidUntil: renewalForm.offerValidUntil,
+        termsAndConditions: renewalForm.termsAndConditions
+      });
+
+      if (res.ok) {
+        toast.success('AMC Renewal Offer issued successfully to company!');
+        setShowRenewalModal(false);
+        fetchContracts();
+        fetchOverview();
+      } else {
+        toast.error(res.error || 'Failed to create renewal offer.');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Error submitting renewal offer.');
+    } finally {
+      setIsSubmittingRenewalOffer(false);
+    }
+  };
+
   // Filtered collections with guaranteed array fallbacks
   const filteredContracts = useMemo(() => {
     if (!Array.isArray(contracts)) return [];
@@ -378,6 +630,7 @@ export default function AdminAmcManagement() {
     fetchPlans();
     fetchReplacements();
     fetchCompanies();
+    fetchReminders();
   }, [token]);
 
   // Open Contract Details Drawer
@@ -658,6 +911,7 @@ export default function AdminAmcManagement() {
               fetchPlans();
               fetchReplacements();
               fetchCompanies();
+    fetchReminders();
             }}
             className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-700 transition"
           >
@@ -668,6 +922,7 @@ export default function AdminAmcManagement() {
             onClick={() => {
               if (companiesList.length === 0) {
                 fetchCompanies();
+    fetchReminders();
               }
               setContractForm({
                 companyId: '',
@@ -777,6 +1032,19 @@ export default function AdminAmcManagement() {
           >
             Device Replacements ({Array.isArray(replacements) ? replacements.length : 0})
           </button>
+          <button
+            onClick={() => {
+              setActiveTab('reminders');
+              fetchReminders();
+            }}
+            className={`py-3 text-sm font-medium border-b-2 transition ${
+              activeTab === 'reminders'
+                ? 'border-indigo-500 text-indigo-400'
+                : 'border-transparent text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            Expiry Reminders ({Array.isArray(reminders) ? reminders.length : 0})
+          </button>
         </nav>
       </div>
 
@@ -871,14 +1139,20 @@ export default function AdminAmcManagement() {
                           </td>
                           <td className="px-4 py-3">
                             {getStatusBadge(c.status)}
+                            {c.status === 'rejected' && c.rejection_reason && (
+                              <div className="text-[11px] text-rose-400 mt-1 max-w-xs flex items-start gap-1" title={c.rejection_reason}>
+                                <span className="font-semibold text-rose-400 shrink-0">Reason:</span>
+                                <span className="truncate italic">"{c.rejection_reason}"</span>
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3">
-                            {c.approval_status === 'approved' ? (
+                            {c.status === 'rejected' || c.approval_status === 'rejected' ? (
+                              <span className="text-xs text-rose-400 font-medium">Rejected</span>
+                            ) : c.approval_status === 'approved' ? (
                               <span className="text-xs text-emerald-400 flex items-center gap-1">
                                 <Check className="h-3 w-3" /> Approved
                               </span>
-                            ) : c.approval_status === 'rejected' ? (
-                              <span className="text-xs text-red-400">Rejected</span>
                             ) : (
                               <span className="text-xs text-amber-400 flex items-center gap-1">
                                 <Clock className="h-3 w-3" /> Pending
@@ -895,12 +1169,24 @@ export default function AdminAmcManagement() {
                             )}
                           </td>
                           <td className="px-4 py-3 text-right">
-                            <button
-                              onClick={() => handleOpenContractDetails(c)}
-                              className="px-2.5 py-1 text-xs font-medium rounded bg-zinc-800 text-zinc-200 hover:bg-zinc-700 transition"
-                            >
-                              Manage
-                            </button>
+                            <div className="flex items-center justify-end gap-1.5">
+                              {(c.status === 'active' || c.status === 'expired') && (
+                                <button
+                                  onClick={() => handleOpenRenewalModal(c)}
+                                  className="px-2 py-1 text-xs font-medium rounded bg-cyan-950 text-cyan-300 border border-cyan-800/60 hover:bg-cyan-900 transition flex items-center gap-1"
+                                  title="Create renewal offer for this contract"
+                                >
+                                  <RefreshCw className="h-3 w-3" />
+                                  Renew
+                                </button>
+                              )}
+                              <button
+                                onClick={() => handleOpenContractDetails(c)}
+                                className="px-2.5 py-1 text-xs font-medium rounded bg-zinc-800 text-zinc-200 hover:bg-zinc-700 transition"
+                              >
+                                Manage
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -988,6 +1274,12 @@ export default function AdminAmcManagement() {
                           </td>
                           <td className="px-4 py-3">
                             {getStatusBadge(r.status)}
+                            {r.status === 'rejected' && r.admin_notes && (
+                              <div className="text-[11px] text-rose-400 mt-1 max-w-xs flex items-start gap-1" title={r.admin_notes}>
+                                <span className="font-semibold text-rose-400 shrink-0">Admin Note:</span>
+                                <span className="truncate italic">"{r.admin_notes}"</span>
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3 text-xs text-zinc-500">
                             {new Date(r.created_at).toLocaleDateString()}
@@ -1010,6 +1302,7 @@ export default function AdminAmcManagement() {
                               onClick={() => {
                                 if (companiesList.length === 0) {
                                   fetchCompanies();
+    fetchReminders();
                                 }
                                 setContractForm({
                                   companyId: String(r.company_id),
@@ -1242,6 +1535,188 @@ export default function AdminAmcManagement() {
         </div>
       )}
 
+      {/* ── Tab 5: Expiry Reminders (Phase 3 & Hardening) ── */}
+      {activeTab === 'reminders' && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row gap-3 items-center justify-between bg-zinc-900/60 p-4 rounded-xl border border-zinc-800">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Clock className="w-4 h-4 text-indigo-400" />
+                Automated Expiry Reminders & Lifecycle Controls
+              </h3>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                Audit delivery log of automated AMC milestone alerts and manual maintenance sweeps.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1.5 bg-zinc-800/80 px-2.5 py-1.5 rounded-lg border border-zinc-700">
+                <Filter className="w-3.5 h-3.5 text-zinc-400" />
+                <select
+                  value={remindersStatusFilter}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setRemindersStatusFilter(val);
+                    fetchReminders(val);
+                  }}
+                  className="bg-transparent text-xs text-zinc-200 focus:outline-none cursor-pointer"
+                >
+                  <option value="" className="bg-zinc-900 text-zinc-200">All Delivery Statuses</option>
+                  <option value="failed" className="bg-zinc-900 text-red-400">Failed Deliveries</option>
+                  <option value="partial" className="bg-zinc-900 text-amber-400">Partial Deliveries</option>
+                  <option value="success" className="bg-zinc-900 text-emerald-400">Delivered Successfully</option>
+                  <option value="pending" className="bg-zinc-900 text-zinc-400">Pending Outbox</option>
+                  <option value="processing" className="bg-zinc-900 text-blue-400">Processing</option>
+                </select>
+              </div>
+
+              <button
+                onClick={handleTriggerExpiriesSweep}
+                disabled={isSweepingExpiries}
+                className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 flex items-center gap-1.5 transition disabled:opacity-50"
+                title="Runs an immediate sweep of contracts past their end date"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSweepingExpiries ? 'animate-spin text-indigo-400' : ''}`} />
+                Sweep Expiries
+              </button>
+              <button
+                onClick={handleTriggerRemindersSweep}
+                disabled={isSweepingReminders}
+                className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/20 flex items-center gap-1.5 transition disabled:opacity-50"
+                title="Runs an immediate sweep of milestones and sends reminder notifications"
+              >
+                <Clock className={`w-3.5 h-3.5 ${isSweepingReminders ? 'animate-spin' : ''}`} />
+                Dispatch Milestones
+              </button>
+            </div>
+          </div>
+
+          {loadingReminders ? (
+            <SkeletonTable rows={5} columns={8} />
+          ) : !Array.isArray(reminders) || reminders.length === 0 ? (
+            <div className="text-center py-12 bg-zinc-900/40 border border-zinc-800/80 rounded-xl">
+              <Clock className="h-10 w-10 text-zinc-600 mx-auto mb-3" />
+              <p className="text-zinc-300 font-medium">No AMC reminders matching filter</p>
+              <p className="text-xs text-zinc-500 mt-1">
+                Automated background jobs dispatch reminders at 30, 15, 7, and 1 days prior to contract expiration.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-zinc-900/40 border border-zinc-800/80 rounded-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm text-zinc-300">
+                  <thead className="bg-zinc-900/80 text-xs text-zinc-400 uppercase tracking-wider border-b border-zinc-800">
+                    <tr>
+                      <th className="px-4 py-3">Contract #</th>
+                      <th className="px-4 py-3">Company</th>
+                      <th className="px-4 py-3">Milestone Notice</th>
+                      <th className="px-4 py-3">Expiry Date</th>
+                      <th className="px-4 py-3">Channels</th>
+                      <th className="px-4 py-3">Delivery Status</th>
+                      <th className="px-4 py-3">Attempts & Backoff</th>
+                      <th className="px-4 py-3">Dispatched At</th>
+                      <th className="px-4 py-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-800/60 font-sans">
+                    {reminders.map((rem) => (
+                      <tr key={rem.id} className="hover:bg-zinc-800/30 transition">
+                        <td className="px-4 py-3 font-mono text-xs text-indigo-400 font-medium">
+                          {rem.contract_number}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-white">{rem.company_name}</div>
+                          {rem.canonical_company_id && (
+                            <div className="text-[11px] font-mono text-zinc-500">{rem.canonical_company_id}</div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                            {rem.milestone_days > 0 ? `${rem.milestone_days} Days Notice` : 'Selection Alert'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs text-zinc-300">
+                          {formatDisplayDate(rem.expiry_date)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-col gap-0.5 text-[11px]">
+                            <span className={rem.in_app_status === 'success' ? 'text-emerald-400' : (rem.in_app_status === 'failed' ? 'text-red-400' : 'text-zinc-500')}>
+                              • In-App: {rem.in_app_status || 'pending'}
+                            </span>
+                            <span className={rem.email_status === 'success' ? 'text-emerald-400' : (rem.email_status === 'failed' ? 'text-red-400' : 'text-zinc-500')}>
+                              • Email: {rem.email_status || 'pending'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          {rem.delivery_status === 'success' && (
+                            <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 w-fit">
+                              <Check className="h-3 w-3" /> Delivered
+                            </span>
+                          )}
+                          {rem.delivery_status === 'partial' && (
+                            <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center gap-1 w-fit">
+                              <AlertTriangle className="h-3 w-3" /> Partial
+                            </span>
+                          )}
+                          {rem.delivery_status === 'failed' && (
+                            <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-red-500/10 text-red-400 border border-red-500/30 flex items-center gap-1 w-fit">
+                              <AlertCircle className="h-3 w-3" /> Failed
+                            </span>
+                          )}
+                          {rem.delivery_status === 'processing' && (
+                            <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/30 flex items-center gap-1 w-fit">
+                              <RefreshCw className="h-3 w-3 animate-spin" /> Processing
+                            </span>
+                          )}
+                          {rem.delivery_status === 'pending' && (
+                            <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-zinc-700/20 text-zinc-400 border border-zinc-700/40 flex items-center gap-1 w-fit">
+                              <Clock className="h-3 w-3" /> Queued
+                            </span>
+                          )}
+                          {rem.error_message && (
+                            <div className="text-[10px] text-red-400/90 mt-1 max-w-[180px] truncate font-mono" title={rem.error_message}>
+                              {rem.error_message}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs">
+                          <span className={Number(rem.retry_count) >= 5 ? 'text-red-400 font-bold' : 'text-zinc-300'}>
+                            {rem.retry_count || 0}/5
+                          </span>
+                          {rem.next_retry_at && ['failed', 'partial'].includes(rem.delivery_status) && (
+                            <div className="text-[10px] text-amber-400 font-sans mt-0.5">
+                              Next: {new Date(rem.next_retry_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs text-zinc-400">
+                          {rem.sent_at ? new Date(rem.sent_at).toLocaleString() : '—'}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          {['failed', 'partial'].includes(rem.delivery_status) ? (
+                            <button
+                              onClick={() => handleRetryReminder(rem.id)}
+                              disabled={retryingReminderId === rem.id}
+                              className="px-2.5 py-1 text-xs font-semibold rounded bg-amber-600/20 text-amber-300 border border-amber-500/40 hover:bg-amber-600/30 transition disabled:opacity-50 inline-flex items-center gap-1"
+                              title="Immediately retry unfulfilled channels for this reminder"
+                            >
+                              <RefreshCw className={`w-3 h-3 ${retryingReminderId === rem.id ? 'animate-spin' : ''}`} />
+                              {retryingReminderId === rem.id ? 'Retrying...' : 'Retry'}
+                            </button>
+                          ) : (
+                            <span className="text-xs text-zinc-600">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Contract Detail Drawer ── */}
       {contractDrawerOpen && selectedContract && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex justify-end">
@@ -1304,24 +1779,58 @@ export default function AdminAmcManagement() {
                   <div className="flex justify-between text-xs">
                     <span className="text-zinc-400">Device Quota Capacity:</span>
                     <span className="font-mono font-bold text-white">
-                      {selectedContract.coveredDevices?.length || 0} / {selectedContract.device_capacity} Slots Covered
+                      {(selectedContract.active_covered_count ?? (Array.isArray(selectedContract.coveredDevices) ? selectedContract.coveredDevices.filter((cd: any) => cd.status === 'active').length : 0))} / {selectedContract.device_capacity} Slots Covered
                     </span>
                   </div>
                   <div className="w-full bg-zinc-800 rounded-full h-2">
                     <div
                       className="bg-indigo-500 h-2 rounded-full transition-all"
                       style={{
-                        width: `${Math.min(100, (((selectedContract.coveredDevices?.length || 0) / (selectedContract.device_capacity || 1)) * 100))}%`
+                        width: `${Math.min(100, ((((selectedContract.active_covered_count ?? (Array.isArray(selectedContract.coveredDevices) ? selectedContract.coveredDevices.filter((cd: any) => cd.status === 'active').length : 0))) / (selectedContract.device_capacity || 1)) * 100))}%`
                       }}
                     />
                   </div>
                 </div>
 
+                {/* Rejection Details Panel (If Rejected) */}
+                {(selectedContract.status === 'rejected' || selectedContract.approval_status === 'rejected' || selectedContract.rejection_reason) && (
+                  <div className="p-4 rounded-xl bg-rose-950/30 border border-rose-800/60 text-xs space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
+                        <AlertCircle className="h-4 w-4" /> Offer Declined by {selectedContract.rejection_source || 'Company'}
+                      </span>
+                      {selectedContract.rejected_at && (
+                        <span className="text-[11px] text-zinc-400 font-mono">
+                          {new Date(selectedContract.rejected_at).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                    <div>
+                      <span className="text-zinc-400 block mb-0.5">Rejection Reason:</span>
+                      <p className="text-white bg-zinc-900/60 p-2.5 rounded-lg border border-rose-900/40 italic">
+                        "{selectedContract.rejection_reason || 'No specific reason provided.'}"
+                      </p>
+                    </div>
+                    <div className="text-[11px] text-zinc-400 flex items-center gap-4 pt-1 border-t border-rose-900/40">
+                      <span>
+                        <strong className="text-zinc-300">Rejected By:</strong>{' '}
+                        {selectedContract.rejection_source === 'Company'
+                          ? (selectedContract.company_name ? `${selectedContract.company_name} (Company)` : 'Company')
+                          : (selectedContract.rejected_by_name ? `${selectedContract.rejected_by_name} (Admin)` : 'Admin')}
+                      </span>
+                      <span>
+                        <strong className="text-zinc-300">Status:</strong>{' '}
+                        <span className="text-rose-400 font-semibold uppercase">{selectedContract.status}</span>
+                      </span>
+                    </div>
+                  </div>
+                )}
+
                 {/* Quick Admin Actions */}
                 <div className="border border-zinc-800 p-4 rounded-xl bg-zinc-900/30 space-y-3">
                   <h4 className="text-xs font-bold text-zinc-300 uppercase tracking-wider">Admin Contract Controls</h4>
                   <div className="flex flex-wrap gap-2">
-                    {selectedContract.approval_status !== 'approved' && (
+                    {selectedContract.approval_status !== 'approved' && selectedContract.status !== 'rejected' && selectedContract.approval_status !== 'rejected' && (
                       <button
                         onClick={() => setShowConfirmApproveModal(true)}
                         className="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 transition"
@@ -1349,6 +1858,39 @@ export default function AdminAmcManagement() {
                     >
                       Change Status (Suspend / Cancel)
                     </button>
+
+                    {(selectedContract.status === 'active' || (selectedContract.approval_status === 'approved' && selectedContract.payment_status === 'paid')) && (
+                      <>
+                        <button
+                          onClick={() => handleDownloadCertificate(selectedContract)}
+                          disabled={isDownloadingCert === selectedContract.id}
+                          className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 flex items-center gap-1.5 transition disabled:opacity-50"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          Compliance Certificate (PDF)
+                        </button>
+                        <button
+                          onClick={() => handlePrintCertificate(selectedContract)}
+                          disabled={isDownloadingCert === selectedContract.id}
+                          className="px-3 py-1.5 text-xs font-medium rounded-lg bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition"
+                        >
+                          Print
+                        </button>
+                      </>
+                    )}
+
+                    {(selectedContract.status === 'active' || selectedContract.status === 'expired') && (
+                      <button
+                        onClick={() => {
+                          setContractDrawerOpen(false);
+                          handleOpenRenewalModal(selectedContract);
+                        }}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-cyan-600 text-white hover:bg-cyan-500 flex items-center gap-1.5 transition"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Create Renewal Offer
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -1392,15 +1934,28 @@ export default function AdminAmcManagement() {
                   <h4 className="text-sm font-bold text-white">Contract Audit Trail</h4>
                   <div className="space-y-1.5 max-h-48 overflow-y-auto">
                     {Array.isArray(selectedContract.history) && selectedContract.history.length > 0 ? (
-                      selectedContract.history.map((h: any) => (
-                        <div key={h.id} className="text-xs bg-zinc-900/30 p-2 rounded border border-zinc-800/60 flex justify-between items-center">
-                          <div>
-                            <span className="font-mono font-semibold text-zinc-300">{h.action}</span>
-                            {h.performed_by_name && <span className="text-zinc-500 ml-2">by {h.performed_by_name}</span>}
+                      selectedContract.history.map((h: any) => {
+                        const details = typeof h.details === 'string'
+                          ? (() => { try { return JSON.parse(h.details); } catch(e) { return {}; } })()
+                          : (h.details || {});
+                        return (
+                          <div key={h.id} className="text-xs bg-zinc-900/30 p-2 rounded border border-zinc-800/60 space-y-1">
+                            <div className="flex justify-between items-center">
+                              <div>
+                                <span className="font-mono font-semibold text-zinc-300">{h.action}</span>
+                                {h.performed_by_name && <span className="text-zinc-500 ml-2">by {h.performed_by_name}</span>}
+                              </div>
+                              <span className="text-[10px] text-zinc-500 font-mono">{new Date(h.created_at).toLocaleString()}</span>
+                            </div>
+                            {details.reason && (
+                              <div className="text-[11px] text-zinc-400 mt-0.5">
+                                <span className="text-zinc-500 font-medium">Reason / Note: </span>
+                                <span className="italic text-zinc-300">"{details.reason}"</span>
+                              </div>
+                            )}
                           </div>
-                          <span className="text-[10px] text-zinc-500 font-mono">{new Date(h.created_at).toLocaleString()}</span>
-                        </div>
-                      ))
+                        );
+                      })
                     ) : (
                       <p className="text-xs text-zinc-500 italic">No audit records found.</p>
                     )}
@@ -2009,6 +2564,167 @@ export default function AdminAmcManagement() {
                   className="px-4 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-500"
                 >
                   Save Verification
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Create Renewal Offer (Phase 3) ── */}
+      {showRenewalModal && renewalTargetContract && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-zinc-950 border border-zinc-800 rounded-xl max-w-lg w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center border-b border-zinc-800 pb-3">
+              <div>
+                <span className="text-xs font-mono text-cyan-400 font-bold uppercase tracking-wider block">Phase 3 Lifecycle</span>
+                <h3 className="text-lg font-bold text-white">Create AMC Renewal Offer</h3>
+              </div>
+              <button onClick={() => setShowRenewalModal(false)} className="text-zinc-400 hover:text-white">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-zinc-900/60 rounded-xl border border-zinc-800 text-xs space-y-1.5">
+              <div className="flex justify-between"><span className="text-zinc-400">Target Company:</span> <span className="font-semibold text-white">{renewalTargetContract.company_name}</span></div>
+              <div className="flex justify-between"><span className="text-zinc-400">Previous Contract:</span> <span className="font-mono text-cyan-400">{renewalTargetContract.contract_number}</span></div>
+              <div className="flex justify-between"><span className="text-zinc-400">Prior Expiry Date:</span> <span className="font-mono text-zinc-300">{renewalTargetContract.end_date ? formatDisplayDate(renewalTargetContract.end_date) : 'N/A'}</span></div>
+              <div className="flex justify-between"><span className="text-zinc-400">Prior Capacity:</span> <span className="font-mono text-zinc-300">{renewalTargetContract.device_capacity} Devices</span></div>
+            </div>
+
+            <form onSubmit={handleSubmitRenewalOffer} className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-zinc-400 block mb-1">Device Capacity (Quota) *</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    required
+                    value={renewalForm.deviceCapacity}
+                    onChange={(e) => setRenewalForm({ ...renewalForm, deviceCapacity: e.target.value })}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-200 outline-none font-mono"
+                  />
+                  <span className="text-[10px] text-zinc-500 mt-0.5 block">Supports reduced-capacity renewals</span>
+                </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">Base Price (INR ₹) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    value={renewalForm.price}
+                    onChange={(e) => {
+                      const p = parseFloat(e.target.value) || 0;
+                      const tax = Math.round(p * 0.18);
+                      setRenewalForm({ ...renewalForm, price: e.target.value, taxAmount: String(tax), totalAmount: String(p + tax) });
+                    }}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-200 outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-zinc-400 block mb-1">Tax Amount (GST ₹)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={renewalForm.taxAmount}
+                    onChange={(e) => {
+                      const tax = parseFloat(e.target.value) || 0;
+                      const p = parseFloat(renewalForm.price) || 0;
+                      setRenewalForm({ ...renewalForm, taxAmount: e.target.value, totalAmount: String(p + tax) });
+                    }}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-200 outline-none font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">Total Payable (INR ₹) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    value={renewalForm.totalAmount}
+                    onChange={(e) => setRenewalForm({ ...renewalForm, totalAmount: e.target.value })}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-white font-bold outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-zinc-400 block mb-1">Renewal Start Date *</label>
+                  <input
+                    type="date"
+                    required
+                    value={renewalForm.startDate}
+                    onChange={(e) => setRenewalForm({ ...renewalForm, startDate: e.target.value })}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-200 outline-none font-mono"
+                  />
+                  <span className="text-[10px] text-zinc-500 mt-0.5 block">For expired contracts: prospective only</span>
+                </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">Renewal End Date *</label>
+                  <input
+                    type="date"
+                    required
+                    value={renewalForm.endDate}
+                    onChange={(e) => setRenewalForm({ ...renewalForm, endDate: e.target.value })}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-200 outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-zinc-400 block mb-1">Device Selection Deadline</label>
+                  <input
+                    type="date"
+                    value={renewalForm.selectionDeadline}
+                    onChange={(e) => setRenewalForm({ ...renewalForm, selectionDeadline: e.target.value })}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-200 outline-none font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">Offer Valid Until</label>
+                  <input
+                    type="date"
+                    value={renewalForm.offerValidUntil}
+                    onChange={(e) => setRenewalForm({ ...renewalForm, offerValidUntil: e.target.value })}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-200 outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-zinc-400 block mb-1">Terms & Conditions</label>
+                <textarea
+                  rows={2}
+                  value={renewalForm.termsAndConditions}
+                  onChange={(e) => setRenewalForm({ ...renewalForm, termsAndConditions: e.target.value })}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-200 outline-none resize-none"
+                />
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 text-[11px] text-zinc-400">
+                Notice: The renewal contract will require the client to explicitly select devices. Existing covered devices will not be automatically transferred upon renewal.
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => setShowRenewalModal(false)}
+                  className="px-3 py-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingRenewalOffer}
+                  className="px-4 py-1.5 rounded-lg bg-cyan-600 text-white font-semibold hover:bg-cyan-500 shadow-lg shadow-cyan-600/20 disabled:opacity-50"
+                >
+                  {isSubmittingRenewalOffer ? 'Creating Offer...' : 'Issue Renewal Offer'}
                 </button>
               </div>
             </form>

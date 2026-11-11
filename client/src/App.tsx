@@ -37,6 +37,7 @@ const ShopV2Page = lazy(() => import('./pages/shop/v2/page'));
 const RepairProtocolPage = lazy(() => import('./pages/protocol/page'));
 const ProfilePage = lazy(() => import('./pages/profile/page'));
 const UserNotifications = lazy(() => import('./pages/notifications/UserNotifications'));
+const AmcCertificateVerification = lazy(() => import('./pages/public/AmcCertificateVerification'));
 
 // Admin Pages (Lazy Loaded)
 const DashboardOverview = lazy(() => import('./pages/admin/DashboardOverview'));
@@ -180,6 +181,8 @@ function App() {
                 <Route path={ROUTES.PROTOCOL} element={<RepairProtocolPage />} />
                 <Route path={ROUTES.PROFILE} element={<ProfilePage />} />
                 <Route path={ROUTES.NOTIFICATIONS} element={<UserNotifications />} />
+                <Route path={ROUTES.VERIFY_CERTIFICATE} element={<AmcCertificateVerification />} />
+                <Route path="/verify-certificate/:code" element={<AmcCertificateVerification />} />
 
                 {/* Fallback */}
                 <Route path="*" element={<HomePage />} />

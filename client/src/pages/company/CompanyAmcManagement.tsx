@@ -11,6 +11,7 @@ import {
 import { toast } from 'react-hot-toast';
 import { SkeletonTable } from '@/components/Skeleton';
 import { triggerRazorpayCheckout } from '@/utils/payment';
+import { downloadAmcCertificatePdf, printAmcCertificate } from '@/utils/amcCertificateGenerator';
 
 interface AmcPlan {
   id: number;
@@ -154,6 +155,15 @@ export default function CompanyAmcManagement() {
   const [replacementNewDeviceId, setReplacementNewDeviceId] = useState<number | null>(null);
   const [replacementReason, setReplacementReason] = useState('');
   const [isSubmittingReplacement, setIsSubmittingReplacement] = useState(false);
+
+  // Renewal Modal (Phase 3)
+  const [renewalModalContract, setRenewalModalContract] = useState<AmcContract | null>(null);
+  const [renewalRequestedCapacity, setRenewalRequestedCapacity] = useState<number>(10);
+  const [renewalNotes, setRenewalNotes] = useState('');
+  const [isSubmittingRenewal, setIsSubmittingRenewal] = useState(false);
+
+  // Certificate Download State (Phase 3)
+  const [isDownloadingCert, setIsDownloadingCert] = useState<number | null>(null);
 
   // Contract Details Drawer
   const [detailsDrawerContract, setDetailsDrawerContract] = useState<AmcContract | null>(null);
@@ -536,7 +546,13 @@ export default function CompanyAmcManagement() {
       if (detailsRes.ok) {
         const details = extractResponseData<AmcContract | null>(detailsRes, null);
         if (details && typeof details === 'object') {
-          setManageDevicesContract(prev => prev && prev.id === contract.id ? { ...prev, ...details } : details);
+          setManageDevicesContract(prev => {
+            const merged = prev && prev.id === contract.id ? { ...prev, ...details } : details;
+            if (merged.active_covered_count === undefined && prev?.active_covered_count !== undefined) {
+              merged.active_covered_count = prev.active_covered_count;
+            }
+            return merged;
+          });
         }
       }
     } catch (err) {
@@ -654,12 +670,92 @@ export default function CompanyAmcManagement() {
     try {
       const res = await amcApi.getCompanyContractDetails(token, contract.id);
       if (res.ok) {
-        setDetailsDrawerContract(extractResponseData<AmcContract>(res, contract));
+        const details = extractResponseData<AmcContract>(res, contract);
+        if (details && details.active_covered_count === undefined && contract.active_covered_count !== undefined) {
+          details.active_covered_count = contract.active_covered_count;
+        }
+        setDetailsDrawerContract(details);
       }
     } catch (err) {
       console.error(err);
     } finally {
       setDrawerDetailsLoading(false);
+    }
+  };
+
+  // Download AMC Certificate (Phase 3)
+  const handleDownloadCertificate = async (contract: AmcContract) => {
+    if (!token) return;
+    setIsDownloadingCert(contract.id);
+    try {
+      const res = await amcApi.getCertificate(token, contract.id);
+      if (res.ok && res.data) {
+        const certData = extractResponseData<any>(res, null);
+        if (certData) {
+          await downloadAmcCertificatePdf(certData);
+          toast.success('Official AMC Compliance Certificate downloaded!');
+        }
+      } else {
+        toast.error(res.error || 'Failed to download certificate.');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Certificate generation failed.');
+    } finally {
+      setIsDownloadingCert(null);
+    }
+  };
+
+  // Print AMC Certificate (Phase 3)
+  const handlePrintCertificate = async (contract: AmcContract) => {
+    if (!token) return;
+    setIsDownloadingCert(contract.id);
+    try {
+      const res = await amcApi.getCertificate(token, contract.id);
+      if (res.ok && res.data) {
+        const certData = extractResponseData<any>(res, null);
+        if (certData) {
+          await printAmcCertificate(certData);
+        }
+      } else {
+        toast.error(res.error || 'Failed to prepare certificate for printing.');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Certificate printing failed.');
+    } finally {
+      setIsDownloadingCert(null);
+    }
+  };
+
+  // Open Renewal Modal (Phase 3)
+  const handleOpenRenewModal = (contract: AmcContract) => {
+    setRenewalModalContract(contract);
+    setRenewalRequestedCapacity(contract.device_capacity);
+    setRenewalNotes('');
+  };
+
+  // Submit AMC Renewal Request (Phase 3)
+  const handleSubmitRenewal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token || !renewalModalContract) return;
+
+    setIsSubmittingRenewal(true);
+    try {
+      const res = await amcApi.requestRenewal(token, renewalModalContract.id, {
+        requestedCapacity: renewalRequestedCapacity,
+        notes: renewalNotes.trim()
+      });
+      if (res.ok) {
+        toast.success('AMC Renewal request submitted successfully! Admin will prepare your renewal offer.');
+        setRenewalModalContract(null);
+        loadData(false);
+        setActiveTab('inquiries');
+      } else {
+        toast.error(res.error || 'Failed to submit renewal request.');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Error requesting renewal.');
+    } finally {
+      setIsSubmittingRenewal(false);
     }
   };
 
@@ -1107,6 +1203,31 @@ export default function CompanyAmcManagement() {
                             Replacement
                           </button>
                         </>
+                      )}
+
+                      {/* Certificate Download (Phase 3) */}
+                      {(contract.status === 'active' || (contract.approval_status === 'approved' && contract.payment_status === 'paid')) && (
+                        <button
+                          onClick={() => handleDownloadCertificate(contract)}
+                          disabled={isDownloadingCert === contract.id}
+                          className="px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-xs font-semibold rounded-xl border border-emerald-500/30 flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                          title="Download AMC Compliance Certificate PDF"
+                        >
+                          <Download className={`w-3.5 h-3.5 ${isDownloadingCert === contract.id ? 'animate-bounce' : ''}`} />
+                          Certificate
+                        </button>
+                      )}
+
+                      {/* AMC Renewal (Phase 3) */}
+                      {(contract.status === 'active' || contract.status === 'expired') && (
+                        <button
+                          onClick={() => handleOpenRenewModal(contract)}
+                          className="px-3 py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 text-neon-cyan text-xs font-semibold rounded-xl border border-cyan-500/30 flex items-center gap-1.5 transition-colors"
+                          title="Renew AMC Contract"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          Renew AMC
+                        </button>
                       )}
 
                       <button
@@ -2091,6 +2212,42 @@ export default function CompanyAmcManagement() {
                 {renderStatusBadge(detailsDrawerContract.status)}
                 <span className="text-xs text-zinc-400">&bull; {detailsDrawerContract.plan_name}</span>
               </div>
+
+              {/* Action Toolbar */}
+              <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-zinc-800">
+                {(detailsDrawerContract.status === 'active' || (detailsDrawerContract.approval_status === 'approved' && detailsDrawerContract.payment_status === 'paid')) && (
+                  <>
+                    <button
+                      onClick={() => handleDownloadCertificate(detailsDrawerContract)}
+                      disabled={isDownloadingCert === detailsDrawerContract.id}
+                      className="px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-xs font-semibold rounded-xl border border-emerald-500/30 flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                    >
+                      <Download className={`w-3.5 h-3.5 ${isDownloadingCert === detailsDrawerContract.id ? 'animate-bounce' : ''}`} />
+                      Download Certificate (PDF)
+                    </button>
+                    <button
+                      onClick={() => handlePrintCertificate(detailsDrawerContract)}
+                      disabled={isDownloadingCert === detailsDrawerContract.id}
+                      className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium rounded-xl border border-zinc-700 flex items-center gap-1.5 transition-colors"
+                    >
+                      Print
+                    </button>
+                  </>
+                )}
+                {(detailsDrawerContract.status === 'active' || detailsDrawerContract.status === 'expired') && (
+                  <button
+                    onClick={() => {
+                      const c = detailsDrawerContract;
+                      setDetailsDrawerContract(null);
+                      handleOpenRenewModal(c);
+                    }}
+                    className="px-3 py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 text-neon-cyan text-xs font-semibold rounded-xl border border-cyan-500/30 flex items-center gap-1.5 transition-colors"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Renew AMC
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Quick Summary Grid */}
@@ -2102,7 +2259,7 @@ export default function CompanyAmcManagement() {
               <div>
                 <span className="text-zinc-500 block text-[10px] uppercase font-mono">Device Capacity</span>
                 <span className="text-white font-medium font-mono">
-                  {detailsDrawerContract.active_covered_count || 0} / {detailsDrawerContract.device_capacity}
+                  {(detailsDrawerContract.active_covered_count ?? (Array.isArray(detailsDrawerContract.coveredDevices) ? detailsDrawerContract.coveredDevices.filter(d => d.status === 'active').length : 0))} / {detailsDrawerContract.device_capacity}
                 </span>
               </div>
               <div>
@@ -2122,7 +2279,7 @@ export default function CompanyAmcManagement() {
             {/* Covered Devices section */}
             <div className="space-y-3">
               <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center justify-between">
-                <span>Covered Devices ({Array.isArray(detailsDrawerContract.coveredDevices) ? detailsDrawerContract.coveredDevices.length : 0})</span>
+                <span>Covered Devices ({(detailsDrawerContract.active_covered_count ?? (Array.isArray(detailsDrawerContract.coveredDevices) ? detailsDrawerContract.coveredDevices.filter(d => d.status === 'active').length : 0))})</span>
                 {detailsDrawerContract.status === 'active' && (
                   <button
                     onClick={() => {
@@ -2183,6 +2340,102 @@ export default function CompanyAmcManagement() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL: Request AMC Renewal (Phase 3) ── */}
+      {renewalModalContract && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl relative">
+            <button
+              onClick={() => setRenewalModalContract(null)}
+              className="absolute top-4 right-4 text-zinc-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="space-y-1">
+              <span className="text-[11px] font-mono text-neon-cyan uppercase tracking-wider block">Renewal Workflow</span>
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                Renew AMC Contract
+              </h3>
+              <p className="text-xs text-zinc-400">
+                Renew coverage for contract <strong className="text-white font-mono">{renewalModalContract.contract_number}</strong> ({renewalModalContract.plan_name}).
+              </p>
+            </div>
+
+            <form onSubmit={handleSubmitRenewal} className="space-y-4">
+              <div className="p-3 bg-zinc-950 rounded-xl border border-zinc-800/80 text-xs space-y-2">
+                <div className="flex justify-between text-zinc-400">
+                  <span>Current Fleet Capacity:</span>
+                  <span className="font-mono text-white font-semibold">{renewalModalContract.device_capacity} Devices</span>
+                </div>
+                <div className="flex justify-between text-zinc-400">
+                  <span>Contract Status:</span>
+                  <span className="capitalize text-zinc-200">{renewalModalContract.status}</span>
+                </div>
+                <div className="flex justify-between text-zinc-400">
+                  <span>Prior Expiry Date:</span>
+                  <span className="font-mono text-zinc-200">{renewalModalContract.end_date ? formatDisplayDate(renewalModalContract.end_date) : 'N/A'}</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-zinc-300 block mb-1">
+                  Requested Device Capacity *
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={500}
+                  required
+                  value={renewalRequestedCapacity}
+                  onChange={e => setRenewalRequestedCapacity(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                  className="w-full py-2 px-3 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-white focus:outline-none focus:border-neon-cyan font-mono"
+                />
+                <p className="text-[11px] text-zinc-500 mt-1">
+                  You can specify the same capacity or request a reduced capacity (e.g., downsize fleet). Devices will be explicitly selected by you upon offer acceptance.
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-zinc-300 block mb-1">
+                  Renewal Notes or Special Requirements (Optional)
+                </label>
+                <textarea
+                  rows={3}
+                  placeholder="e.g. Requesting quote for 12-month extension with quarterly on-site audit..."
+                  value={renewalNotes}
+                  onChange={e => setRenewalNotes(e.target.value)}
+                  className="w-full py-2 px-3 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-white focus:outline-none focus:border-neon-cyan resize-none"
+                />
+              </div>
+
+              <div className="p-3 rounded-xl bg-cyan-950/20 border border-cyan-800/40 text-[11px] text-zinc-300 flex items-start gap-2">
+                <Info className="w-4 h-4 text-neon-cyan flex-shrink-0 mt-0.5" />
+                <span>
+                  Admin will review your renewal parameters and generate an updated renewal offer. For gap renewals, coverage commences prospectively.
+                </span>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => setRenewalModalContract(null)}
+                  className="px-4 py-2 text-xs text-zinc-400 hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingRenewal}
+                  className="px-5 py-2 bg-gradient-to-r from-neon-cyan to-blue-500 hover:opacity-90 text-black text-xs font-bold rounded-xl shadow-lg transition-all disabled:opacity-50"
+                >
+                  {isSubmittingRenewal ? 'Submitting...' : 'Submit Renewal Request'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

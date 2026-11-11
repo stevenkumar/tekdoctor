@@ -138,6 +138,14 @@ export const ENDPOINTS = {
     COMPANY_VERIFY_PAYMENT: (id: number | string) => `/api/amc/company/contracts/${id}/verify-payment`,
     COMPANY_OFFLINE_PAYMENT: (id: number | string) => `/api/amc/company/contracts/${id}/offline-payment`,
     COMPANY_REPLACEMENTS: '/api/amc/company/replacements',
+    COMPANY_CONTRACT_RENEW: (id: number | string) => `/api/amc/company/contracts/${id}/renew`,
+    ADMIN_CONTRACT_RENEW: (id: number | string) => `/api/amc/admin/contracts/${id}/renew`,
+    ADMIN_REMINDERS: '/api/amc/admin/reminders',
+    ADMIN_REMINDER_RETRY: (id: number | string) => `/api/amc/admin/reminders/${id}/retry`,
+    ADMIN_MAINTENANCE_EXPIRIES: '/api/amc/admin/maintenance/process-expiries',
+    ADMIN_MAINTENANCE_REMINDERS: '/api/amc/admin/maintenance/process-reminders',
+    CERTIFICATE: (id: number | string) => `/api/amc/contracts/${id}/certificate`,
+    PUBLIC_VERIFY_CERTIFICATE: (code: string) => `/api/amc/public/verify-certificate/${encodeURIComponent(code)}`,
   }
 } as const;
 
@@ -2759,6 +2767,73 @@ export const amcApi = {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}` },
       body: JSON.stringify(data),
+    });
+  },
+
+  // Phase 3 Certificate
+  getCertificate: async (token: string, contractId: number | string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.CERTIFICATE(contractId)), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  // Phase 3 Renewals
+  requestRenewal: async (token: string, contractId: number | string, data: { requestedCapacity?: number; notes?: string }): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.COMPANY_CONTRACT_RENEW(contractId)), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+  },
+
+  createRenewalContract: async (token: string, previousContractId: number | string, data: any): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_CONTRACT_RENEW(previousContractId)), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+
+  // Phase 3 Expiry Reminders & Maintenance
+  getAdminReminders: async (token: string, params?: { contractId?: number | string; companyId?: number | string; status?: string; limit?: number }): Promise<SafeResponse<any[]>> => {
+    const q = new URLSearchParams();
+    if (params?.contractId) q.append('contractId', String(params.contractId));
+    if (params?.companyId) q.append('companyId', String(params.companyId));
+    if (params?.status) q.append('status', params.status);
+    if (params?.limit) q.append('limit', String(params.limit));
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return safeFetch<any[]>(getUrl(`${ENDPOINTS.AMC.ADMIN_REMINDERS}${qs}`), {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  retryAdminReminder: async (token: string, reminderId: number): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_REMINDER_RETRY(reminderId)), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  triggerExpiriesSweep: async (token: string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_MAINTENANCE_EXPIRIES), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  triggerRemindersSweep: async (token: string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl(ENDPOINTS.AMC.ADMIN_MAINTENANCE_REMINDERS), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  },
+
+  verifyPublicCertificate: async (code: string, contractNumber?: string): Promise<SafeResponse<any>> => {
+    const query = contractNumber ? `?contractNumber=${encodeURIComponent(contractNumber)}` : '';
+    return safeFetch<any>(getUrl(`${ENDPOINTS.AMC.PUBLIC_VERIFY_CERTIFICATE(code)}${query}`), {
+      method: 'GET'
     });
   },
 };

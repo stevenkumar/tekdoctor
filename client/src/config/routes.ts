@@ -16,6 +16,7 @@ export const ROUTES = {
   PROTOCOL: '/protocol',
   PROFILE: '/profile',
   NOTIFICATIONS: '/notifications',
+  VERIFY_CERTIFICATE: '/verify-certificate/:code',
 
   // Auth
   SIGN_IN: '/auth/signin',
