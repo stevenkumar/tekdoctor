@@ -339,6 +339,10 @@ const startServer = async () => {
     const { startRetentionScheduler } = require('./utils/retention.scheduler');
     startRetentionScheduler(pool);
 
+    // Start background AMC lifecycle scheduler (automated expiry reminders & contract status sweeps)
+    const { startAmcScheduler, stopAmcScheduler } = require('./schedulers/amc.scheduler');
+    startAmcScheduler(pool);
+
     const server = app.listen(config.server.port, config.server.host, () => {
       logger.info(`==================================================`);
       logger.info(`Server running in [${config.env}] mode`);
@@ -361,6 +365,7 @@ const startServer = async () => {
     // Graceful Shutdown handling
     const gracefulShutdown = (signal) => {
       logger.info(`${signal} received. Initiating graceful shutdown...`);
+      stopAmcScheduler();
       server.close(async () => {
         logger.info('HTTP server closed.');
         try {

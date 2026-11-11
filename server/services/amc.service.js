@@ -31,19 +31,65 @@ const resolveCompanyUserId = async (connection, companyIdOrCode) => {
   return null;
 };
 
+const AMC_TIMEZONE = config.amc?.businessTimezone || 'Asia/Kolkata';
+
 /**
- * Format a Date object or string into YYYY-MM-DD reliably without timezone shift.
+ * Format any Date object or string into canonical YYYY-MM-DD in the authoritative AMC business timezone (Fix 5 & Fix 6).
  */
 const formatDateOnly = (d) => {
   if (!d) return null;
-  if (typeof d === 'string') return d.slice(0, 10);
-  if (d instanceof Date) {
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+  if (typeof d === 'string') {
+    const clean = d.trim();
+    if (!clean) return null;
+    // Pure YYYY-MM-DD string
+    if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) return clean;
+    // Date with time (e.g. ISO 8601 or SQL datetime)
+    const parsed = new Date(clean);
+    if (!isNaN(parsed.getTime())) {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: AMC_TIMEZONE,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(parsed);
+    }
+    // Fallback if not parsable
+    if (/^\d{4}-\d{2}-\d{2}/.test(clean)) return clean.slice(0, 10);
+    return null;
   }
-  return String(d).slice(0, 10);
+  if (d instanceof Date) {
+    if (isNaN(d.getTime())) return null;
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: AMC_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(d);
+  }
+  return null;
+};
+
+/**
+ * Current calendar date in the authoritative AMC business timezone (Asia/Kolkata) as YYYY-MM-DD.
+ */
+const getBusinessTodayStr = () => {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: AMC_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
+};
+
+/**
+ * Add days to a YYYY-MM-DD date string using UTC arithmetic to eliminate daylight-savings shifts.
+ */
+const addDaysOnly = (dateStr, days) => {
+  const clean = formatDateOnly(dateStr);
+  if (!clean) return null;
+  const d = new Date(clean + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 };
 
 /**
@@ -72,7 +118,7 @@ const resolveDeviceAmcEligibility = async (connectionOrPool, { companyId, device
       };
     }
 
-    const targetDate = repairDate ? formatDateOnly(repairDate) : formatDateOnly(new Date());
+    const targetDate = repairDate ? formatDateOnly(repairDate) : getBusinessTodayStr();
 
     // If no specific device is provided, check if the company has any active, approved, paid contract
     if (!deviceId) {
@@ -216,6 +262,15 @@ const resolveDeviceAmcEligibility = async (connectionOrPool, { companyId, device
       return { isEligible: false, reason: 'CONTRACT_EXPIRED', contract: cnt, coverage: null };
     }
 
+    // Check if contract has zero allocated devices (incomplete device selection)
+    const [coveredCountRows] = await connection.query(`
+      SELECT COUNT(*) AS activeCount FROM amc_covered_devices WHERE contract_id = ? AND status = 'active'
+    `, [cnt.id]);
+    const contractCoveredCount = coveredCountRows[0]?.activeCount || 0;
+    if (contractCoveredCount === 0) {
+      return { isEligible: false, reason: 'CONTRACT_HAS_ZERO_ALLOCATED_DEVICES', contract: cnt, coverage: null };
+    }
+
     const [deviceInContract] = await connection.query(`
       SELECT id, status FROM amc_covered_devices WHERE device_id = ? AND company_id = ? LIMIT 1
     `, [deviceId, resolvedCompanyId]);
@@ -329,6 +384,15 @@ const assignDevicesToCoverage = async (connectionOrPool, { contractId, companyId
     const contract = contracts[0];
     if (!['active', 'accepted', 'draft', 'offered'].includes(contract.status)) {
       throw new Error(`Cannot assign devices to a contract with status "${contract.status}".`);
+    }
+
+    // Selection deadline verification (Fix C)
+    if (contract.selection_deadline) {
+      const deadlineStr = formatDateOnly(contract.selection_deadline);
+      const todayStr = getBusinessTodayStr();
+      if (deadlineStr < todayStr) {
+        throw new Error(`Device allocation window closed on ${deadlineStr}. Allocation past the selection deadline is prohibited.`);
+      }
     }
 
     // Capacity verification
@@ -698,11 +762,13 @@ const createAmcRequest = async ({ companyId, planId, requestedDeviceCount = 1, n
 
 const getAmcRequests = async ({ companyId = null, status = null } = {}) => {
   let sql = `
-    SELECT r.*, p.name AS plan_name, p.plan_code, u.name AS company_name, cp.company_id AS canonical_company_id
+    SELECT r.*, p.name AS plan_name, p.plan_code, u.name AS company_name, cp.company_id AS canonical_company_id,
+           adm.name AS reviewed_by_name
     FROM amc_requests r
     LEFT JOIN amc_plans p ON r.plan_id = p.id
     LEFT JOIN users u ON r.company_id = u.id
     LEFT JOIN company_profiles cp ON u.id = cp.user_id
+    LEFT JOIN users adm ON r.reviewed_by = adm.id
     WHERE 1=1
   `;
   const params = [];
@@ -736,6 +802,7 @@ const createAmcContract = async ({
   totalAmount,
   termsAndConditions = null,
   offerValidUntil = null,
+  selectionDeadline = null,
   startDate = null,
   endDate = null,
   createdBy = null
@@ -762,13 +829,17 @@ const createAmcContract = async ({
     INSERT INTO amc_contracts (
       contract_number, company_id, request_id, plan_id, contract_type,
       plan_name, device_capacity, price, discount_amount, tax_amount, total_amount,
-      terms_and_conditions, offer_valid_until, start_date, end_date,
+      terms_and_conditions, offer_valid_until, selection_deadline, start_date, end_date,
       status, approval_status, payment_status, created_by
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'offered', 'pending_approval', 'unpaid', ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'offered', 'pending_approval', 'unpaid', ?)
   `, [
     contractNumber, resolvedCompanyId, requestId || null, planId || null, contractType,
     planName, deviceCapacity, price, discountAmount, taxAmount, totalAmount,
-    termsAndConditions || null, offerValidUntil || null, startDate || null, endDate || null,
+    termsAndConditions || null,
+    offerValidUntil ? formatDateOnly(offerValidUntil) : null,
+    selectionDeadline ? formatDateOnly(selectionDeadline) : null,
+    startDate ? formatDateOnly(startDate) : null,
+    endDate ? formatDateOnly(endDate) : null,
     createdBy || null
   ]);
 
@@ -787,7 +858,11 @@ const createAmcContract = async ({
 const getContracts = async ({ companyId = null, status = null } = {}) => {
   let sql = `
     SELECT c.*, u.name AS company_name, cp.company_id AS canonical_company_id,
-      (SELECT COUNT(*) FROM amc_covered_devices cd WHERE cd.contract_id = c.id AND cd.status = 'active') AS active_covered_count
+      (SELECT COUNT(*) FROM amc_covered_devices cd WHERE cd.contract_id = c.id AND cd.status = 'active') AS active_covered_count,
+      (SELECT h.details FROM amc_contract_history h WHERE h.contract_id = c.id AND h.action IN ('OFFER_REJECTED', 'CONTRACT_REJECTED') ORDER BY h.id DESC LIMIT 1) AS rejection_details_raw,
+      (SELECT h.action FROM amc_contract_history h WHERE h.contract_id = c.id AND h.action IN ('OFFER_REJECTED', 'CONTRACT_REJECTED') ORDER BY h.id DESC LIMIT 1) AS rejection_action_raw,
+      (SELECT h.created_at FROM amc_contract_history h WHERE h.contract_id = c.id AND h.action IN ('OFFER_REJECTED', 'CONTRACT_REJECTED') ORDER BY h.id DESC LIMIT 1) AS rejection_created_at,
+      (SELECT adm.name FROM amc_contract_history h JOIN users adm ON h.performed_by = adm.id WHERE h.contract_id = c.id AND h.action IN ('OFFER_REJECTED', 'CONTRACT_REJECTED') ORDER BY h.id DESC LIMIT 1) AS rejection_user_name
     FROM amc_contracts c
     LEFT JOIN users u ON c.company_id = u.id
     LEFT JOIN company_profiles cp ON u.id = cp.user_id
@@ -805,17 +880,39 @@ const getContracts = async ({ companyId = null, status = null } = {}) => {
   }
   sql += ' ORDER BY c.created_at DESC';
   const [rows] = await pool.query(sql, params);
-  return rows.map(r => ({
-    ...r,
-    start_date: r.start_date ? formatDateOnly(r.start_date) : null,
-    end_date: r.end_date ? formatDateOnly(r.end_date) : null,
-    offer_valid_until: r.offer_valid_until ? formatDateOnly(r.offer_valid_until) : null
-  }));
+  return rows.map(r => {
+    let rejectionReason = null;
+    let rejectionSource = null;
+    let rejectedAt = r.rejection_created_at || null;
+    let rejectedByName = r.rejection_user_name || null;
+
+    if (r.rejection_details_raw) {
+      try {
+        const parsed = typeof r.rejection_details_raw === 'string' ? JSON.parse(r.rejection_details_raw) : r.rejection_details_raw;
+        rejectionReason = parsed.reason || null;
+        rejectionSource = parsed.rejection_source || (r.rejection_action_raw === 'OFFER_REJECTED' ? 'Company' : 'Admin');
+      } catch (e) {}
+    }
+
+    return {
+      ...r,
+      active_covered_count: Number(r.active_covered_count || 0),
+      rejection_reason: rejectionReason,
+      rejection_source: rejectionSource,
+      rejected_at: rejectedAt,
+      rejected_by_name: rejectedByName,
+      start_date: r.start_date ? formatDateOnly(r.start_date) : null,
+      end_date: r.end_date ? formatDateOnly(r.end_date) : null,
+      offer_valid_until: r.offer_valid_until ? formatDateOnly(r.offer_valid_until) : null,
+      selection_deadline: r.selection_deadline ? formatDateOnly(r.selection_deadline) : null
+    };
+  });
 };
 
 const getContractDetails = async (contractId, companyId = null) => {
   let sql = `
-    SELECT c.*, u.name AS company_name, u.email AS company_email, cp.company_id AS canonical_company_id
+    SELECT c.*, u.name AS company_name, u.email AS company_email, cp.company_id AS canonical_company_id,
+      (SELECT COUNT(*) FROM amc_covered_devices cd WHERE cd.contract_id = c.id AND cd.status = 'active') AS active_covered_count
     FROM amc_contracts c
     LEFT JOIN users u ON c.company_id = u.id
     LEFT JOIN company_profiles cp ON u.id = cp.user_id
@@ -864,11 +961,34 @@ const getContractDetails = async (contractId, companyId = null) => {
     ORDER BY r.created_at DESC
   `, [contractId]);
 
+  let rejectionReason = null;
+  let rejectionSource = null;
+  let rejectedAt = null;
+  let rejectedByName = null;
+
+  const rejectionEntry = [...history].reverse().find(h => h.action === 'OFFER_REJECTED' || h.action === 'CONTRACT_REJECTED');
+  if (rejectionEntry) {
+    let detailsObj = rejectionEntry.details;
+    if (typeof detailsObj === 'string') {
+      try { detailsObj = JSON.parse(detailsObj); } catch (e) {}
+    }
+    rejectionReason = detailsObj?.reason || null;
+    rejectionSource = detailsObj?.rejection_source || (rejectionEntry.action === 'OFFER_REJECTED' ? 'Company' : 'Admin');
+    rejectedAt = rejectionEntry.created_at;
+    rejectedByName = rejectionEntry.performed_by_name || null;
+  }
+
   return {
     ...contract,
+    active_covered_count: Number(contract.active_covered_count || 0),
+    rejection_reason: rejectionReason,
+    rejection_source: rejectionSource,
+    rejected_at: rejectedAt,
+    rejected_by_name: rejectedByName,
     start_date: contract.start_date ? formatDateOnly(contract.start_date) : null,
     end_date: contract.end_date ? formatDateOnly(contract.end_date) : null,
     offer_valid_until: contract.offer_valid_until ? formatDateOnly(contract.offer_valid_until) : null,
+    selection_deadline: contract.selection_deadline ? formatDateOnly(contract.selection_deadline) : null,
     coveredDevices: devices.map(d => ({
       ...d,
       coverage_start_date: d.coverage_start_date ? formatDateOnly(d.coverage_start_date) : null,
@@ -893,6 +1013,11 @@ const acceptAmcOffer = async ({ contractId, companyId, userId }) => {
   }
 
   if (contract.offer_valid_until && new Date(contract.offer_valid_until) < new Date(new Date().toISOString().slice(0, 10))) {
+    await pool.query('UPDATE amc_contracts SET status = "expired" WHERE id = ?', [contractId]);
+    await pool.query(`
+      INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+      VALUES (?, 'OFFER_EXPIRED', ?, ?)
+    `, [contractId, userId || null, JSON.stringify({ expiredAt: new Date().toISOString(), offerValidUntil: contract.offer_valid_until })]);
     throw new Error('This offer has expired and cannot be accepted.');
   }
 
@@ -914,6 +1039,10 @@ const approveAmcContract = async ({ contractId, adminUserId, startDate = null, e
   if (contracts.length === 0) throw new Error('Contract not found.');
 
   const contract = contracts[0];
+  if (contract.status === 'rejected' || contract.approval_status === 'rejected') {
+    throw new Error('Cannot approve a rejected contract offer.');
+  }
+
   const start = startDate ? formatDateOnly(startDate) : (contract.start_date ? formatDateOnly(contract.start_date) : formatDateOnly(new Date()));
   const end = endDate ? formatDateOnly(endDate) : (contract.end_date ? formatDateOnly(contract.end_date) : formatDateOnly(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)));
 
@@ -952,6 +1081,9 @@ const activateAmcContract = async ({ contractId, adminUserId = null }) => {
   if (contracts.length === 0) throw new Error('Contract not found.');
 
   const contract = contracts[0];
+  if (contract.status === 'rejected' || contract.approval_status === 'rejected') {
+    throw new Error('Cannot activate a rejected contract.');
+  }
   if (contract.approval_status !== 'approved') {
     throw new Error('Contract must be approved by admin before activation.');
   }
@@ -985,8 +1117,24 @@ const activateAmcContract = async ({ contractId, adminUserId = null }) => {
 
 /**
  * 9. Notifications helper for AMC events
+ * Supports independent in-app and email delivery tracking with awaited confirmation.
  */
-const sendAmcNotification = async ({ userId = null, companyId = null, role = null, title, message, ticketId = null }) => {
+const sendAmcNotification = async ({
+  userId = null,
+  companyId = null,
+  role = null,
+  title,
+  message,
+  ticketId = null,
+  sendInApp = true,
+  sendEmail = true
+}) => {
+  let inAppSuccess = !sendInApp;
+  let emailSuccess = !sendEmail;
+  let inAppError = null;
+  let emailError = null;
+  let recipientsCount = 0;
+
   try {
     const recipients = [];
     if (userId) {
@@ -1003,23 +1151,72 @@ const sendAmcNotification = async ({ userId = null, companyId = null, role = nul
       recipients.push(...admins);
     }
 
+    recipientsCount = recipients.length;
+
     for (const r of recipients) {
-      await pool.query(
-        'INSERT INTO notifications (user_id, ticket_id, title, message) VALUES (?, ?, ?, ?)',
-        [r.id, ticketId, title, message]
-      );
-      // Asynchronous email dispatch (failsafe)
-      try {
-        if (role === 'admin' || r.role === 'admin') {
-          sendAdminNotification(title, `<p>${message}</p>`).catch(() => {});
-        } else if (r.email) {
-          sendCustomerNotification(r.email, title, `<p>Hello ${r.name || 'Valued Client'},</p><p>${message}</p>`).catch(() => {});
+      // 1. In-App Notification Delivery
+      if (sendInApp) {
+        try {
+          await pool.query(
+            'INSERT INTO notifications (user_id, ticket_id, title, message) VALUES (?, ?, ?, ?)',
+            [r.id, ticketId, title, message]
+          );
+          inAppSuccess = true;
+        } catch (inAppErr) {
+          inAppSuccess = false;
+          inAppError = inAppErr.message;
+          logger.error(`Failed to dispatch in-app AMC notification to user ${r.id}: ${inAppErr.message}`);
         }
-      } catch (_) {}
+      }
+
+      // 2. Email Notification Delivery (Awaited with error capture)
+      if (sendEmail) {
+        try {
+          if (role === 'admin' || r.role === 'admin') {
+            const adminSent = await sendAdminNotification(title, `<p>${message}</p>`);
+            if (adminSent) {
+              emailSuccess = true;
+            } else {
+              emailSuccess = false;
+              emailError = 'Admin notification email delivery returned false or unconfigured.';
+            }
+          } else if (r.email) {
+            const customerSent = await sendCustomerNotification(
+              r.email,
+              title,
+              `<p>Hello ${r.name || 'Valued Client'},</p><p>${message}</p>`
+            );
+            if (customerSent) {
+              emailSuccess = true;
+            } else {
+              emailSuccess = false;
+              emailError = `Customer notification email delivery to ${r.email} returned false or unconfigured.`;
+            }
+          } else {
+            emailSuccess = false;
+            emailError = 'No valid email address found on user account.';
+          }
+        } catch (emailErr) {
+          emailSuccess = false;
+          emailError = emailErr.message;
+          logger.error(`Failed to send email AMC notification to ${r.email}: ${emailErr.message}`);
+        }
+      }
     }
   } catch (err) {
     logger.warn(`Failed to dispatch AMC notification: ${err.message}`);
+    if (sendInApp && !inAppSuccess) inAppError = err.message;
+    if (sendEmail && !emailSuccess) emailError = err.message;
   }
+
+  return {
+    success: inAppSuccess && emailSuccess,
+    inAppSuccess,
+    emailSuccess,
+    inAppError,
+    emailError,
+    recipientsCount
+  };
 };
 
 /**
@@ -1142,12 +1339,12 @@ const rejectAmcOffer = async ({ contractId, companyId, reason, userId }) => {
     throw new Error(`Cannot reject contract with status "${contract.status}". Must be "offered".`);
   }
 
-  await pool.query('UPDATE amc_contracts SET status = "rejected" WHERE id = ?', [contractId]);
+  await pool.query('UPDATE amc_contracts SET status = "rejected", approval_status = "rejected" WHERE id = ?', [contractId]);
 
   await pool.query(`
     INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
     VALUES (?, 'OFFER_REJECTED', ?, ?)
-  `, [contractId, userId || null, JSON.stringify({ reason: reason || 'Company declined offer', rejectedAt: new Date() })]);
+  `, [contractId, userId || null, JSON.stringify({ reason: reason || 'Company declined offer', rejection_source: 'Company', rejectedAt: new Date() })]);
 
   // Notify admin
   await sendAmcNotification({
@@ -1200,6 +1397,9 @@ const createContractPaymentOrder = async ({ contractId, companyId, userId }) => 
   if (contracts.length === 0) throw new Error('Contract not found.');
 
   const contract = contracts[0];
+  if (contract.status === 'rejected' || contract.approval_status === 'rejected') {
+    throw new Error('Cannot initiate payment for a rejected contract offer.');
+  }
   if (contract.payment_status === 'paid') {
     throw new Error('This contract is already paid.');
   }
@@ -1270,6 +1470,9 @@ const verifyContractPayment = async ({ contractId, companyId, razorpayOrderId, r
   if (contracts.length === 0) throw new Error('Contract not found.');
 
   const contract = contracts[0];
+  if (contract.status === 'rejected' || contract.approval_status === 'rejected') {
+    throw new Error('Cannot verify payment for a rejected contract offer.');
+  }
 
   // Idempotency: avoid duplicate invoices on verification replays
   if (contract.payment_status === 'paid') {
@@ -1382,6 +1585,9 @@ const initiateContractOfflinePayment = async ({ contractId, companyId, paymentMe
   if (contracts.length === 0) throw new Error('Contract not found.');
 
   const contract = contracts[0];
+  if (contract.status === 'rejected' || contract.approval_status === 'rejected') {
+    throw new Error('Cannot initiate payment for a rejected contract offer.');
+  }
   if (contract.payment_status === 'paid') {
     throw new Error('This contract is already paid.');
   }
@@ -1421,6 +1627,10 @@ const verifyContractOfflinePayment = async ({ contractId, adminUserId, decision,
   const [contracts] = await pool.query('SELECT * FROM amc_contracts WHERE id = ?', [contractId]);
   if (contracts.length === 0) throw new Error('Contract not found.');
   const contract = contracts[0];
+
+  if (contract.status === 'rejected' || contract.approval_status === 'rejected') {
+    throw new Error('Cannot verify offline payment for a rejected contract offer.');
+  }
 
   if (decision === 'verified') {
     // Idempotency: avoid duplicate invoices on offline verification replays
@@ -1520,7 +1730,1223 @@ const verifyContractOfflinePayment = async ({ contractId, adminUserId, decision,
   }
 };
 
+/**
+ * 20. Process Contract Expiries and Offer Expiries
+ * Automatically transitions active contracts that have passed their end_date to 'expired'
+ * and updates covered devices to 'expired'.
+ * Sweeps offered contracts past their offer_valid_until to 'expired'.
+ */
+const processContractExpiries = async (connectionOrPool) => {
+  const isPool = typeof connectionOrPool.getConnection === 'function';
+  const connection = isPool ? await connectionOrPool.getConnection() : connectionOrPool;
+
+  try {
+    let expiredContractsCount = 0;
+    let expiredOffersCount = 0;
+
+    const todayStr = getBusinessTodayStr();
+
+    // 1. Sweep active contracts that have reached or passed their end_date in AMC business timezone
+    const [expiredContracts] = await connection.query(`
+      SELECT id, contract_number, company_id, end_date, plan_name
+      FROM amc_contracts
+      WHERE status = 'active'
+        AND end_date < ?
+    `, [todayStr]);
+
+    for (const contract of expiredContracts) {
+      await connection.beginTransaction();
+      try {
+        const [updateResult] = await connection.query(`
+          UPDATE amc_contracts
+          SET status = 'expired'
+          WHERE id = ? AND status = 'active'
+        `, [contract.id]);
+
+        if (updateResult.affectedRows > 0) {
+          // Transition covered devices to 'expired'
+          await connection.query(`
+            UPDATE amc_covered_devices
+            SET status = 'expired'
+            WHERE contract_id = ? AND status = 'active'
+          `, [contract.id]);
+
+          // Legacy device table synchronization
+          await connection.query(`
+            UPDATE company_devices cd
+            SET cd.is_amc = 0
+            WHERE cd.id IN (
+              SELECT device_id FROM amc_covered_devices WHERE contract_id = ?
+            ) AND NOT EXISTS (
+              SELECT 1 FROM amc_covered_devices acd
+              JOIN amc_contracts ac ON acd.contract_id = ac.id
+              WHERE acd.device_id = cd.id AND acd.status = 'active' AND ac.status = 'active'
+            )
+          `, [contract.id]);
+
+          // Audit trail
+          await connection.query(`
+            INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+            VALUES (?, 'CONTRACT_EXPIRED', NULL, ?)
+          `, [contract.id, JSON.stringify({
+            expiredAt: new Date().toISOString(),
+            endDate: formatDateOnly(contract.end_date)
+          })]);
+
+          await connection.commit();
+          expiredContractsCount++;
+
+          // Dispatch notifications after commit
+          await sendAmcNotification({
+            userId: contract.company_id,
+            title: `AMC Contract Expired (${contract.contract_number})`,
+            message: `Your AMC contract ${contract.contract_number} (${contract.plan_name}) expired on ${formatDateOnly(contract.end_date)}. Device repair coverage is now inactive. You can initiate a renewal from your portal.`
+          });
+          await sendAmcNotification({
+            role: 'admin',
+            title: `AMC Contract Expired (${contract.contract_number})`,
+            message: `AMC contract ${contract.contract_number} for company #${contract.company_id} has expired.`
+          });
+        } else {
+          await connection.rollback();
+        }
+      } catch (err) {
+        await connection.rollback();
+        logger.error(`[AMC Expiry Sweep] Failed processing expiry for contract ${contract.id}: ${err.message}`);
+      }
+    }
+
+    // 2. Sweep offered contracts past their offer_valid_until date in AMC business timezone
+    const [expiredOffers] = await connection.query(`
+      SELECT id, contract_number, company_id, offer_valid_until, plan_name
+      FROM amc_contracts
+      WHERE status = 'offered'
+        AND offer_valid_until < ?
+    `, [todayStr]);
+
+    for (const offer of expiredOffers) {
+      await connection.beginTransaction();
+      try {
+        const [updateOfferResult] = await connection.query(`
+          UPDATE amc_contracts
+          SET status = 'expired'
+          WHERE id = ? AND status = 'offered'
+        `, [offer.id]);
+
+        if (updateOfferResult.affectedRows > 0) {
+          // Audit trail
+          await connection.query(`
+            INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+            VALUES (?, 'OFFER_EXPIRED', NULL, ?)
+          `, [offer.id, JSON.stringify({
+            expiredAt: new Date().toISOString(),
+            offerValidUntil: formatDateOnly(offer.offer_valid_until)
+          })]);
+
+          await connection.commit();
+          expiredOffersCount++;
+
+          // Notification
+          await sendAmcNotification({
+            userId: offer.company_id,
+            title: `AMC Offer Expired (${offer.contract_number})`,
+            message: `The AMC offer for ${offer.plan_name} (${offer.contract_number}) expired on ${formatDateOnly(offer.offer_valid_until)}.`
+          });
+        } else {
+          await connection.rollback();
+        }
+      } catch (offerErr) {
+        await connection.rollback();
+        logger.error(`[AMC Expiry Sweep] Failed processing offer expiry for contract ${offer.id}: ${offerErr.message}`);
+      }
+    }
+
+    return {
+      success: true,
+      expiredContractsCount,
+      expiredOffersCount
+    };
+  } finally {
+    if (isPool && connection) {
+      connection.release();
+    }
+  }
+};
+
+/**
+ * 21. Process Expiry Reminders (Fix A Remediation)
+ * Dispatches automated reminders at configured milestones (e.g. 30, 15, 7, 1 days).
+ * Employs durable outbox lifecycle: pending -> processing -> success / partial / failed.
+ * Features:
+ * - Persistent reminder intent creation before network/email calls
+ * - Independent tracking of in_app_status and email_status
+ * - Controlled retries for failed/interrupted channels without duplicating successful ones
+ * - Automatic recovery of stale 'processing' records after worker crash
+ * - Duplicate prevention via UNIQUE KEY uk_contract_milestone_expiry
+ */
+const processExpiryReminders = async (connectionOrPool) => {
+  const isPool = typeof connectionOrPool.getConnection === 'function';
+  const connection = isPool ? await connectionOrPool.getConnection() : connectionOrPool;
+
+  try {
+    // 1. Stale processing recovery (recover crashes where worker died mid-processing > 5 minutes)
+    await connection.query(`
+      UPDATE amc_expiry_reminders
+      SET delivery_status = 'pending'
+      WHERE delivery_status = 'processing'
+        AND (last_attempted_at IS NULL OR last_attempted_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE))
+    `);
+
+    // 2. Read configured milestones and retry base delay
+    let milestones = [30, 15, 7, 1];
+    let retryBaseMinutes = config.amc?.retryBaseMinutes || 15;
+    try {
+      const [settingRows] = await connection.query(
+        "SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN ('amc_reminder_milestones_days', 'amc_reminder_retry_base_minutes')"
+      );
+      for (const row of settingRows) {
+        if (row.setting_key === 'amc_reminder_milestones_days' && row.setting_value) {
+          const parsed = row.setting_value
+            .split(',')
+            .map(s => parseInt(s.trim(), 10))
+            .filter(n => !isNaN(n) && n > 0)
+            .sort((a, b) => b - a);
+          if (parsed.length > 0) milestones = parsed;
+        } else if (row.setting_key === 'amc_reminder_retry_base_minutes' && row.setting_value) {
+          const parsedMinutes = parseInt(row.setting_value, 10);
+          if (!isNaN(parsedMinutes) && parsedMinutes > 0) {
+            retryBaseMinutes = parsedMinutes;
+          }
+        }
+      }
+    } catch (settingErr) {
+      logger.warn(`[AMC Reminders] Could not read custom settings: ${settingErr.message}`);
+    }
+
+    const todayBusinessStr = getBusinessTodayStr();
+
+    // 3. Scan active contracts nearing expiry and persist reminder intents as 'pending'
+    const [contracts] = await connection.query(`
+      SELECT c.id, c.contract_number, c.company_id, c.plan_name, c.end_date,
+             DATEDIFF(c.end_date, ?) AS days_left,
+             u.name AS company_name, u.email AS company_email
+      FROM amc_contracts c
+      JOIN users u ON c.company_id = u.id
+      WHERE c.status = 'active'
+        AND c.end_date >= ?
+    `, [todayBusinessStr, todayBusinessStr]);
+
+    for (const contract of contracts) {
+      const daysLeft = parseInt(contract.days_left, 10);
+      const endDateStr = formatDateOnly(contract.end_date);
+
+      const applicableMilestones = milestones.filter(m => daysLeft <= m);
+      if (applicableMilestones.length === 0) continue;
+
+      const targetMilestone = Math.min(...applicableMilestones);
+
+      try {
+        await connection.query(`
+          INSERT INTO amc_expiry_reminders (
+            contract_id, company_id, milestone_days, expiry_date, delivery_channel,
+            delivery_status, in_app_status, email_status, metadata
+          ) VALUES (?, ?, ?, ?, 'both', 'pending', 'pending', 'pending', ?)
+        `, [
+          contract.id,
+          contract.company_id,
+          targetMilestone,
+          endDateStr,
+          JSON.stringify({ daysLeft, contractNumber: contract.contract_number, queuedAt: new Date().toISOString() })
+        ]);
+      } catch (dupErr) {
+        // Ignored: Reminder intent for this contract, milestone and expiry date already exists
+        if (dupErr.code !== 'ER_DUP_ENTRY' && dupErr.errno !== 1062) {
+          logger.error(`[AMC Reminders] Error recording reminder intent for contract ${contract.id}: ${dupErr.message}`);
+        }
+      }
+    }
+
+    // 4. Outbox Dispatch & Controlled Retries for all pending / failed / partial reminders respecting backoff (Fix 1)
+    const [outboxItems] = await connection.query(`
+      SELECT r.*, c.contract_number, c.plan_name, u.name AS company_name, u.email AS company_email
+      FROM amc_expiry_reminders r
+      JOIN amc_contracts c ON r.contract_id = c.id
+      JOIN users u ON r.company_id = u.id
+      WHERE r.delivery_status IN ('pending', 'failed', 'partial')
+        AND r.retry_count < 5
+        AND (r.next_retry_at IS NULL OR r.next_retry_at <= NOW())
+        AND c.status = 'active'
+      ORDER BY r.id ASC
+      LIMIT 100
+    `);
+
+    let remindersSent = 0;
+
+    for (const reminder of outboxItems) {
+      // Concurrency-safe claim: only advance if still in an uncompleted status
+      const [claimRes] = await connection.query(`
+        UPDATE amc_expiry_reminders
+        SET delivery_status = 'processing', last_attempted_at = CURRENT_TIMESTAMP, retry_count = retry_count + 1
+        WHERE id = ? AND delivery_status IN ('pending', 'failed', 'partial')
+      `, [reminder.id]);
+
+      if (claimRes.affectedRows === 0) {
+        // Grabbed by another concurrent sweep or worker
+        continue;
+      }
+
+      const currentRetryCount = reminder.retry_count + 1;
+      const endDateStr = formatDateOnly(reminder.expiry_date);
+      const daysLeft = Math.max(0, Math.ceil((new Date(endDateStr + 'T00:00:00+05:30').getTime() - new Date(todayBusinessStr + 'T00:00:00+05:30').getTime()) / (1000 * 60 * 60 * 24)));
+
+      const title = `AMC Expiry Notice: ${reminder.contract_number} (${reminder.milestone_days} Day${reminder.milestone_days === 1 ? '' : 's'} Notice)`;
+      const message = `Dear ${reminder.company_name || 'Valued Client'}, your AMC contract ${reminder.contract_number} (${reminder.plan_name}) will expire on ${endDateStr}. Please renew before the expiry date to ensure continuous device repair protection and prevent coverage lapse.`;
+
+      // Determine channel dispatch needs: only retry channels that have not yet succeeded
+      const needInApp = reminder.in_app_status !== 'success';
+      const needEmail = reminder.email_status !== 'success';
+
+      const dispatchTrackingId = `AMC-NOTIF-${reminder.id}-ATTEMPT-${currentRetryCount}-${Date.now()}`;
+
+      const dispatchResult = await sendAmcNotification({
+        userId: reminder.company_id,
+        title,
+        message,
+        sendInApp: needInApp,
+        sendEmail: needEmail
+      });
+
+      const updatedInAppStatus = needInApp ? (dispatchResult.inAppSuccess ? 'success' : 'failed') : reminder.in_app_status;
+      const updatedEmailStatus = needEmail ? (dispatchResult.emailSuccess ? 'success' : 'failed') : reminder.email_status;
+
+      let finalDeliveryStatus = 'failed';
+      if (updatedInAppStatus === 'success' && updatedEmailStatus === 'success') {
+        finalDeliveryStatus = 'success';
+      } else if (updatedInAppStatus === 'success' || updatedEmailStatus === 'success') {
+        finalDeliveryStatus = 'partial';
+      }
+
+      const errors = [];
+      if (dispatchResult.inAppError) errors.push(`In-App: ${dispatchResult.inAppError}`);
+      if (dispatchResult.emailError) errors.push(`Email: ${dispatchResult.emailError}`);
+      const errorMessage = errors.length > 0 ? errors.join('; ') : null;
+
+      // Exponential backoff calculation for next retry (e.g. attempt 1: 15m, attempt 2: 30m, attempt 3: 60m...)
+      let nextRetryClause = 'NULL';
+      const updateParams = [finalDeliveryStatus, updatedInAppStatus, updatedEmailStatus, errorMessage];
+
+      if ((finalDeliveryStatus === 'failed' || finalDeliveryStatus === 'partial') && currentRetryCount < 5) {
+        const backoffMinutes = retryBaseMinutes * Math.pow(2, currentRetryCount - 1);
+        nextRetryClause = 'DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? MINUTE)';
+        updateParams.push(backoffMinutes);
+      }
+
+      updateParams.push(dispatchTrackingId, reminder.id);
+
+      await connection.query(`
+        UPDATE amc_expiry_reminders
+        SET delivery_status = ?,
+            in_app_status = ?,
+            email_status = ?,
+            error_message = ?,
+            sent_at = CURRENT_TIMESTAMP,
+            next_retry_at = ${nextRetryClause},
+            metadata = JSON_SET(COALESCE(metadata, '{}'), '$.lastDispatchTrackingId', ?, '$.lastAttemptAt', CURRENT_TIMESTAMP)
+        WHERE id = ?
+      `, updateParams);
+
+      if (finalDeliveryStatus === 'success' || finalDeliveryStatus === 'partial') {
+        remindersSent++;
+
+        // Audit trail (only once per milestone)
+        const [existingHist] = await connection.query(`
+          SELECT 1 FROM amc_contract_history
+          WHERE contract_id = ? AND action = 'EXPIRY_REMINDER_SENT' AND details LIKE ?
+          LIMIT 1
+        `, [reminder.contract_id, `%"milestoneDays":${reminder.milestone_days}%`]);
+
+        if (existingHist.length === 0) {
+          await connection.query(`
+            INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+            VALUES (?, 'EXPIRY_REMINDER_SENT', NULL, ?)
+          `, [reminder.contract_id, JSON.stringify({
+            milestoneDays: reminder.milestone_days,
+            daysLeft,
+            expiryDate: endDateStr,
+            deliveryStatus: finalDeliveryStatus,
+            inAppStatus: updatedInAppStatus,
+            emailStatus: updatedEmailStatus,
+            sentAt: new Date().toISOString()
+          })]);
+        }
+      }
+    }
+
+    return {
+      success: true,
+      remindersSent
+    };
+  } finally {
+    if (isPool && connection) {
+      connection.release();
+    }
+  }
+};
+
+/**
+ * 22. Process Selection Deadline Reminders
+ * Alerts companies if selection deadline is approaching and device quota has not been fulfilled.
+ */
+const processSelectionDeadlineReminders = async (connectionOrPool) => {
+  const isPool = typeof connectionOrPool.getConnection === 'function';
+  const connection = isPool ? await connectionOrPool.getConnection() : connectionOrPool;
+
+  try {
+    const todayBusinessStr = getBusinessTodayStr();
+
+    const [contracts] = await connection.query(`
+      SELECT c.id, c.contract_number, c.company_id, c.device_capacity, c.selection_deadline,
+             DATEDIFF(c.selection_deadline, ?) AS days_left,
+             u.name AS company_name,
+             (SELECT COUNT(*) FROM amc_covered_devices cd WHERE cd.contract_id = c.id AND cd.status = 'active') AS active_count
+      FROM amc_contracts c
+      JOIN users u ON c.company_id = u.id
+      WHERE c.selection_deadline IS NOT NULL
+        AND c.selection_deadline >= ?
+        AND DATEDIFF(c.selection_deadline, ?) <= 3
+        AND c.status IN ('offered', 'accepted', 'active')
+    `, [todayBusinessStr, todayBusinessStr, todayBusinessStr]);
+
+    let remindersSent = 0;
+
+    for (const contract of contracts) {
+      if (contract.active_count < contract.device_capacity) {
+        const daysLeft = parseInt(contract.days_left, 10);
+        const deadlineStr = formatDateOnly(contract.selection_deadline);
+
+        let inserted = false;
+        try {
+          const [insertRes] = await connection.query(`
+            INSERT INTO amc_expiry_reminders (contract_id, company_id, milestone_days, expiry_date, delivery_channel, delivery_status, metadata)
+            VALUES (?, ?, ?, ?, 'both', 'success', ?)
+          `, [
+            contract.id,
+            contract.company_id,
+            -100 - daysLeft,
+            deadlineStr,
+            JSON.stringify({ type: 'selection_deadline', activeCount: contract.active_count, capacity: contract.device_capacity })
+          ]);
+          inserted = insertRes.affectedRows > 0;
+        } catch (dupErr) {
+          inserted = false;
+        }
+
+        if (inserted) {
+          remindersSent++;
+          const title = `Action Required: Device Allocation Deadline Approaching (${contract.contract_number})`;
+          const message = `Please select your covered devices for AMC ${contract.contract_number}. Deadline is ${deadlineStr} (${daysLeft} day${daysLeft === 1 ? '' : 's'} remaining). Currently allocated: ${contract.active_count}/${contract.device_capacity} devices.`;
+
+          await sendAmcNotification({
+            userId: contract.company_id,
+            title,
+            message
+          });
+        }
+      }
+    }
+
+    return { success: true, remindersSent };
+  } finally {
+    if (isPool && connection) {
+      connection.release();
+    }
+  }
+};
+
+/**
+ * 23. Request AMC Renewal (Company)
+ * Submits a formal renewal request for an active or expired AMC contract.
+ */
+const requestAmcRenewal = async ({ contractId, companyId, requestedCapacity = null, notes = null, userId = null }) => {
+  const resolvedCompanyId = await resolveCompanyUserId(pool, companyId);
+  if (!resolvedCompanyId) {
+    throw new Error('Company not found.');
+  }
+
+  const [contracts] = await pool.query(
+    'SELECT * FROM amc_contracts WHERE id = ? AND company_id = ?',
+    [contractId, resolvedCompanyId]
+  );
+  if (contracts.length === 0) {
+    throw new Error('Contract not found or does not belong to your company.');
+  }
+
+  const previousContract = contracts[0];
+  if (!['active', 'expired'].includes(previousContract.status)) {
+    throw new Error(`Cannot renew contract with status "${previousContract.status}". Must be active or expired.`);
+  }
+
+  // Duplicate Check 1: Check if an existing renewal request is currently pending or under review (Fix E)
+  const [existingPending] = await pool.query(`
+    SELECT id, request_number, status, created_at
+    FROM amc_requests
+    WHERE (previous_contract_id = ? OR (company_id = ? AND notes LIKE ?))
+      AND status IN ('pending', 'under_review')
+    LIMIT 1
+  `, [previousContract.id, resolvedCompanyId, `%${previousContract.contract_number}%`]);
+
+  if (existingPending.length > 0) {
+    throw new Error(`A renewal request (${existingPending[0].request_number}) is already pending review for contract ${previousContract.contract_number}. Duplicate requests are not permitted.`);
+  }
+
+  // Duplicate Check 2: Check if an active renewal contract offer is already issued and pending acceptance
+  const [existingOffer] = await pool.query(`
+    SELECT id, contract_number, status
+    FROM amc_contracts
+    WHERE previous_contract_id = ?
+      AND status IN ('offered', 'accepted')
+    LIMIT 1
+  `, [previousContract.id]);
+
+  if (existingOffer.length > 0) {
+    throw new Error(`A renewal offer (${existingOffer[0].contract_number}) has already been generated for contract ${previousContract.contract_number}. Please review and accept the offer in your portal.`);
+  }
+
+  const capacity = requestedCapacity ? parseInt(requestedCapacity, 10) : previousContract.device_capacity;
+  const requestNumber = `AMC-RNW-${Date.now().toString(36).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
+
+  const renewalNotes = `Renewal request for AMC ${previousContract.contract_number} (${previousContract.plan_name}). ` +
+    (requestedCapacity && requestedCapacity !== previousContract.device_capacity ? `Requested capacity: ${capacity} (previously ${previousContract.device_capacity}). ` : '') +
+    (notes ? `Notes: ${notes}` : '');
+
+  const [result] = await pool.query(`
+    INSERT INTO amc_requests (
+      request_number, company_id, plan_id, requested_device_count, notes, status, previous_contract_id
+    ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+  `, [
+    requestNumber,
+    resolvedCompanyId,
+    previousContract.plan_id,
+    capacity,
+    renewalNotes.trim(),
+    previousContract.id
+  ]);
+
+  await pool.query(`
+    INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+    VALUES (?, 'RENEWAL_REQUESTED', ?, ?)
+  `, [
+    contractId,
+    userId || null,
+    JSON.stringify({ requestId: result.insertId, requestNumber, requestedCapacity: capacity })
+  ]);
+
+  await sendAmcNotification({
+    role: 'admin',
+    title: `AMC Renewal Requested (${previousContract.contract_number})`,
+    message: `Company has submitted a renewal request for contract ${previousContract.contract_number}. Requested capacity: ${capacity} devices.`
+  });
+
+  return {
+    success: true,
+    requestId: result.insertId,
+    requestNumber,
+    contractId
+  };
+};
+
+/**
+ * 24. Create AMC Renewal Contract (Admin)
+ * Creates a renewal contract linked to previous_contract_id.
+ * Strict rules:
+ * - Gap renewal: If previous contract expired, dates are prospective only (startDate >= CURRENT_DATE). No retroactive coverage.
+ * - Device selection: Explicit selection required. Does NOT auto-assign previous covered devices.
+ * - Reduced-capacity: device_capacity can be less than previous contract capacity.
+ */
+const createAmcRenewalContract = async ({
+  previousContractId,
+  companyId = null,
+  planId = null,
+  planName = null,
+  deviceCapacity = null,
+  price = null,
+  discountAmount = 0.00,
+  taxAmount = 0.00,
+  totalAmount = null,
+  termsAndConditions = null,
+  offerValidUntil = null,
+  startDate = null,
+  endDate = null,
+  selectionDeadline = null,
+  createdBy = null
+}) => {
+  const [prevRows] = await pool.query('SELECT * FROM amc_contracts WHERE id = ?', [previousContractId]);
+  if (prevRows.length === 0) {
+    throw new Error('Previous contract not found.');
+  }
+
+  const prev = prevRows[0];
+  const targetCompanyId = companyId ? (await resolveCompanyUserId(pool, companyId)) : prev.company_id;
+  const targetPlanId = planId || prev.plan_id;
+  const targetPlanName = planName || prev.plan_name;
+  const targetCapacity = deviceCapacity ? parseInt(deviceCapacity, 10) : prev.device_capacity;
+  const targetPrice = price !== null ? parseFloat(price) : parseFloat(prev.price);
+  const targetDiscount = parseFloat(discountAmount || 0);
+  const targetTax = parseFloat(taxAmount || 0);
+  const targetTotal = totalAmount !== null ? parseFloat(totalAmount) : (targetPrice - targetDiscount + targetTax);
+  const targetTerms = termsAndConditions || prev.terms_and_conditions;
+
+  const todayStr = formatDateOnly(new Date());
+  const prevEndDateStr = prev.end_date ? formatDateOnly(prev.end_date) : null;
+  const isGapRenewal = !prevEndDateStr || prevEndDateStr < todayStr;
+
+  let computedStart = startDate ? formatDateOnly(startDate) : null;
+
+  if (isGapRenewal) {
+    if (computedStart && computedStart < todayStr) {
+      throw new Error('Renewal start date cannot be in the past for an expired contract. Retroactive AMC coverage is not permitted.');
+    }
+    if (!computedStart) {
+      computedStart = todayStr;
+    }
+  } else {
+    if (!computedStart) {
+      computedStart = addDaysOnly(prevEndDateStr, 1);
+    }
+  }
+
+  let computedEnd = endDate ? formatDateOnly(endDate) : null;
+  if (!computedEnd) {
+    computedEnd = addDaysOnly(computedStart, 365);
+  }
+
+  if (computedEnd < computedStart) {
+    throw new Error('Renewal end date cannot be earlier than start date.');
+  }
+
+  const computedSelectionDeadline = selectionDeadline ? formatDateOnly(selectionDeadline) : computedStart;
+  const contractNumber = `AMC-RNW-${Date.now().toString(36).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
+
+  const [result] = await pool.query(`
+    INSERT INTO amc_contracts (
+      contract_number, company_id, request_id, plan_id, contract_type,
+      plan_name, device_capacity, price, discount_amount, tax_amount, total_amount,
+      terms_and_conditions, offer_valid_until, selection_deadline, start_date, end_date,
+      status, approval_status, payment_status, previous_contract_id, is_renewal, created_by
+    ) VALUES (?, ?, NULL, ?, 'renewal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'offered', 'pending_approval', 'unpaid', ?, 1, ?)
+  `, [
+    contractNumber, targetCompanyId, targetPlanId, targetPlanName, targetCapacity,
+    targetPrice, targetDiscount, targetTax, targetTotal, targetTerms,
+    offerValidUntil ? formatDateOnly(offerValidUntil) : null,
+    computedSelectionDeadline,
+    computedStart,
+    computedEnd,
+    previousContractId,
+    createdBy || null
+  ]);
+
+  const newContractId = result.insertId;
+
+  // Record audit history on new contract
+  await pool.query(`
+    INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+    VALUES (?, 'RENEWAL_CONTRACT_CREATED', ?, ?)
+  `, [
+    newContractId,
+    createdBy || null,
+    JSON.stringify({
+      previousContractId,
+      previousContractNumber: prev.contract_number,
+      deviceCapacity: targetCapacity,
+      previousCapacity: prev.device_capacity,
+      startDate: computedStart,
+      endDate: computedEnd,
+      isGapRenewal
+    })
+  ]);
+
+  // Record audit history on previous contract
+  await pool.query(`
+    INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+    VALUES (?, 'RENEWAL_OFFER_ISSUED', ?, ?)
+  `, [
+    previousContractId,
+    createdBy || null,
+    JSON.stringify({
+      renewalContractId: newContractId,
+      renewalContractNumber: contractNumber,
+      capacity: targetCapacity
+    })
+  ]);
+
+  // Notify company
+  await sendAmcNotification({
+    userId: targetCompanyId,
+    title: `AMC Renewal Offer Available (${contractNumber})`,
+    message: `A renewal offer (${contractNumber}) for your AMC coverage is ready. Capacity: ${targetCapacity} devices. Validity: ${computedStart} to ${computedEnd}. Please review and accept in your portal.`
+  });
+
+  return {
+    id: newContractId,
+    contractNumber,
+    previousContractId,
+    startDate: computedStart,
+    endDate: computedEnd,
+    deviceCapacity: targetCapacity,
+    isGapRenewal
+  };
+};
+
+/**
+ * Helper to obtain the certificate signing secrets from environment or server security config.
+ * Supports current signing secret and previous secrets for zero-downtime key rotation (Fix 4).
+ */
+const getCertificateSecrets = () => {
+  const currentSecret = (process.env.AMC_CERTIFICATE_SECRET || config.amc?.certificateSecret || config.security?.settingsEncryptionKey || config.jwt?.secret || '').trim();
+  if (!currentSecret) {
+    throw new Error('Certificate signing secret is not configured.');
+  }
+
+  // Previous secrets can be comma-separated in AMC_CERTIFICATE_PREVIOUS_SECRETS
+  const previousEnv = (process.env.AMC_CERTIFICATE_PREVIOUS_SECRETS || '').trim();
+  const previousConfig = config.amc?.certificatePreviousSecrets || [];
+  const previousList = (previousEnv ? previousEnv.split(',') : previousConfig)
+    .map(s => String(s).trim())
+    .filter(s => s && s !== currentSecret);
+
+  // Also include settings encryption key or jwt secret as previous keys if current secret is AMC_CERTIFICATE_SECRET
+  if (process.env.AMC_CERTIFICATE_SECRET) {
+    const encKey = (config.security?.settingsEncryptionKey || '').trim();
+    const jwtSec = (config.jwt?.secret || '').trim();
+    if (encKey && encKey !== currentSecret && !previousList.includes(encKey)) previousList.push(encKey);
+    if (jwtSec && jwtSec !== currentSecret && !previousList.includes(jwtSec)) previousList.push(jwtSec);
+  }
+
+  return { currentSecret, previousSecrets: previousList };
+};
+
+const getCertificateSecret = () => getCertificateSecrets().currentSecret;
+
+/**
+ * Generates canonical payload for certificate signing (Fix 6).
+ * Normalizes dates to canonical YYYY-MM-DD in the business timezone so timezones never skew signature generation.
+ * Format: "<CONTRACT_NUMBER>:<START_DATE>:<END_DATE>:<COMPANY_ID>"
+ */
+const generateCertificateCanonicalPayload = (contract) => {
+  if (!contract || typeof contract !== 'object') {
+    throw new Error('Contract object is required to generate certificate canonical payload.');
+  }
+  const contractNumber = String(contract.contract_number || contract.contractNumber || '').trim();
+  const startDateStr = formatDateOnly(contract.start_date || contract.startDate);
+  const endDateStr = formatDateOnly(contract.end_date || contract.endDate);
+  const companyId = String(contract.company_id || contract.companyId || (contract.company && contract.company.id) || '').trim();
+
+  if (!contractNumber || !startDateStr || !endDateStr || !companyId) {
+    throw new Error('Malformed contract payload: contract number, valid start date, valid end date, and company ID are required.');
+  }
+
+  return `${contractNumber}:${startDateStr}:${endDateStr}:${companyId}`;
+};
+
+/**
+ * Computes deterministic HMAC-SHA256 verification code with a given secret.
+ */
+const computeHmacWithSecret = (canonicalPayload, secret) => {
+  return crypto
+    .createHmac('sha256', secret)
+    .update(canonicalPayload)
+    .digest('hex')
+    .slice(0, 16)
+    .toUpperCase();
+};
+
+/**
+ * Computes deterministic HMAC-SHA256 verification code for an AMC contract using the CURRENT active key.
+ */
+const generateCertificateHmacCode = (contract) => {
+  const { currentSecret } = getCertificateSecrets();
+  const canonicalPayload = generateCertificateCanonicalPayload(contract);
+  return computeHmacWithSecret(canonicalPayload, currentSecret);
+};
+
+/**
+ * Verifies the authenticity of a certificate verification code using constant-time comparison.
+ * Supports:
+ * - Current active HMAC key: returns { valid: true, version: 'v2_hmac' }
+ * - Previous rotated HMAC keys: returns { valid: true, version: 'v2_hmac_rotated' }
+ * - Legacy v1 plain SHA-256 fallback: returns { valid: true, version: 'v1_legacy' }
+ */
+const verifyCertificateAuthenticity = (contract, providedCode) => {
+  if (!providedCode || typeof providedCode !== 'string' || providedCode.trim().length !== 16) {
+    return { valid: false, reason: 'INVALID_CODE_FORMAT' };
+  }
+  const cleanCode = providedCode.trim().toUpperCase();
+  const providedBuf = Buffer.from(cleanCode, 'utf8');
+
+  let canonicalPayload;
+  try {
+    canonicalPayload = generateCertificateCanonicalPayload(contract);
+  } catch (payloadErr) {
+    return { valid: false, reason: 'MALFORMED_CONTRACT_DATA', error: payloadErr.message };
+  }
+
+  const { currentSecret, previousSecrets } = getCertificateSecrets();
+
+  // 1. Verify against current HMAC-SHA256 key (v2_hmac)
+  const currentHmac = computeHmacWithSecret(canonicalPayload, currentSecret);
+  const currentBuf = Buffer.from(currentHmac, 'utf8');
+  if (providedBuf.length === currentBuf.length && crypto.timingSafeEqual(providedBuf, currentBuf)) {
+    return { valid: true, version: 'v2_hmac' };
+  }
+
+  // 2. Verify against previous rotated HMAC keys (v2_hmac_rotated)
+  for (const prevSecret of previousSecrets) {
+    const prevHmac = computeHmacWithSecret(canonicalPayload, prevSecret);
+    const prevBuf = Buffer.from(prevHmac, 'utf8');
+    if (providedBuf.length === prevBuf.length && crypto.timingSafeEqual(providedBuf, prevBuf)) {
+      return { valid: true, version: 'v2_hmac_rotated' };
+    }
+  }
+
+  // 3. Backward compatibility fallback for v1 legacy plain SHA-256 (unkeyed hash)
+  // SEC-02: Strictly gated behind explicit AMC_ALLOW_LEGACY_V1 compatibility flag. Default: disabled (secure).
+  const allowLegacyV1 = (process.env.AMC_ALLOW_LEGACY_V1 || '').trim().toLowerCase() === 'true' || config.amc?.allowLegacyV1 === true;
+  if (allowLegacyV1) {
+    const contractNumber = String(contract.contract_number || contract.contractNumber || '').trim();
+    const startDateStr = formatDateOnly(contract.start_date || contract.startDate) || '';
+    const endDateStr = formatDateOnly(contract.end_date || contract.endDate) || '';
+    const companyId = String(contract.company_id || contract.companyId || (contract.company && contract.company.id) || '').trim();
+    const legacyPayload = `${contractNumber}:${startDateStr}:${endDateStr}:${companyId}`;
+    const legacyHash = crypto.createHash('sha256').update(legacyPayload).digest('hex').slice(0, 16).toUpperCase();
+    const legacyBuf = Buffer.from(legacyHash, 'utf8');
+
+    if (providedBuf.length === legacyBuf.length && crypto.timingSafeEqual(providedBuf, legacyBuf)) {
+      return { valid: true, version: 'v1_legacy' };
+    }
+  }
+
+  return { valid: false, reason: 'VERIFICATION_FAILED' };
+};
+
+/**
+ * Evaluates contract-level compliance status based on authoritative business rules (Stage 3A - ISSUE-01).
+ * Accounts for contract status, approval status, payment status, effective start date,
+ * expiry date, and current date in Asia/Kolkata business timezone.
+ */
+const evaluateContractCompliance = (contract) => {
+  if (!contract || typeof contract !== 'object') {
+    return { isCompliant: false, complianceStatus: 'INVALID_CONTRACT' };
+  }
+
+  const todayStr = getBusinessTodayStr();
+  const startDateStr = formatDateOnly(contract.start_date || contract.startDate);
+  const endDateStr = formatDateOnly(contract.end_date || contract.endDate);
+  const status = String(contract.status || '').toLowerCase().trim();
+  const approvalStatus = String(contract.approval_status || contract.approvalStatus || '').toLowerCase().trim();
+  const paymentStatus = String(contract.payment_status || contract.paymentStatus || '').toLowerCase().trim();
+
+  // Cancelled contracts are never active or compliant
+  if (status === 'cancelled') {
+    return { isCompliant: false, complianceStatus: 'CANCELLED' };
+  }
+
+  // Rejected contracts are never active or compliant
+  if (status === 'rejected' || approvalStatus === 'rejected') {
+    return { isCompliant: false, complianceStatus: 'REJECTED' };
+  }
+
+  // If expiry date has passed, it is expired regardless of whether background cron has transitioned stored status
+  if (endDateStr && todayStr > endDateStr) {
+    return { isCompliant: false, complianceStatus: 'EXPIRED' };
+  }
+  if (status === 'expired') {
+    return { isCompliant: false, complianceStatus: 'EXPIRED' };
+  }
+
+  // Future-dated contracts that have not yet reached start date
+  if (startDateStr && todayStr < startDateStr) {
+    return { isCompliant: false, complianceStatus: 'PENDING_START_DATE' };
+  }
+
+  // Check active-compliance conditions:
+  // Must be active status, approved, paid, and within valid date boundaries
+  const hasActiveStatus = status === 'active';
+  const isApproved = approvalStatus === 'approved';
+  const isPaid = paymentStatus === 'paid';
+  const isDateValid = (!startDateStr || todayStr >= startDateStr) && (!endDateStr || todayStr <= endDateStr);
+
+  const isCompliant = hasActiveStatus && isApproved && isPaid && isDateValid;
+
+  if (isCompliant) {
+    return { isCompliant: true, complianceStatus: 'ACTIVE_COMPLIANT' };
+  }
+
+  // Non-compliant fallback reflecting normalized contract status
+  const normalizedStatus = status ? status.toUpperCase() : 'NON_COMPLIANT';
+  return { isCompliant: false, complianceStatus: normalizedStatus };
+};
+
+/**
+ * 25. Get Contract Certificate Data
+ * Authoritative backend data contract for generating official compliance certificate / printable PDF.
+ */
+const getContractCertificateData = async (contractId, user) => {
+  const [contracts] = await pool.query(`
+    SELECT c.*, 
+           u.name AS company_name, u.email AS company_email, u.phone AS company_phone,
+           cp.company_id AS canonical_company_id, cp.address AS company_address, cp.gst_number AS gstin,
+           p.coverage_terms, p.duration_months
+    FROM amc_contracts c
+    JOIN users u ON c.company_id = u.id
+    LEFT JOIN company_profiles cp ON u.id = cp.user_id
+    LEFT JOIN amc_plans p ON c.plan_id = p.id
+    WHERE c.id = ?
+  `, [contractId]);
+
+  if (contracts.length === 0) {
+    throw new Error('AMC Contract not found.');
+  }
+
+  const contract = contracts[0];
+
+  // Tenant Authorization
+  if (user.role === 'company') {
+    const resolvedCompanyId = await resolveCompanyUserId(pool, user.id);
+    if (contract.company_id !== resolvedCompanyId) {
+      throw new Error('Access denied: You are not authorized to view this contract certificate.');
+    }
+  } else if (user.role !== 'admin') {
+    throw new Error('Access denied: Only admins and the registered contract holder can access this certificate.');
+  }
+
+  // Covered devices
+  const [devices] = await pool.query(`
+    SELECT cd.id, cd.amc_tag, cd.coverage_start_date, cd.coverage_end_date, cd.status,
+           d.brand, d.model_number, d.serial_number, d.asset_id, d.device_category
+    FROM amc_covered_devices cd
+    JOIN company_devices d ON cd.device_id = d.id
+    WHERE cd.contract_id = ?
+    ORDER BY cd.id ASC
+  `, [contractId]);
+
+  // Site branding
+  const [settings] = await pool.query(`
+    SELECT setting_key, setting_value FROM site_settings 
+    WHERE setting_key IN ('company_name', 'company_email', 'company_phone', 'company_address', 'gstin')
+  `);
+  const orgSettings = {};
+  settings.forEach(s => { orgSettings[s.setting_key] = s.setting_value; });
+
+  const issuer = {
+    name: orgSettings.company_name || 'The Tek Doctor',
+    email: orgSettings.company_email || 'info@tekdoctor.in',
+    phone: orgSettings.company_phone || '+91 9136868902',
+    address: orgSettings.company_address || 'Mumbai, Maharashtra, India',
+    gstin: orgSettings.gstin || '27AAAAA0000A1Z5'
+  };
+
+  const certificateNumber = `CERT-${contract.contract_number.replace(/^AMC-CTR-/, '').replace(/^AMC-RNW-/, 'RNW-')}`;
+  const verificationCode = generateCertificateHmacCode(contract);
+
+  let parsedTerms = null;
+  try {
+    parsedTerms = typeof contract.coverage_terms === 'string' ? JSON.parse(contract.coverage_terms) : contract.coverage_terms;
+  } catch (_) {}
+
+  const compResult = evaluateContractCompliance(contract);
+
+  return {
+    certificateNumber,
+    verificationCode,
+    issuedAt: new Date().toISOString(),
+    isVerified: compResult.isCompliant,
+    complianceStatus: compResult.complianceStatus,
+    contract: {
+      id: contract.id,
+      companyId: contract.company_id,
+      company_id: contract.company_id,
+      contractNumber: contract.contract_number,
+      planName: contract.plan_name,
+      contractType: contract.contract_type,
+      isRenewal: Boolean(contract.is_renewal),
+      previousContractId: contract.previous_contract_id,
+      status: contract.status,
+      approvalStatus: contract.approval_status,
+      paymentStatus: contract.payment_status,
+      startDate: formatDateOnly(contract.start_date),
+      endDate: formatDateOnly(contract.end_date),
+      deviceCapacity: contract.device_capacity,
+      activeCoveredCount: devices.filter(d => d.status === 'active').length,
+      totalAmount: contract.total_amount,
+      currency: contract.currency || 'INR',
+      invoiceId: contract.invoice_id,
+      termsAndConditions: contract.terms_and_conditions
+    },
+    company: {
+      id: contract.company_id,
+      code: contract.canonical_company_id || `CMP-${contract.company_id}`,
+      name: contract.company_name,
+      email: contract.company_email,
+      phone: contract.company_phone,
+      address: contract.company_address || 'Address on record',
+      gstin: contract.gstin || 'N/A'
+    },
+    coveredDevices: devices.map(d => ({
+      id: d.id,
+      amcTag: d.amc_tag,
+      brand: d.brand,
+      modelNumber: d.model_number,
+      serialNumber: d.serial_number,
+      assetId: d.asset_id,
+      deviceCategory: d.device_category,
+      status: d.status,
+      coverageStartDate: formatDateOnly(d.coverage_start_date),
+      coverageEndDate: formatDateOnly(d.coverage_end_date)
+    })),
+    sla: {
+      slaTurnaroundHours: parsedTerms?.sla_turnaround_hours || 48,
+      priorityLevel: parsedTerms?.priority_level || 'Standard Business Fleet SLA',
+      quarterlyAudit: parsedTerms?.quarterly_audit !== false,
+      laborDiscountPct: parsedTerms?.labor_discount_pct !== undefined ? parsedTerms.labor_discount_pct : 100,
+      partsDiscountPct: parsedTerms?.parts_discount_pct !== undefined ? parsedTerms.parts_discount_pct : 10
+    },
+    issuer
+  };
+};
+
+/**
+ * 26. Public Certificate Verification (Fix F & Stage 3A ISSUE-01, ISSUE-05)
+ * Validates a certificate verification code and returns safe, sanitized public compliance metadata.
+ * Zero internal credentials, device serials, financials, or private notes are exposed.
+ */
+const getPublicCertificateVerification = async (verificationCode, contractNumber = null) => {
+  if (!verificationCode || typeof verificationCode !== 'string' || verificationCode.trim().length !== 16) {
+    return { valid: false, reason: 'INVALID_CODE_FORMAT' };
+  }
+
+  let sql = `
+    SELECT c.*, u.name AS company_name
+    FROM amc_contracts c
+    JOIN users u ON c.company_id = u.id
+    WHERE 1=1
+  `;
+  const params = [];
+  if (contractNumber) {
+    sql += ' AND c.contract_number = ?';
+    params.push(contractNumber.trim());
+  } else {
+    // Stage 3A (ISSUE-05): Consistent lifecycle states included in blind lookup
+    sql += " AND c.status IN ('active', 'expired', 'cancelled', 'suspended', 'rejected', 'accepted', 'offered')";
+  }
+  sql += ' ORDER BY c.id DESC LIMIT 100';
+
+  const [contracts] = await pool.query(sql, params);
+
+  for (const c of contracts) {
+    const authResult = verifyCertificateAuthenticity(c, verificationCode);
+    if (authResult.valid) {
+      const compResult = evaluateContractCompliance(c);
+      return {
+        valid: true,
+        version: authResult.version,
+        certificateNumber: `CERT-${c.contract_number.replace(/^AMC-CTR-/, '').replace(/^AMC-RNW-/, 'RNW-')}`,
+        contractNumber: c.contract_number,
+        companyName: c.company_name,
+        planName: c.plan_name,
+        status: c.status,
+        complianceStatus: compResult.complianceStatus,
+        startDate: formatDateOnly(c.start_date),
+        endDate: formatDateOnly(c.end_date),
+        verifiedAt: new Date().toISOString()
+      };
+    }
+  }
+
+  return {
+    valid: false,
+    reason: 'CERTIFICATE_NOT_FOUND_OR_INVALID'
+  };
+};
+
+/**
+ * 27. Get Expiry Reminders History (Admin Audit Log)
+ */
+const getExpiryRemindersHistory = async ({ contractId = null, companyId = null, status = null, limit = 50 } = {}) => {
+  let sql = `
+    SELECT r.*, c.contract_number, c.plan_name, u.name AS company_name, cp.company_id AS canonical_company_id
+    FROM amc_expiry_reminders r
+    JOIN amc_contracts c ON r.contract_id = c.id
+    JOIN users u ON r.company_id = u.id
+    LEFT JOIN company_profiles cp ON u.id = cp.user_id
+    WHERE 1=1
+  `;
+  const params = [];
+  if (contractId) {
+    sql += ' AND r.contract_id = ?';
+    params.push(contractId);
+  }
+  if (companyId) {
+    const resolvedId = await resolveCompanyUserId(pool, companyId);
+    sql += ' AND r.company_id = ?';
+    params.push(resolvedId);
+  }
+  if (status && status !== 'all') {
+    sql += ' AND r.delivery_status = ?';
+    params.push(status.trim().toLowerCase());
+  }
+  sql += ' ORDER BY r.id DESC LIMIT ?';
+  params.push(parseInt(limit, 10) || 50);
+
+  const [rows] = await pool.query(sql, params);
+  return rows.map(r => {
+    let parsedMeta = null;
+    try {
+      parsedMeta = typeof r.metadata === 'string' ? JSON.parse(r.metadata) : r.metadata;
+    } catch (_) {}
+    return {
+      ...r,
+      metadata: parsedMeta,
+      expiry_date: formatDateOnly(r.expiry_date)
+    };
+  });
+};
+
+/**
+ * 28. Retry Failed AMC Expiry Reminder (Fix 2 Hardening)
+ * Manually retries unfulfilled delivery channels for a failed or partial reminder.
+ */
+const retryReminder = async (reminderId, adminUserId = null) => {
+  const [reminders] = await pool.query(`
+    SELECT r.*, c.contract_number, c.plan_name, c.status AS contract_status, u.name AS company_name, u.email AS company_email
+    FROM amc_expiry_reminders r
+    JOIN amc_contracts c ON r.contract_id = c.id
+    JOIN users u ON r.company_id = u.id
+    WHERE r.id = ?
+    LIMIT 1
+  `, [reminderId]);
+
+  if (reminders.length === 0) {
+    throw new Error(`Reminder record #${reminderId} not found.`);
+  }
+
+  const reminder = reminders[0];
+  if (reminder.contract_status !== 'active') {
+    throw new Error(`Cannot retry reminder for contract with status "${reminder.contract_status}". Contract must be "active".`);
+  }
+  if (reminder.delivery_status === 'success') {
+    throw new Error(`Reminder #${reminderId} has already completed successfully.`);
+  }
+  if (reminder.delivery_status === 'processing') {
+    throw new Error(`Reminder #${reminderId} is currently being processed by another worker.`);
+  }
+
+  // Atomically claim the reminder
+  const [claimRes] = await pool.query(`
+    UPDATE amc_expiry_reminders
+    SET delivery_status = 'processing',
+        last_attempted_at = CURRENT_TIMESTAMP,
+        retry_count = retry_count + 1
+    WHERE id = ? AND delivery_status IN ('failed', 'partial', 'pending')
+  `, [reminder.id]);
+
+  if (claimRes.affectedRows === 0) {
+    throw new Error('Reminder is already being processed or modified by another worker.');
+  }
+
+  // Read retry base minutes setting (default 15 minutes)
+  let retryBaseMinutes = config.amc?.retryBaseMinutes || 15;
+  try {
+    const [settingRows] = await pool.query(
+      "SELECT setting_value FROM site_settings WHERE setting_key = 'amc_reminder_retry_base_minutes' LIMIT 1"
+    );
+    if (settingRows.length > 0 && settingRows[0].setting_value) {
+      const parsedMinutes = parseInt(settingRows[0].setting_value, 10);
+      if (!isNaN(parsedMinutes) && parsedMinutes > 0) {
+        retryBaseMinutes = parsedMinutes;
+      }
+    }
+  } catch (settingErr) {
+    logger.warn(`[AMC Reminders] Could not read custom retry base minutes: ${settingErr.message}`);
+  }
+
+  const currentRetryCount = reminder.retry_count + 1;
+  const todayBusinessStr = getBusinessTodayStr();
+  const endDateStr = formatDateOnly(reminder.expiry_date);
+  const daysLeft = Math.max(0, Math.ceil((new Date(endDateStr + 'T00:00:00+05:30').getTime() - new Date(todayBusinessStr + 'T00:00:00+05:30').getTime()) / (1000 * 60 * 60 * 24)));
+
+  const title = `AMC Expiry Notice: ${reminder.contract_number} (${reminder.milestone_days} Day${reminder.milestone_days === 1 ? '' : 's'} Notice)`;
+  const message = `Dear ${reminder.company_name || 'Valued Client'}, your AMC contract ${reminder.contract_number} (${reminder.plan_name}) will expire on ${endDateStr}. Please renew before the expiry date to ensure continuous device repair protection and prevent coverage lapse.`;
+
+  const needInApp = reminder.in_app_status !== 'success';
+  const needEmail = reminder.email_status !== 'success';
+
+  const dispatchTrackingId = `MANUAL-RETRY-${reminder.id}-ATTEMPT-${currentRetryCount}-${Date.now()}`;
+
+  const dispatchResult = await sendAmcNotification({
+    userId: reminder.company_id,
+    title,
+    message,
+    sendInApp: needInApp,
+    sendEmail: needEmail
+  });
+
+  const updatedInAppStatus = needInApp ? (dispatchResult.inAppSuccess ? 'success' : 'failed') : reminder.in_app_status;
+  const updatedEmailStatus = needEmail ? (dispatchResult.emailSuccess ? 'success' : 'failed') : reminder.email_status;
+
+  let finalDeliveryStatus = 'failed';
+  if (updatedInAppStatus === 'success' && updatedEmailStatus === 'success') {
+    finalDeliveryStatus = 'success';
+  } else if (updatedInAppStatus === 'success' || updatedEmailStatus === 'success') {
+    finalDeliveryStatus = 'partial';
+  }
+
+  const errors = [];
+  if (dispatchResult.inAppError) errors.push(`In-App: ${dispatchResult.inAppError}`);
+  if (dispatchResult.emailError) errors.push(`Email: ${dispatchResult.emailError}`);
+  const errorMessage = errors.length > 0 ? errors.join('; ') : null;
+
+  // Calculate exponential backoff for next retry if still failed/partial and within retry limit
+  let nextRetryClause = 'NULL';
+  const updateParams = [finalDeliveryStatus, updatedInAppStatus, updatedEmailStatus, errorMessage];
+
+  if ((finalDeliveryStatus === 'failed' || finalDeliveryStatus === 'partial') && currentRetryCount < 5) {
+    const backoffMinutes = retryBaseMinutes * Math.pow(2, currentRetryCount - 1);
+    nextRetryClause = 'DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? MINUTE)';
+    updateParams.push(backoffMinutes);
+  }
+
+  updateParams.push(adminUserId || null, dispatchTrackingId, reminder.id);
+
+  await pool.query(`
+    UPDATE amc_expiry_reminders
+    SET delivery_status = ?,
+        in_app_status = ?,
+        email_status = ?,
+        error_message = ?,
+        sent_at = CURRENT_TIMESTAMP,
+        next_retry_at = ${nextRetryClause},
+        metadata = JSON_SET(COALESCE(metadata, '{}'), '$.manualRetriedBy', ?, '$.lastDispatchTrackingId', ?, '$.manualRetriedAt', CURRENT_TIMESTAMP)
+    WHERE id = ?
+  `, updateParams);
+
+  return {
+    success: finalDeliveryStatus === 'success' || finalDeliveryStatus === 'partial',
+    deliveryStatus: finalDeliveryStatus,
+    inAppStatus: updatedInAppStatus,
+    emailStatus: updatedEmailStatus,
+    errorMessage,
+    message: finalDeliveryStatus === 'success'
+      ? 'Reminder successfully dispatched across all channels.'
+      : (finalDeliveryStatus === 'partial'
+        ? 'Reminder partially delivered (one channel succeeded).'
+        : `Retry attempted but delivery failed: ${errorMessage || 'Unknown error'}`)
+  };
+};
+
 module.exports = {
+  addDaysOnly,
+  formatDateOnly,
+  getBusinessTodayStr,
   resolveDeviceAmcEligibility,
   checkContractCapacity,
   assignDevicesToCoverage,
@@ -1546,5 +2972,20 @@ module.exports = {
   verifyContractPayment,
   initiateContractOfflinePayment,
   verifyContractOfflinePayment,
-  sendAmcNotification
+  sendAmcNotification,
+  processContractExpiries,
+  processExpiryReminders,
+  processSelectionDeadlineReminders,
+  requestAmcRenewal,
+  createAmcRenewalContract,
+  getCertificateSecret,
+  getCertificateSecrets,
+  generateCertificateCanonicalPayload,
+  generateCertificateHmacCode,
+  verifyCertificateAuthenticity,
+  getContractCertificateData,
+  getPublicCertificateVerification,
+  evaluateContractCompliance,
+  getExpiryRemindersHistory,
+  retryReminder
 };

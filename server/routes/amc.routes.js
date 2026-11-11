@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, authorize } = require('../middleware/auth.middleware');
+const { certVerifyLimiter } = require('../middleware/rateLimiter.middleware');
 const {
   getAdminOverview,
   getPublicPlans,
@@ -31,16 +32,30 @@ const {
   createPaymentOrder,
   verifyPayment,
   initiateOfflinePayment,
-  verifyOfflinePayment
+  verifyOfflinePayment,
+  getContractCertificate,
+  requestRenewal,
+  createRenewalContract,
+  getAdminReminders,
+  retryAdminReminder,
+  processMaintenanceExpiries,
+  processMaintenanceReminders,
+  publicVerifyCertificate
 } = require('../controllers/amc.controller');
 
 // ── Public Routes ───────────────────────────────────────────────────────
 // Anyone can view active public plans
 router.get('/plans', getPublicPlans);
 
+// Public Certificate Verification (safe, sanitized metadata only, rate limited)
+router.get('/public/verify-certificate/:code', certVerifyLimiter, publicVerifyCertificate);
+
 // ── Shared Authenticated Routes ─────────────────────────────────────────
 // Check repair eligibility (accessible by authenticated users: admin, company, technician)
 router.get('/eligibility', authenticate, checkEligibility);
+
+// Official AMC Contract Certificate / Compliance Data (admin or owning company)
+router.get('/contracts/:id/certificate', authenticate, authorize('admin', 'company'), getContractCertificate);
 
 // ── Company Routes ──────────────────────────────────────────────────────
 router.get('/company/plans', authenticate, authorize('company'), getPublicPlans);
@@ -55,6 +70,7 @@ router.post('/company/contracts/:id/devices', authenticate, authorize('company')
 router.post('/company/contracts/:id/create-payment-order', authenticate, authorize('company'), createPaymentOrder);
 router.post('/company/contracts/:id/verify-payment', authenticate, authorize('company'), verifyPayment);
 router.post('/company/contracts/:id/offline-payment', authenticate, authorize('company'), initiateOfflinePayment);
+router.post('/company/contracts/:id/renew', authenticate, authorize('company'), requestRenewal);
 router.post('/company/replacements', authenticate, authorize('company'), requestReplacement);
 router.get('/company/replacements', authenticate, authorize('company'), getCompanyReplacements);
 
@@ -71,7 +87,12 @@ router.get('/admin/contracts', authenticate, authorize('admin'), getAdminContrac
 router.get('/admin/contracts/:id', authenticate, authorize('admin'), getAdminContractDetails);
 router.put('/admin/contracts/:id/approve', authenticate, authorize('admin'), approveContract);
 router.put('/admin/contracts/:id/status', authenticate, authorize('admin'), updateContractStatus);
+router.post('/admin/contracts/:id/renew', authenticate, authorize('admin'), createRenewalContract);
 router.post('/admin/contracts/:id/verify-offline-payment', authenticate, authorize('admin'), verifyOfflinePayment);
+router.get('/admin/reminders', authenticate, authorize('admin'), getAdminReminders);
+router.post('/admin/reminders/:id/retry', authenticate, authorize('admin'), retryAdminReminder);
+router.post('/admin/maintenance/process-expiries', authenticate, authorize('admin'), processMaintenanceExpiries);
+router.post('/admin/maintenance/process-reminders', authenticate, authorize('admin'), processMaintenanceReminders);
 router.get('/admin/replacements', authenticate, authorize('admin'), getAdminReplacements);
 router.put('/admin/replacements/:id/review', authenticate, authorize('admin'), reviewReplacement);
 

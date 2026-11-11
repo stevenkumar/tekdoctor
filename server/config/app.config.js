@@ -232,7 +232,23 @@ const config = {
     contact: {
       windowMs: 15 * 60 * 1000,
       max: env === 'development' || env === 'test' ? 100 : 5
+    },
+    certVerify: {
+      windowMs: 15 * 60 * 1000,
+      max: parseInt(process.env.RATE_LIMIT_CERT_VERIFY_MAX, 10) || 30
     }
+  },
+
+  amc: {
+    businessTimezone: (process.env.AMC_BUSINESS_TIMEZONE || 'Asia/Kolkata').trim(),
+    certificateSecret: (process.env.AMC_CERTIFICATE_SECRET || '').trim(),
+    certificatePreviousSecrets: (process.env.AMC_CERTIFICATE_PREVIOUS_SECRETS || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean),
+    allowLegacyV1: (process.env.AMC_ALLOW_LEGACY_V1 || '').trim().toLowerCase() === 'true',
+    retryBaseMinutes: parseInt(process.env.AMC_RETRY_BASE_MINUTES, 10) || 15,
+    maxRetries: 5
   }
 };
 

@@ -1,6 +1,7 @@
 const { pool } = require('../config/db.config');
 const { formatResponse } = require('../utils/helpers');
 const amcService = require('../services/amc.service');
+const { withAmcAdvisoryLock } = require('../schedulers/amc.scheduler');
 
 // Helper to get company ID from authenticated user
 const getCompanyIdFromReq = (req) => {
@@ -558,6 +559,129 @@ const checkEligibility = async (req, res, next) => {
   }
 };
 
+// ── Phase 3: Certificate, Renewals & Reminders ──────────────────────────
+
+const getContractCertificate = async (req, res, next) => {
+  try {
+    const certificateData = await amcService.getContractCertificateData(req.params.id, req.user);
+    return res.json(formatResponse(true, 'Contract certificate data retrieved successfully.', certificateData));
+  } catch (error) {
+    if (error.message.includes('Access denied')) {
+      return res.status(403).json(formatResponse(false, error.message));
+    }
+    if (error.message.includes('not found')) {
+      return res.status(404).json(formatResponse(false, error.message));
+    }
+    next(error);
+  }
+};
+
+const requestRenewal = async (req, res, next) => {
+  try {
+    const { requestedCapacity, notes } = req.body;
+    const result = await amcService.requestAmcRenewal({
+      contractId: req.params.id,
+      companyId: req.user.id,
+      requestedCapacity,
+      notes,
+      userId: req.user.id
+    });
+    return res.status(201).json(formatResponse(true, 'AMC renewal request submitted successfully.', result));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const createRenewalContract = async (req, res, next) => {
+  try {
+    const result = await amcService.createAmcRenewalContract({
+      previousContractId: req.params.id,
+      ...req.body,
+      createdBy: req.user.id
+    });
+    return res.status(201).json(formatResponse(true, 'AMC renewal offer created successfully.', result));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getAdminReminders = async (req, res, next) => {
+  try {
+    const reminders = await amcService.getExpiryRemindersHistory({
+      contractId: req.query.contractId,
+      companyId: req.query.companyId,
+      status: req.query.status,
+      limit: req.query.limit
+    });
+    return res.json(formatResponse(true, 'AMC expiry reminder history retrieved successfully.', reminders));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const retryAdminReminder = async (req, res, next) => {
+  try {
+    const reminderId = parseInt(req.params.id, 10);
+    if (!reminderId || isNaN(reminderId)) {
+      return res.status(400).json(formatResponse(false, 'Valid reminder ID is required.'));
+    }
+
+    const result = await amcService.retryReminder(reminderId, req.user?.id);
+    return res.json(formatResponse(true, result.message || 'Reminder retried successfully.', result));
+  } catch (error) {
+    if (error.message.includes('not found') || error.message.includes('Cannot retry') || error.message.includes('already completed') || error.message.includes('currently being processed')) {
+      return res.status(400).json(formatResponse(false, error.message));
+    }
+    next(error);
+  }
+};
+
+const processMaintenanceExpiries = async (req, res, next) => {
+  try {
+    const lockResult = await withAmcAdvisoryLock(pool, async (connection) => {
+      return await amcService.processContractExpiries(connection);
+    });
+
+    if (lockResult.locked) {
+      return res.status(423).json(formatResponse(false, lockResult.message, { locked: true }));
+    }
+
+    return res.json(formatResponse(true, 'AMC contract expiries processed successfully.', lockResult));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const processMaintenanceReminders = async (req, res, next) => {
+  try {
+    const lockResult = await withAmcAdvisoryLock(pool, async (connection) => {
+      return await amcService.processExpiryReminders(connection);
+    });
+
+    if (lockResult.locked) {
+      return res.status(423).json(formatResponse(false, lockResult.message, { locked: true }));
+    }
+
+    return res.json(formatResponse(true, 'AMC expiry reminders processed successfully.', lockResult));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const publicVerifyCertificate = async (req, res, next) => {
+  try {
+    const code = req.params.code;
+    const contractNumber = req.query.contractNumber || null;
+    const result = await amcService.getPublicCertificateVerification(code, contractNumber);
+    if (!result.valid) {
+      return res.status(404).json(formatResponse(false, 'Certificate verification failed or invalid code.', result));
+    }
+    return res.json(formatResponse(true, 'Certificate verified successfully.', result));
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getAdminOverview,
   getPublicPlans,
@@ -588,6 +712,14 @@ module.exports = {
   createPaymentOrder,
   verifyPayment,
   initiateOfflinePayment,
-  verifyOfflinePayment
+  verifyOfflinePayment,
+  getContractCertificate,
+  requestRenewal,
+  createRenewalContract,
+  getAdminReminders,
+  retryAdminReminder,
+  processMaintenanceExpiries,
+  processMaintenanceReminders,
+  publicVerifyCertificate
 };
 

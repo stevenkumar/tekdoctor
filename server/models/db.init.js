@@ -714,7 +714,7 @@ const createBaseTables = async (connection) => {
       amc_tag VARCHAR(50) NOT NULL,
       coverage_start_date DATE NOT NULL,
       coverage_end_date DATE NOT NULL,
-      status ENUM('active', 'decommissioned', 'replaced') DEFAULT 'active',
+      status ENUM('active', 'decommissioned', 'replaced', 'expired') DEFAULT 'active',
       selected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       selected_by INT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -773,6 +773,37 @@ const createBaseTables = async (connection) => {
       FOREIGN KEY (performed_by) REFERENCES users(id) ON DELETE SET NULL,
       INDEX idx_amc_hist_contract (contract_id),
       INDEX idx_amc_hist_action (action)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  // 29. AMC Expiry Reminders Table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS amc_expiry_reminders (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      contract_id INT NOT NULL,
+      company_id INT NOT NULL,
+      milestone_days INT NOT NULL,
+      expiry_date DATE NOT NULL,
+      sent_at TIMESTAMP NULL,
+      delivery_channel ENUM('email', 'notification', 'both') DEFAULT 'both',
+      delivery_status ENUM('pending', 'processing', 'success', 'failed', 'partial') DEFAULT 'pending',
+      in_app_status ENUM('pending', 'success', 'failed', 'skipped') DEFAULT 'pending',
+      email_status ENUM('pending', 'success', 'failed', 'skipped') DEFAULT 'pending',
+      retry_count INT NOT NULL DEFAULT 0,
+      last_attempted_at TIMESTAMP NULL,
+      next_retry_at TIMESTAMP NULL,
+      error_message TEXT NULL,
+      metadata JSON NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (contract_id) REFERENCES amc_contracts(id) ON DELETE CASCADE,
+      FOREIGN KEY (company_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE KEY uk_contract_milestone_expiry (contract_id, milestone_days, expiry_date),
+      INDEX idx_amc_rem_contract (contract_id),
+      INDEX idx_amc_rem_company (company_id),
+      INDEX idx_amc_rem_milestone (milestone_days),
+      INDEX idx_amc_rem_sent_at (sent_at),
+      INDEX idx_amc_rem_next_retry (delivery_status, next_retry_at, retry_count)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 };
@@ -855,7 +886,8 @@ const seedDefaultDataIfEmpty = async (connection) => {
     ['default_gst_rate', '18.00', 'billing'],
     ['invoice_gst_enabled', 'true', 'billing'],
     ['gstin', '27AAAAA0000A1Z5', 'company'],
-    ['invoice_default_items', defaultCatalogItems, 'billing']
+    ['invoice_default_items', defaultCatalogItems, 'billing'],
+    ['amc_reminder_milestones_days', '30,15,7,1', 'amc']
   ];
 
   const [settingsCount] = await connection.query('SELECT COUNT(*) as cnt FROM site_settings');
@@ -1652,7 +1684,7 @@ const MIGRATIONS = [
           amc_tag VARCHAR(50) NOT NULL,
           coverage_start_date DATE NOT NULL,
           coverage_end_date DATE NOT NULL,
-          status ENUM('active', 'decommissioned', 'replaced') DEFAULT 'active',
+          status ENUM('active', 'decommissioned', 'replaced', 'expired') DEFAULT 'active',
           selected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           selected_by INT NULL,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1713,6 +1745,136 @@ const MIGRATIONS = [
       `);
 
       console.log('[Migration:2026_12] Created AMC plans, contracts, covered devices, replacements and history tables.');
+    }
+  },
+  {
+    version: '2026_13_amc_expiry_reminders_and_phase3',
+    name: 'AMC Phase 3: Expiry reminders, status transitions and renewals',
+    isSatisfied: async (connection) => {
+      const tableExists = await checkTableExists(connection, 'amc_expiry_reminders');
+      if (!tableExists) return false;
+
+      const [statusRows] = await connection.query(
+        "SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'amc_covered_devices' AND COLUMN_NAME = 'status'"
+      );
+      if (statusRows.length === 0 || !statusRows[0].COLUMN_TYPE.includes("'expired'")) {
+        return false;
+      }
+
+      const [settingRows] = await connection.query(
+        "SELECT 1 FROM site_settings WHERE setting_key = 'amc_reminder_milestones_days' LIMIT 1"
+      );
+      return settingRows.length > 0;
+    },
+    apply: async (connection) => {
+      // 1. Update status column in amc_covered_devices to include 'expired'
+      const [statusRows] = await connection.query(
+        "SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'amc_covered_devices' AND COLUMN_NAME = 'status'"
+      );
+      if (statusRows.length > 0 && !statusRows[0].COLUMN_TYPE.includes("'expired'")) {
+        await connection.query(`
+          ALTER TABLE amc_covered_devices 
+          MODIFY COLUMN status ENUM('active', 'decommissioned', 'replaced', 'expired') DEFAULT 'active'
+        `);
+        console.log("[Migration:2026_13] Updated amc_covered_devices.status ENUM to include 'expired'.");
+      }
+
+      // 2. Create amc_expiry_reminders table
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS amc_expiry_reminders (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          contract_id INT NOT NULL,
+          company_id INT NOT NULL,
+          milestone_days INT NOT NULL,
+          expiry_date DATE NOT NULL,
+          sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          delivery_channel ENUM('email', 'notification', 'both') DEFAULT 'both',
+          delivery_status ENUM('success', 'failed', 'partial') DEFAULT 'success',
+          error_message TEXT NULL,
+          metadata JSON NULL,
+          FOREIGN KEY (contract_id) REFERENCES amc_contracts(id) ON DELETE CASCADE,
+          FOREIGN KEY (company_id) REFERENCES users(id) ON DELETE CASCADE,
+          UNIQUE KEY uk_contract_milestone_expiry (contract_id, milestone_days, expiry_date),
+          INDEX idx_amc_rem_contract (contract_id),
+          INDEX idx_amc_rem_company (company_id),
+          INDEX idx_amc_rem_milestone (milestone_days),
+          INDEX idx_amc_rem_sent_at (sent_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      `);
+
+      // 3. Seed site setting for reminder milestones
+      await connection.query(`
+        INSERT IGNORE INTO site_settings (setting_key, setting_value, setting_group)
+        VALUES ('amc_reminder_milestones_days', '30,15,7,1', 'amc')
+      `);
+
+      console.log('[Migration:2026_13] Applied AMC Phase 3 database extensions.');
+    }
+  },
+  {
+    version: '2026_14_amc_phase3_remediation',
+    name: 'AMC Phase 3 Remediation: Outbox delivery lifecycle, partial channel tracking and renewal deduplication',
+    isSatisfied: async (connection) => {
+      const hasInAppStatus = await checkColumnExists(connection, 'amc_expiry_reminders', 'in_app_status');
+      const hasPrevContract = await checkColumnExists(connection, 'amc_requests', 'previous_contract_id');
+      return hasInAppStatus && hasPrevContract;
+    },
+    apply: async (connection) => {
+      // 1. Modify delivery_status in amc_expiry_reminders to support 'pending', 'processing', 'success', 'failed', 'partial'
+      await connection.query(`
+        ALTER TABLE amc_expiry_reminders 
+        MODIFY COLUMN delivery_status ENUM('pending', 'processing', 'success', 'failed', 'partial') DEFAULT 'pending'
+      `);
+
+      // 2. Add channel tracking and outbox retry columns to amc_expiry_reminders
+      await addColumnSafe(connection, 'amc_expiry_reminders', "in_app_status ENUM('pending', 'success', 'failed', 'skipped') DEFAULT 'pending'", 'in_app_status');
+      await addColumnSafe(connection, 'amc_expiry_reminders', "email_status ENUM('pending', 'success', 'failed', 'skipped') DEFAULT 'pending'", 'email_status');
+      await addColumnSafe(connection, 'amc_expiry_reminders', "retry_count INT NOT NULL DEFAULT 0", 'retry_count');
+      await addColumnSafe(connection, 'amc_expiry_reminders', "last_attempted_at TIMESTAMP NULL", 'last_attempted_at');
+      await addColumnSafe(connection, 'amc_expiry_reminders', "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP", 'updated_at');
+
+      const hasIndex = await checkIndexExists(connection, 'amc_expiry_reminders', 'idx_amc_rem_status_attempt');
+      if (!hasIndex) {
+        await connection.query('ALTER TABLE amc_expiry_reminders ADD INDEX idx_amc_rem_status_attempt (delivery_status, last_attempted_at)');
+      }
+
+      // 3. Add previous_contract_id to amc_requests for duplicate renewal prevention
+      await addColumnSafe(connection, 'amc_requests', "previous_contract_id INT NULL", 'previous_contract_id');
+      const hasReqIndex = await checkIndexExists(connection, 'amc_requests', 'idx_amc_req_prev_contract');
+      if (!hasReqIndex) {
+        await connection.query('ALTER TABLE amc_requests ADD INDEX idx_amc_req_prev_contract (previous_contract_id)');
+      }
+
+      console.log('[Migration:2026_14] Applied AMC Phase 3 remediation schema enhancements.');
+    }
+  },
+  {
+    version: '2026_15_amc_phase3_hardening',
+    name: 'AMC Phase 3 Hardening: Exponential backoff, next_retry_at tracking, and business timezone settings',
+    isSatisfied: async (connection) => {
+      const hasNextRetry = await checkColumnExists(connection, 'amc_expiry_reminders', 'next_retry_at');
+      const hasIndex = await checkIndexExists(connection, 'amc_expiry_reminders', 'idx_amc_rem_next_retry');
+      const [rows] = await connection.query("SELECT 1 FROM site_settings WHERE setting_key = 'amc_reminder_retry_base_minutes'");
+      return hasNextRetry && hasIndex && rows.length > 0;
+    },
+    apply: async (connection) => {
+      // 1. Add next_retry_at column to amc_expiry_reminders
+      await addColumnSafe(connection, 'amc_expiry_reminders', 'next_retry_at TIMESTAMP NULL', 'next_retry_at');
+
+      const hasIndex = await checkIndexExists(connection, 'amc_expiry_reminders', 'idx_amc_rem_next_retry');
+      if (!hasIndex) {
+        await connection.query('ALTER TABLE amc_expiry_reminders ADD INDEX idx_amc_rem_next_retry (delivery_status, next_retry_at, retry_count)');
+      }
+
+      // 2. Seed default retry backoff base minutes and business timezone into site_settings if not present
+      await connection.query(`
+        INSERT IGNORE INTO site_settings (setting_key, setting_value, setting_group)
+        VALUES 
+          ('amc_reminder_retry_base_minutes', '15', 'amc'),
+          ('amc_business_timezone', 'Asia/Kolkata', 'amc')
+      `);
+
+      console.log('[Migration:2026_15] Applied AMC Phase 3 final hardening schema enhancements.');
     }
   }
 ];

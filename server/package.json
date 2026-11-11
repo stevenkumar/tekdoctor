@@ -37,6 +37,9 @@
     "winston": "^3.17.0"
   },
   "devDependencies": {
-    "nodemon": "^1.14.10"
+    "jpeg-js": "^0.4.4",
+    "jsqr": "^1.4.0",
+    "nodemon": "^1.14.10",
+    "pdf-lib": "^1.17.1"
   }
 }

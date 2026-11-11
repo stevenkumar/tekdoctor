@@ -35,6 +35,17 @@ const contactLimiter = rateLimit({
   message: formatResponse(false, 'Too many contact messages sent. Please try again after 15 minutes.')
 });
 
+// Dedicated rate limiter for public certificate verification (Fix 3, SEC-01 Hardening)
+const certVerifyLimiter = rateLimit({
+  windowMs: config.rateLimits.certVerify?.windowMs || 15 * 60 * 1000,
+  max: config.rateLimits.certVerify?.max || 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: formatResponse(false, 'Too many certificate verification requests. Please try again after 15 minutes.'),
+  // SEC-01: Header bypass is strictly confined to test environment; never active in dev or production
+  skip: (req) => config.env === 'test' && req.headers['x-bypass-rate-limit'] === 'test-bypass'
+});
+
 // Route-level alias reusing existing global rate limiter configuration
 const apiLimiter = globalLimiter;
 
@@ -42,5 +53,6 @@ module.exports = {
   globalLimiter,
   apiLimiter,
   authLimiter,
-  contactLimiter
+  contactLimiter,
+  certVerifyLimiter
 };
