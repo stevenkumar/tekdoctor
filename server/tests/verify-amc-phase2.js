@@ -187,8 +187,8 @@ async function runTestSuite() {
       createdBy: testAdminId,
     });
     createdContractIds.push(offerForComp2.id);
-    assert(offerForComp2.contractNumber && offerForComp2.contractNumber.startsWith('AMC-CTR-'),
-      `Contract offer created with number ${offerForComp2.contractNumber}`);
+    assert(offerForComp2.contractNumber && /^AMC-CMP-902-\d{3,}$/.test(offerForComp2.contractNumber),
+      `Contract offer created with company-wise sequential number ${offerForComp2.contractNumber}`);
 
     // Company 2 rejects the offer
     const rejectedOffer = await amcService.rejectAmcOffer({

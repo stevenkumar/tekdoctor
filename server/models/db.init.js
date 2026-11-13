@@ -640,6 +640,7 @@ const createBaseTables = async (connection) => {
       request_number VARCHAR(50) UNIQUE NOT NULL,
       company_id INT NOT NULL,
       plan_id INT NULL,
+      previous_contract_id INT NULL,
       requested_device_count INT NOT NULL DEFAULT 1,
       notes TEXT NULL,
       status ENUM('pending', 'under_review', 'offered', 'rejected', 'cancelled') DEFAULT 'pending',
@@ -652,7 +653,8 @@ const createBaseTables = async (connection) => {
       FOREIGN KEY (plan_id) REFERENCES amc_plans(id) ON DELETE SET NULL,
       FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
       INDEX idx_amc_req_company (company_id),
-      INDEX idx_amc_req_status (status)
+      INDEX idx_amc_req_status (status),
+      INDEX idx_amc_req_prev_contract (previous_contract_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
@@ -983,20 +985,38 @@ const seedDefaultDataIfEmpty = async (connection) => {
       }
     }
 
-    const [nullComps] = await connection.query(
-      'SELECT id FROM users WHERE role = "company" AND (company_id IS NULL OR company_id = "") ORDER BY id ASC'
-    );
-    if (nullComps.length > 0) {
-      const { generateCompanyId } = require('../utils/helpers');
-      for (const comp of nullComps) {
-        const compId = await generateCompanyId(connection);
-        await connection.query('UPDATE users SET company_id = ? WHERE id = ?', [compId, comp.id]);
-        await connection.query('UPDATE company_profiles SET company_id = ? WHERE user_id = ? AND (company_id IS NULL OR company_id = "")', [compId, comp.id]);
-        console.log(`[Seed] Backfilled company_id '${compId}' for company user #${comp.id}`);
+    const [candidateComps] = await connection.query(`
+      SELECT u.id
+      FROM users u
+      LEFT JOIN company_profiles p ON p.user_id = u.id
+      WHERE u.role = 'company'
+        AND (
+          u.company_id IS NULL OR TRIM(u.company_id) = ''
+          OR (p.id IS NOT NULL AND (p.company_id IS NULL OR TRIM(p.company_id) = ''))
+          OR (p.id IS NOT NULL AND TRIM(u.company_id) <> TRIM(p.company_id))
+        )
+      ORDER BY u.id ASC
+    `);
+    if (candidateComps.length > 0) {
+      const { resolveCanonicalCompanyCode } = require('../utils/helpers');
+      for (const comp of candidateComps) {
+        try {
+          const resolved = await resolveCanonicalCompanyCode(connection, comp.id);
+          if (resolved.status !== 'matched') {
+            console.log(`[Seed] ${resolved.status === 'synchronized' ? 'Synchronized' : 'Backfilled'} company_id '${resolved.companyCode}' for company user #${comp.id}`);
+          }
+        } catch (compErr) {
+          if (compErr.code !== 'COMPANY_ID_CONFLICT' && compErr.code !== 'COMPANY_ID_OWNERSHIP_CONFLICT') {
+            throw compErr;
+          }
+          logger.error(`[Seed Backfill Conflict] Company user #${comp.id}: ${compErr.message}`, compErr.details || {});
+          console.error(`[Seed Backfill] Manual reconciliation required for company user #${comp.id}: ${compErr.message}`);
+        }
       }
     }
   } catch (idBackfillErr) {
     console.error('[Seed Error] Failed to backfill entity IDs:', idBackfillErr.message);
+    throw idBackfillErr;
   }
 
   // 5. Seed Default AMC Plans if empty
@@ -1288,32 +1308,34 @@ const MIGRATIONS = [
       `);
       await connection.query('ALTER TABLE app_sequences MODIFY COLUMN sequence_name VARCHAR(100) NOT NULL');
 
-      // Backfill company IDs if any exist unassigned
-      const [companiesWithoutId] = await connection.query(`
-        SELECT cp.id, cp.user_id 
-        FROM company_profiles cp 
-        WHERE cp.company_id IS NULL OR cp.company_id NOT LIKE 'CMP-%'
-        ORDER BY cp.id ASC
+      // Safely backfill missing Company IDs without overwriting custom or conflicting non-empty IDs
+      const [companiesNeedingBackfill] = await connection.query(`
+        SELECT u.id
+        FROM users u
+        LEFT JOIN company_profiles p ON p.user_id = u.id
+        WHERE u.role = 'company'
+          AND (
+            u.company_id IS NULL OR TRIM(u.company_id) = ''
+            OR (p.id IS NOT NULL AND (p.company_id IS NULL OR TRIM(p.company_id) = ''))
+            OR (p.id IS NOT NULL AND TRIM(u.company_id) <> TRIM(p.company_id))
+          )
+        ORDER BY u.id ASC
       `);
-      if (companiesWithoutId.length > 0) {
-        let nextCompNum = 1;
-        const [existingCompIds] = await connection.query(`
-          SELECT company_id FROM company_profiles 
-          WHERE company_id LIKE 'CMP-%' 
-          ORDER BY CAST(SUBSTRING(company_id, 5) AS UNSIGNED) DESC LIMIT 1
-        `);
-        if (existingCompIds.length > 0 && existingCompIds[0].company_id) {
-          const lastNum = parseInt(existingCompIds[0].company_id.substring(4), 10);
-          if (!isNaN(lastNum)) nextCompNum = lastNum + 1;
-        }
-
-        for (const comp of companiesWithoutId) {
-          const assignedId = `CMP-${String(nextCompNum).padStart(3, '0')}`;
-          await connection.query('UPDATE company_profiles SET company_id = ? WHERE id = ?', [assignedId, comp.id]);
-          if (comp.user_id) {
-            await connection.query('UPDATE users SET company_id = ? WHERE id = ?', [assignedId, comp.user_id]);
+      if (companiesNeedingBackfill.length > 0) {
+        const { resolveCanonicalCompanyCode } = require('../utils/helpers');
+        for (const comp of companiesNeedingBackfill) {
+          try {
+            const resolved = await resolveCanonicalCompanyCode(connection, comp.id);
+            if (resolved.status !== 'matched') {
+              console.log(`[Migration 2026_06] ${resolved.status === 'synchronized' ? 'Synchronized' : 'Backfilled'} company_id '${resolved.companyCode}' for company user #${comp.id}`);
+            }
+          } catch (compErr) {
+            if (compErr.code !== 'COMPANY_ID_CONFLICT' && compErr.code !== 'COMPANY_ID_OWNERSHIP_CONFLICT') {
+              throw compErr;
+            }
+            logger.error(`[Migration 2026_06 Conflict] Company user #${comp.id}: ${compErr.message}`, compErr.details || {});
+            console.error(`[Migration 2026_06] Manual reconciliation required for company user #${comp.id}: ${compErr.message}`);
           }
-          nextCompNum++;
         }
       }
 

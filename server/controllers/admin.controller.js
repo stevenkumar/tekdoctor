@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const config = require('../config/app.config');
 const { pool } = require('../config/db.config');
-const { formatResponse, generateCompanyId } = require('../utils/helpers');
+const { formatResponse, generateCompanyId, resolveCanonicalCompanyCode } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const nodemailer = require('nodemailer');
 const { sendCustomerNotification, sendOtpEmail, resolveTlsConfig } = require('../utils/email.utils');
@@ -2996,6 +2996,15 @@ const importBulkCompanies = async (req, res, next) => {
             const [existing] = await connection.query('SELECT id, role FROM users WHERE email = ? LIMIT 1', [email]);
             if (existing.length > 0) {
                 if (existing[0].role === 'company') {
+                    // Safely ensure Company ID parity if missing without ever overwriting conflicting IDs
+                    try {
+                        await resolveCanonicalCompanyCode(connection, existing[0].id, { inTransaction: true });
+                    } catch (cidErr) {
+                        if (cidErr.code !== 'COMPANY_ID_CONFLICT' && cidErr.code !== 'COMPANY_ID_OWNERSHIP_CONFLICT') {
+                            throw cidErr;
+                        }
+                        logger.warn(`Bulk company import skipped Company ID sync for user #${existing[0].id}: ${cidErr.message}`);
+                    }
                     // Update profile
                     await connection.query(
                         `UPDATE company_profiles
@@ -3015,18 +3024,19 @@ const importBulkCompanies = async (req, res, next) => {
 
             const salt = await bcrypt.genSalt(12);
             const hashedPassword = await bcrypt.hash(password, salt);
+            const companyCode = await generateCompanyId(connection);
 
             const [userRes] = await connection.query(
-                'INSERT INTO users (name, email, password, phone, role, is_active) VALUES (?, ?, ?, ?, "company", 1)',
-                [name, email, hashedPassword, phone || null]
+                'INSERT INTO users (name, email, password, phone, role, company_id, is_active) VALUES (?, ?, ?, ?, "company", ?, 1)',
+                [name, email, hashedPassword, phone || null, companyCode]
             );
             const newCompanyId = userRes.insertId;
 
             await connection.query(
                 `INSERT INTO company_profiles
-                 (user_id, company_name, contact_person, phone_number, address, gst_number, website_url, company_type, amc_status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [newCompanyId, name, contactPerson, phone || '', address || '', gstNumber, websiteUrl, companyType, amcStatus]
+                 (user_id, company_id, company_name, contact_person, phone_number, address, gst_number, website_url, company_type, amc_status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [newCompanyId, companyCode, name, contactPerson, phone || '', address || '', gstNumber, websiteUrl, companyType, amcStatus]
             );
 
             importedCount++;

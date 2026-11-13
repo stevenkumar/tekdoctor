@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const { pool } = require('../config/db.config');
 const config = require('../config/app.config');
 const logger = require('../utils/logger');
-const { generateInvoiceId } = require('../utils/helpers');
+const { generateInvoiceId, allocateNextCompanyAmcContractNumber } = require('../utils/helpers');
 const { sendAdminNotification, sendCustomerNotification } = require('../utils/email.utils');
 
 /**
@@ -29,6 +29,116 @@ const resolveCompanyUserId = async (connection, companyIdOrCode) => {
     return userRows[0].id;
   }
   return null;
+};
+
+const MAX_RENEWAL_REQUEST_INSERT_ATTEMPTS = 3;
+const MAX_CONTRACT_INSERT_ATTEMPTS = 5;
+
+const isRequestNumberDuplicateError = (error) => {
+  if (!error) return false;
+  const isDupEntry = error.code === 'ER_DUP_ENTRY' || error.errno === 1062;
+  if (!isDupEntry) return false;
+  const msg = String(error.sqlMessage || error.message || '');
+  return /for key '(?:amc_requests\.)?request_number'/i.test(msg);
+};
+
+const isContractNumberDuplicateError = (error) => {
+  if (!error) return false;
+  const isDupEntry = error.code === 'ER_DUP_ENTRY' || error.errno === 1062;
+  if (!isDupEntry) return false;
+  const msg = String(error.sqlMessage || error.message || '');
+  return /for key '(?:amc_contracts\.)?contract_number'/i.test(msg);
+};
+
+const attachRollbackErrorSafely = (insertError, rollbackError) => {
+  try {
+    if (
+      insertError &&
+      (typeof insertError === 'object' || typeof insertError === 'function') &&
+      Object.isExtensible(insertError)
+    ) {
+      Object.defineProperty(insertError, 'rollbackError', {
+        value: rollbackError,
+        enumerable: false,
+        configurable: true,
+        writable: true
+      });
+    }
+  } catch (_) {
+    // Never allow diagnostic metadata attachment to mask or replace the original error
+  }
+};
+
+const createContractWithSequenceRetry = async ({
+  companyId,
+  maxAttempts = MAX_CONTRACT_INSERT_ATTEMPTS,
+  insertOperation
+}) => {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const contractNumber = await allocateNextCompanyAmcContractNumber(pool, companyId);
+    const connection = await pool.getConnection();
+    let shouldRetry = false;
+
+    try {
+      await connection.beginTransaction();
+      const operationResult = await insertOperation(connection, contractNumber);
+      await connection.commit();
+      return { contractNumber, ...operationResult };
+    } catch (insertError) {
+      let rollbackSucceeded = false;
+      let rollbackError = null;
+
+      try {
+        await connection.rollback();
+        rollbackSucceeded = true;
+      } catch (rbErr) {
+        rollbackError = rbErr;
+      }
+
+      if (!rollbackSucceeded) {
+        logger.error('AMC contract transaction rollback failed; halting retry immediately', {
+          companyId,
+          contractNumber,
+          attempt,
+          maxAttempts,
+          insertError: insertError?.message || String(insertError),
+          insertCode: insertError?.code || insertError?.errno || null,
+          rollbackError: rollbackError?.message || String(rollbackError),
+          rollbackCode: rollbackError?.code || rollbackError?.errno || null
+        });
+        attachRollbackErrorSafely(insertError, rollbackError);
+        throw insertError;
+      }
+
+      if (isContractNumberDuplicateError(insertError) && attempt < maxAttempts) {
+        logger.warn('Duplicate AMC contract_number detected after rollback; allocating next sequence number', {
+          companyId,
+          contractNumber,
+          attempt,
+          maxAttempts,
+          error: insertError?.message || String(insertError)
+        });
+        shouldRetry = true;
+      } else {
+        throw insertError;
+      }
+    } finally {
+      try {
+        connection.release();
+      } catch (releaseError) {
+        logger.warn('Failed to release AMC contract transaction connection', {
+          companyId,
+          contractNumber,
+          attempt,
+          error: releaseError?.message || String(releaseError)
+        });
+      }
+    }
+
+    if (!shouldRetry) {
+      break;
+    }
+  }
 };
 
 const AMC_TIMEZONE = config.amc?.businessTimezone || 'Asia/Kolkata';
@@ -823,36 +933,39 @@ const createAmcContract = async ({
     }
   }
 
-  const contractNumber = `AMC-CTR-${Date.now().toString(36).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
+  return await createContractWithSequenceRetry({
+    companyId: resolvedCompanyId,
+    insertOperation: async (connection, contractNumber) => {
+      const [result] = await connection.query(`
+        INSERT INTO amc_contracts (
+          contract_number, company_id, request_id, plan_id, contract_type,
+          plan_name, device_capacity, price, discount_amount, tax_amount, total_amount,
+          terms_and_conditions, offer_valid_until, selection_deadline, start_date, end_date,
+          status, approval_status, payment_status, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'offered', 'pending_approval', 'unpaid', ?)
+      `, [
+        contractNumber, resolvedCompanyId, requestId || null, planId || null, contractType,
+        planName, deviceCapacity, price, discountAmount, taxAmount, totalAmount,
+        termsAndConditions || null,
+        offerValidUntil ? formatDateOnly(offerValidUntil) : null,
+        selectionDeadline ? formatDateOnly(selectionDeadline) : null,
+        startDate ? formatDateOnly(startDate) : null,
+        endDate ? formatDateOnly(endDate) : null,
+        createdBy || null
+      ]);
 
-  const [result] = await pool.query(`
-    INSERT INTO amc_contracts (
-      contract_number, company_id, request_id, plan_id, contract_type,
-      plan_name, device_capacity, price, discount_amount, tax_amount, total_amount,
-      terms_and_conditions, offer_valid_until, selection_deadline, start_date, end_date,
-      status, approval_status, payment_status, created_by
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'offered', 'pending_approval', 'unpaid', ?)
-  `, [
-    contractNumber, resolvedCompanyId, requestId || null, planId || null, contractType,
-    planName, deviceCapacity, price, discountAmount, taxAmount, totalAmount,
-    termsAndConditions || null,
-    offerValidUntil ? formatDateOnly(offerValidUntil) : null,
-    selectionDeadline ? formatDateOnly(selectionDeadline) : null,
-    startDate ? formatDateOnly(startDate) : null,
-    endDate ? formatDateOnly(endDate) : null,
-    createdBy || null
-  ]);
+      if (requestId) {
+        await connection.query('UPDATE amc_requests SET status = "offered" WHERE id = ?', [requestId]);
+      }
 
-  if (requestId) {
-    await pool.query('UPDATE amc_requests SET status = "offered" WHERE id = ?', [requestId]);
-  }
+      await connection.query(`
+        INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+        VALUES (?, 'CONTRACT_CREATED', ?, ?)
+      `, [result.insertId, createdBy || null, JSON.stringify({ contractNumber, planName, deviceCapacity, totalAmount })]);
 
-  await pool.query(`
-    INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
-    VALUES (?, 'CONTRACT_CREATED', ?, ?)
-  `, [result.insertId, createdBy || null, JSON.stringify({ contractNumber, planName, deviceCapacity, totalAmount })]);
-
-  return { id: result.insertId, contractNumber };
+      return { id: result.insertId };
+    }
+  });
 };
 
 const getContracts = async ({ companyId = null, status = null } = {}) => {
@@ -2213,24 +2326,45 @@ const requestAmcRenewal = async ({ contractId, companyId, requestedCapacity = nu
   }
 
   const capacity = requestedCapacity ? parseInt(requestedCapacity, 10) : previousContract.device_capacity;
-  const requestNumber = `AMC-RNW-${Date.now().toString(36).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
 
   const renewalNotes = `Renewal request for AMC ${previousContract.contract_number} (${previousContract.plan_name}). ` +
     (requestedCapacity && requestedCapacity !== previousContract.device_capacity ? `Requested capacity: ${capacity} (previously ${previousContract.device_capacity}). ` : '') +
     (notes ? `Notes: ${notes}` : '');
 
-  const [result] = await pool.query(`
-    INSERT INTO amc_requests (
-      request_number, company_id, plan_id, requested_device_count, notes, status, previous_contract_id
-    ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
-  `, [
-    requestNumber,
-    resolvedCompanyId,
-    previousContract.plan_id,
-    capacity,
-    renewalNotes.trim(),
-    previousContract.id
-  ]);
+  let requestNumber = null;
+  let result = null;
+  for (let attempt = 1; attempt <= MAX_RENEWAL_REQUEST_INSERT_ATTEMPTS; attempt++) {
+    requestNumber = `REQ-RNW-${Date.now().toString(36).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
+    try {
+      const [insertRes] = await pool.query(`
+        INSERT INTO amc_requests (
+          request_number, company_id, plan_id, requested_device_count, notes, status, previous_contract_id
+        ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+      `, [
+        requestNumber,
+        resolvedCompanyId,
+        previousContract.plan_id,
+        capacity,
+        renewalNotes.trim(),
+        previousContract.id
+      ]);
+      result = insertRes;
+      break;
+    } catch (insertError) {
+      if (isRequestNumberDuplicateError(insertError) && attempt < MAX_RENEWAL_REQUEST_INSERT_ATTEMPTS) {
+        logger.warn('Duplicate AMC renewal request_number detected; retrying with fresh REQ-RNW identifier', {
+          contractId,
+          companyId: resolvedCompanyId,
+          requestNumber,
+          attempt,
+          maxAttempts: MAX_RENEWAL_REQUEST_INSERT_ATTEMPTS,
+          error: insertError?.message || String(insertError)
+        });
+        continue;
+      }
+      throw insertError;
+    }
+  }
 
   await pool.query(`
     INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
@@ -2265,6 +2399,7 @@ const requestAmcRenewal = async ({ contractId, companyId, requestedCapacity = nu
  */
 const createAmcRenewalContract = async ({
   previousContractId,
+  requestId = null,
   companyId = null,
   planId = null,
   planName = null,
@@ -2287,6 +2422,47 @@ const createAmcRenewalContract = async ({
 
   const prev = prevRows[0];
   const targetCompanyId = companyId ? (await resolveCompanyUserId(pool, companyId)) : prev.company_id;
+  if (!targetCompanyId) {
+    throw new Error('Company not found.');
+  }
+  if (Number(targetCompanyId) !== Number(prev.company_id)) {
+    throw new Error('Renewal request company does not match previous contract company.');
+  }
+
+  const parsedRequestId = requestId !== null && requestId !== undefined && requestId !== ''
+    ? parseInt(requestId, 10)
+    : null;
+  if (requestId !== null && requestId !== undefined && requestId !== '' && (!Number.isInteger(parsedRequestId) || parsedRequestId <= 0)) {
+    throw new Error('Invalid renewal request ID.');
+  }
+
+  if (parsedRequestId) {
+    const [reqRows] = await pool.query(
+      'SELECT id, company_id, previous_contract_id, status FROM amc_requests WHERE id = ?',
+      [parsedRequestId]
+    );
+    if (reqRows.length === 0) {
+      throw new Error('Renewal request not found.');
+    }
+    const reqRow = reqRows[0];
+    if (Number(reqRow.company_id) !== Number(targetCompanyId)) {
+      throw new Error('Renewal request does not belong to target company.');
+    }
+    if (reqRow.previous_contract_id != null && Number(reqRow.previous_contract_id) !== Number(previousContractId)) {
+      throw new Error('Renewal request is linked to a different previous contract.');
+    }
+    if (!['pending', 'under_review'].includes(reqRow.status)) {
+      throw new Error(`Cannot create renewal offer for request with status "${reqRow.status}". Must be pending or under_review.`);
+    }
+    const [existingLinked] = await pool.query(
+      'SELECT id, contract_number FROM amc_contracts WHERE request_id = ? LIMIT 1',
+      [parsedRequestId]
+    );
+    if (existingLinked.length > 0) {
+      throw new Error(`Renewal contract (${existingLinked[0].contract_number}) has already been created for this request.`);
+    }
+  }
+
   const targetPlanId = planId || prev.plan_id;
   const targetPlanName = planName || prev.plan_name;
   const targetCapacity = deviceCapacity ? parseInt(deviceCapacity, 10) : prev.device_capacity;
@@ -2325,59 +2501,104 @@ const createAmcRenewalContract = async ({
   }
 
   const computedSelectionDeadline = selectionDeadline ? formatDateOnly(selectionDeadline) : computedStart;
-  const contractNumber = `AMC-RNW-${Date.now().toString(36).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
 
-  const [result] = await pool.query(`
-    INSERT INTO amc_contracts (
-      contract_number, company_id, request_id, plan_id, contract_type,
-      plan_name, device_capacity, price, discount_amount, tax_amount, total_amount,
-      terms_and_conditions, offer_valid_until, selection_deadline, start_date, end_date,
-      status, approval_status, payment_status, previous_contract_id, is_renewal, created_by
-    ) VALUES (?, ?, NULL, ?, 'renewal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'offered', 'pending_approval', 'unpaid', ?, 1, ?)
-  `, [
-    contractNumber, targetCompanyId, targetPlanId, targetPlanName, targetCapacity,
-    targetPrice, targetDiscount, targetTax, targetTotal, targetTerms,
-    offerValidUntil ? formatDateOnly(offerValidUntil) : null,
-    computedSelectionDeadline,
-    computedStart,
-    computedEnd,
-    previousContractId,
-    createdBy || null
-  ]);
+  const { id: newContractId, contractNumber } = await createContractWithSequenceRetry({
+    companyId: targetCompanyId,
+    insertOperation: async (connection, allocatedContractNumber) => {
+      if (parsedRequestId) {
+        const [lockedReqRows] = await connection.query(
+          'SELECT id, company_id, previous_contract_id, status FROM amc_requests WHERE id = ? FOR UPDATE',
+          [parsedRequestId]
+        );
+        if (lockedReqRows.length === 0) {
+          throw new Error('Renewal request not found.');
+        }
+        const lockedReq = lockedReqRows[0];
+        if (Number(lockedReq.company_id) !== Number(targetCompanyId)) {
+          throw new Error('Renewal request does not belong to target company.');
+        }
+        if (lockedReq.previous_contract_id != null && Number(lockedReq.previous_contract_id) !== Number(previousContractId)) {
+          throw new Error('Renewal request is linked to a different previous contract.');
+        }
+        if (!['pending', 'under_review'].includes(lockedReq.status)) {
+          throw new Error(`Cannot create renewal offer for request with status "${lockedReq.status}". Must be pending or under_review.`);
+        }
+        const [dupLinked] = await connection.query(
+          'SELECT id, contract_number FROM amc_contracts WHERE request_id = ? LIMIT 1',
+          [parsedRequestId]
+        );
+        if (dupLinked.length > 0) {
+          throw new Error(`Renewal contract (${dupLinked[0].contract_number}) has already been created for this request.`);
+        }
+      }
 
-  const newContractId = result.insertId;
+      const [result] = await connection.query(`
+        INSERT INTO amc_contracts (
+          contract_number, company_id, request_id, plan_id, contract_type,
+          plan_name, device_capacity, price, discount_amount, tax_amount, total_amount,
+          terms_and_conditions, offer_valid_until, selection_deadline, start_date, end_date,
+          status, approval_status, payment_status, previous_contract_id, is_renewal, created_by
+        ) VALUES (?, ?, ?, ?, 'renewal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'offered', 'pending_approval', 'unpaid', ?, 1, ?)
+      `, [
+        allocatedContractNumber, targetCompanyId, parsedRequestId || null, targetPlanId, targetPlanName, targetCapacity,
+        targetPrice, targetDiscount, targetTax, targetTotal, targetTerms,
+        offerValidUntil ? formatDateOnly(offerValidUntil) : null,
+        computedSelectionDeadline,
+        computedStart,
+        computedEnd,
+        previousContractId,
+        createdBy || null
+      ]);
 
-  // Record audit history on new contract
-  await pool.query(`
-    INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
-    VALUES (?, 'RENEWAL_CONTRACT_CREATED', ?, ?)
-  `, [
-    newContractId,
-    createdBy || null,
-    JSON.stringify({
-      previousContractId,
-      previousContractNumber: prev.contract_number,
-      deviceCapacity: targetCapacity,
-      previousCapacity: prev.device_capacity,
-      startDate: computedStart,
-      endDate: computedEnd,
-      isGapRenewal
-    })
-  ]);
+      const insertedId = result.insertId;
 
-  // Record audit history on previous contract
-  await pool.query(`
-    INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
-    VALUES (?, 'RENEWAL_OFFER_ISSUED', ?, ?)
-  `, [
-    previousContractId,
-    createdBy || null,
-    JSON.stringify({
-      renewalContractId: newContractId,
-      renewalContractNumber: contractNumber,
-      capacity: targetCapacity
-    })
-  ]);
+      if (parsedRequestId) {
+        await connection.query(`
+          UPDATE amc_requests
+          SET status = 'offered',
+              reviewed_by = COALESCE(reviewed_by, ?),
+              reviewed_at = COALESCE(reviewed_at, CURRENT_TIMESTAMP)
+          WHERE id = ?
+        `, [createdBy || null, parsedRequestId]);
+      }
+
+      // Record audit history on new contract
+      await connection.query(`
+        INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+        VALUES (?, 'RENEWAL_CONTRACT_CREATED', ?, ?)
+      `, [
+        insertedId,
+        createdBy || null,
+        JSON.stringify({
+          previousContractId,
+          previousContractNumber: prev.contract_number,
+          requestId: parsedRequestId || null,
+          deviceCapacity: targetCapacity,
+          previousCapacity: prev.device_capacity,
+          startDate: computedStart,
+          endDate: computedEnd,
+          isGapRenewal
+        })
+      ]);
+
+      // Record audit history on previous contract
+      await connection.query(`
+        INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+        VALUES (?, 'RENEWAL_OFFER_ISSUED', ?, ?)
+      `, [
+        previousContractId,
+        createdBy || null,
+        JSON.stringify({
+          renewalContractId: insertedId,
+          renewalContractNumber: allocatedContractNumber,
+          requestId: parsedRequestId || null,
+          capacity: targetCapacity
+        })
+      ]);
+
+      return { id: insertedId };
+    }
+  });
 
   // Notify company
   await sendAmcNotification({
@@ -2390,6 +2611,7 @@ const createAmcRenewalContract = async ({
     id: newContractId,
     contractNumber,
     previousContractId,
+    requestId: parsedRequestId || null,
     startDate: computedStart,
     endDate: computedEnd,
     deviceCapacity: targetCapacity,
