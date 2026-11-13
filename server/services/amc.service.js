@@ -1022,6 +1022,119 @@ const getContracts = async ({ companyId = null, status = null } = {}) => {
   });
 };
 
+const parseHistoryDetails = (rawDetails) => {
+  if (!rawDetails) return {};
+  if (typeof rawDetails === 'object') return rawDetails;
+  if (typeof rawDetails === 'string') {
+    try {
+      const parsed = JSON.parse(rawDetails);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+  return {};
+};
+
+const extractOfflineNoteFields = (referenceNote, contractNumber) => {
+  if (!referenceNote || typeof referenceNote !== 'string') {
+    return { referenceNumber: null, notes: null };
+  }
+  const refMatch = referenceNote.match(/^AMC Ref:\s*(.*?)\.\s*Contract:\s*/);
+  const referenceNumber = refMatch && refMatch[1] && refMatch[1] !== 'N/A' ? refMatch[1].trim() : null;
+  let notes = null;
+  if (contractNumber) {
+    const marker = `Contract: ${contractNumber}.`;
+    const idx = referenceNote.indexOf(marker);
+    if (idx !== -1) {
+      const trailing = referenceNote.slice(idx + marker.length).trim();
+      if (trailing) notes = trailing;
+    }
+  }
+  return { referenceNumber, notes };
+};
+
+const resolveContractOfflinePayment = async ({ contract, history = null, pendingOnly = false, connection = pool }) => {
+  let historyRows = history;
+  if (!Array.isArray(historyRows)) {
+    const [rows] = await connection.query(`
+      SELECT id, action, performed_by, details, created_at
+      FROM amc_contract_history
+      WHERE contract_id = ? AND action = 'OFFLINE_PAYMENT_INITIATED'
+      ORDER BY created_at DESC, id DESC
+    `, [contract.id]);
+    historyRows = rows;
+  }
+
+  const initiatedEntries = historyRows
+    .filter(h => h.action === 'OFFLINE_PAYMENT_INITIATED')
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at) || (b.id || 0) - (a.id || 0));
+
+  const initiatedEntry = initiatedEntries[0] || null;
+  const initiatedDetails = initiatedEntry ? parseHistoryDetails(initiatedEntry.details) : {};
+  const priorHistoryOrderIds = [...new Set(
+    initiatedEntries
+      .slice(1)
+      .map(entry => parseHistoryDetails(entry.details)?.orderId)
+      .filter(orderId => orderId && orderId !== initiatedDetails.orderId)
+  )];
+
+  const lockClause = pendingOnly && connection !== pool ? ' FOR UPDATE' : '';
+
+  let paymentRow = null;
+  let ambiguous = false;
+  let pendingCount = 0;
+
+  if (initiatedDetails.orderId) {
+    const [rows] = await connection.query(`
+      SELECT * FROM payments
+      WHERE order_id = ? AND company_id = ? AND gateway = 'offline'
+      ${pendingOnly ? "AND status = 'pending_verification'" : ''}
+      ORDER BY id DESC${lockClause}
+    `, [initiatedDetails.orderId, contract.company_id]);
+
+    if (rows.length > 1) {
+      throw new Error(`Multiple offline payment records matched order ${initiatedDetails.orderId} for contract ${contract.contract_number}; fail-closed.`);
+    }
+    paymentRow = rows[0] || null;
+  } else {
+    const legacyPattern = `AMC Ref: %. Contract: ${contract.contract_number}.%`;
+    const [rows] = await connection.query(`
+      SELECT * FROM payments
+      WHERE company_id = ?
+        AND gateway = 'offline'
+        AND order_id LIKE 'offline_amc_%'
+        AND reference_note LIKE ?
+      ORDER BY id DESC${lockClause}
+    `, [contract.company_id, legacyPattern]);
+
+    const pendingRows = rows.filter(r => r.status === 'pending_verification');
+    pendingCount = pendingRows.length;
+
+    if (pendingRows.length > 1) {
+      if (pendingOnly) {
+        throw new Error(`Ambiguous legacy pending offline payments (${pendingRows.length}) match contract ${contract.contract_number}; manual reconciliation required.`);
+      }
+      ambiguous = true;
+    } else if (pendingOnly) {
+      paymentRow = pendingRows[0] || null;
+    } else if (pendingRows.length === 1) {
+      paymentRow = pendingRows[0];
+    } else if (rows.length > 0) {
+      paymentRow = rows[0];
+    }
+  }
+
+  return {
+    paymentRow,
+    initiatedEntry,
+    initiatedDetails,
+    priorHistoryOrderIds,
+    ambiguous,
+    pendingCount
+  };
+};
+
 const getContractDetails = async (contractId, companyId = null) => {
   let sql = `
     SELECT c.*, u.name AS company_name, u.email AS company_email, cp.company_id AS canonical_company_id,
@@ -1091,6 +1204,33 @@ const getContractDetails = async (contractId, companyId = null) => {
     rejectedByName = rejectionEntry.performed_by_name || null;
   }
 
+  const offlineResolution = await resolveContractOfflinePayment({ contract, history, pendingOnly: false });
+  const offlinePayRow = offlineResolution.paymentRow;
+  const offlineInitDetails = offlineResolution.initiatedDetails || {};
+  const parsedFromNote = extractOfflineNoteFields(offlinePayRow?.reference_note, contract.contract_number);
+
+  const offlinePayment = (offlineResolution.initiatedEntry || offlinePayRow || offlineResolution.ambiguous)
+    ? {
+        orderId: offlineInitDetails.orderId || offlinePayRow?.order_id || null,
+        paymentMethod: offlineInitDetails.paymentMethod || offlinePayRow?.payment_method || null,
+        referenceNumber: offlineInitDetails.referenceNumber ?? parsedFromNote.referenceNumber ?? null,
+        notes: offlineInitDetails.notes ?? parsedFromNote.notes ?? null,
+        amount: offlineInitDetails.amount !== undefined
+          ? Number(offlineInitDetails.amount)
+          : (offlinePayRow ? Number(offlinePayRow.amount) : Number(contract.total_amount)),
+        status: offlineResolution.ambiguous
+          ? 'ambiguous'
+          : (offlinePayRow?.status || contract.payment_status || null),
+        verificationStatus: offlinePayRow?.verification_status || null,
+        errorMessage: offlinePayRow?.error_message || null,
+        referenceNote: offlinePayRow?.reference_note || null,
+        initiatedAt: offlineResolution.initiatedEntry?.created_at || offlinePayRow?.created_at || null,
+        verifiedAt: offlinePayRow?.verified_at || null,
+        ambiguous: Boolean(offlineResolution.ambiguous),
+        pendingCount: offlineResolution.pendingCount || 0
+      }
+    : null;
+
   return {
     ...contract,
     active_covered_count: Number(contract.active_covered_count || 0),
@@ -1098,6 +1238,7 @@ const getContractDetails = async (contractId, companyId = null) => {
     rejection_source: rejectionSource,
     rejected_at: rejectedAt,
     rejected_by_name: rejectedByName,
+    offlinePayment,
     start_date: contract.start_date ? formatDateOnly(contract.start_date) : null,
     end_date: contract.end_date ? formatDateOnly(contract.end_date) : null,
     offer_valid_until: contract.offer_valid_until ? formatDateOnly(contract.offer_valid_until) : null,
@@ -1155,6 +1296,9 @@ const approveAmcContract = async ({ contractId, adminUserId, startDate = null, e
   if (contract.status === 'rejected' || contract.approval_status === 'rejected') {
     throw new Error('Cannot approve a rejected contract offer.');
   }
+  if (['cancelled', 'expired'].includes(contract.status)) {
+    throw new Error(`Cannot approve a ${contract.status} contract.`);
+  }
 
   const start = startDate ? formatDateOnly(startDate) : (contract.start_date ? formatDateOnly(contract.start_date) : formatDateOnly(new Date()));
   const end = endDate ? formatDateOnly(endDate) : (contract.end_date ? formatDateOnly(contract.end_date) : formatDateOnly(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)));
@@ -1163,8 +1307,10 @@ const approveAmcContract = async ({ contractId, adminUserId, startDate = null, e
     throw new Error('Contract end date cannot be earlier than start date.');
   }
 
-  // If already paid, activating right away; otherwise stays accepted/pending payment
-  const newStatus = contract.payment_status === 'paid' ? 'active' : (contract.status === 'accepted' ? 'accepted' : 'draft');
+  // If already paid, activate right away; otherwise preserve accepted or offered state so Company can still accept & pay
+  const newStatus = contract.payment_status === 'paid'
+    ? 'active'
+    : ((contract.status === 'accepted' || contract.status === 'offered') ? contract.status : 'draft');
 
   await pool.query(`
     UPDATE amc_contracts
@@ -1477,18 +1623,75 @@ const updateContractStatus = async ({ contractId, adminUserId, status, reason })
     throw new Error('Status must be "active", "suspended", or "cancelled".');
   }
 
-  const [contracts] = await pool.query('SELECT * FROM amc_contracts WHERE id = ?', [contractId]);
-  if (contracts.length === 0) throw new Error('Contract not found.');
-  const contract = contracts[0];
+  const connection = await pool.getConnection();
+  let contract = null;
 
-  await pool.query('UPDATE amc_contracts SET status = ? WHERE id = ?', [status, contractId]);
+  try {
+    await connection.beginTransaction();
 
-  await pool.query(`
-    INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
-    VALUES (?, ?, ?, ?)
-  `, [contractId, `CONTRACT_${status.toUpperCase()}`, adminUserId, JSON.stringify({ reason: reason || '', previousStatus: contract.status })]);
+    const [contracts] = await connection.query('SELECT * FROM amc_contracts WHERE id = ? FOR UPDATE', [contractId]);
+    if (contracts.length === 0) throw new Error('Contract not found.');
+    contract = contracts[0];
 
-  // Notify company
+    if (contract.status === 'rejected' || contract.approval_status === 'rejected') {
+      throw new Error('Cannot update status of a rejected contract.');
+    }
+    if (['expired', 'cancelled'].includes(contract.status)) {
+      throw new Error(`Cannot change status of an ${contract.status} contract.`);
+    }
+    if (contract.status === status) {
+      throw new Error(`Contract is already in "${status}" status.`);
+    }
+
+    if (status === 'active') {
+      if (!['accepted', 'suspended'].includes(contract.status)) {
+        throw new Error(`Cannot activate contract from "${contract.status}" status. Company acceptance is required before activation.`);
+      }
+      if (contract.approval_status !== 'approved') {
+        throw new Error('Contract must be approved by admin before activation.');
+      }
+      if (contract.payment_status !== 'paid') {
+        throw new Error('Contract must be paid before activation.');
+      }
+
+      const startStr = contract.start_date ? formatDateOnly(contract.start_date) : null;
+      const endStr = contract.end_date ? formatDateOnly(contract.end_date) : null;
+      const todayStr = getBusinessTodayStr();
+
+      if (startStr && endStr && startStr > endStr) {
+        throw new Error('Contract start date cannot exceed end date.');
+      }
+      if (endStr && endStr < todayStr) {
+        throw new Error(`Cannot activate contract whose coverage end date (${endStr}) is earlier than today (${todayStr}). Please create a renewal instead.`);
+      }
+    } else if (status === 'suspended') {
+      if (contract.status !== 'active') {
+        throw new Error(`Cannot suspend contract from "${contract.status}" status. Only active contracts can be suspended.`);
+      }
+    } else if (status === 'cancelled') {
+      if (!['draft', 'offered', 'accepted', 'active', 'suspended'].includes(contract.status)) {
+        throw new Error(`Cannot cancel contract from "${contract.status}" status.`);
+      }
+    }
+
+    await connection.query('UPDATE amc_contracts SET status = ? WHERE id = ?', [status, contractId]);
+
+    await connection.query(`
+      INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+      VALUES (?, ?, ?, ?)
+    `, [contractId, `CONTRACT_${status.toUpperCase()}`, adminUserId, JSON.stringify({ reason: reason || '', previousStatus: contract.status })]);
+
+    await connection.commit();
+  } catch (err) {
+    try {
+      await connection.rollback();
+    } catch (_) {}
+    throw err;
+  } finally {
+    connection.release();
+  }
+
+  // Notify company after transaction commit
   await sendAmcNotification({
     userId: contract.company_id,
     title: `AMC Contract Status: ${status.toUpperCase()} (${contract.contract_number})`,
@@ -1717,7 +1920,7 @@ const initiateContractOfflinePayment = async ({ contractId, companyId, paymentMe
   await pool.query(`
     INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
     VALUES (?, 'OFFLINE_PAYMENT_INITIATED', ?, ?)
-  `, [contractId, userId || null, JSON.stringify({ paymentMethod, referenceNumber, amount: contract.total_amount })]);
+  `, [contractId, userId || null, JSON.stringify({ orderId, paymentMethod, referenceNumber, notes: notes || null, amount: contract.total_amount })]);
 
   // Notify admin to review offline payment
   await sendAmcNotification({
@@ -1737,17 +1940,28 @@ const verifyContractOfflinePayment = async ({ contractId, adminUserId, decision,
     throw new Error('Decision must be "verified" or "rejected".');
   }
 
-  const [contracts] = await pool.query('SELECT * FROM amc_contracts WHERE id = ?', [contractId]);
-  if (contracts.length === 0) throw new Error('Contract not found.');
-  const contract = contracts[0];
+  const connection = await pool.getConnection();
+  let contract = null;
+  let verifiedResult = null;
+  let rejectedResult = null;
 
-  if (contract.status === 'rejected' || contract.approval_status === 'rejected') {
-    throw new Error('Cannot verify offline payment for a rejected contract offer.');
-  }
+  try {
+    await connection.beginTransaction();
 
-  if (decision === 'verified') {
-    // Idempotency: avoid duplicate invoices on offline verification replays
-    if (contract.payment_status === 'paid') {
+    const [contracts] = await connection.query('SELECT * FROM amc_contracts WHERE id = ? FOR UPDATE', [contractId]);
+    if (contracts.length === 0) throw new Error('Contract not found.');
+    contract = contracts[0];
+
+    if (contract.status === 'rejected' || contract.approval_status === 'rejected') {
+      throw new Error('Cannot verify offline payment for a rejected contract offer.');
+    }
+    if (['cancelled', 'expired'].includes(contract.status)) {
+      throw new Error(`Cannot verify offline payment for a ${contract.status} contract.`);
+    }
+
+    if (decision === 'verified' && contract.payment_status === 'paid') {
+      // Idempotency: avoid duplicate invoices on offline verification replays
+      await connection.commit();
       return {
         success: true,
         contractId,
@@ -1757,90 +1971,140 @@ const verifyContractOfflinePayment = async ({ contractId, adminUserId, decision,
       };
     }
 
-    // Generate invoice
-    const [profiles] = await pool.query('SELECT company_name FROM company_profiles WHERE user_id = ?', [contract.company_id]);
-    const [users] = await pool.query('SELECT name FROM users WHERE id = ?', [contract.company_id]);
-    const clientName = profiles[0]?.company_name || users[0]?.name || 'Corporate Client';
-    const invoiceId = await generateInvoiceId(pool);
-
-    await pool.query(`
-      INSERT INTO invoices (
-        id, user_id, client_name, amount, subtotal, tax_amount, currency, invoice_date, due_date, status, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'Paid', ?)
-    `, [
-      invoiceId, contract.company_id, clientName,
-      contract.total_amount, contract.price, contract.tax_amount || 0,
-      contract.currency || 'INR', `AMC Contract Payment (Offline): ${contract.contract_number} (${contract.plan_name})`
-    ]);
-
-    await pool.query(`
-      INSERT INTO invoice_line_items (invoice_id, description, quantity, unit_price, total, tax_amount)
-      VALUES (?, ?, 1, ?, ?, ?)
-    `, [invoiceId, `AMC Plan: ${contract.plan_name} (${contract.device_capacity} Devices)`, contract.price, contract.price, contract.tax_amount || 0]);
-
-    // Update payment records
-    await pool.query(`
-      UPDATE payments 
-      SET status = 'paid', verification_status = 'verified', verified_by = ?, verified_at = CURRENT_TIMESTAMP
-      WHERE company_id = ? AND reference_note LIKE ? AND status = 'pending_verification'
-      ORDER BY id DESC LIMIT 1
-    `, [adminUserId, contract.company_id, `%${contract.contract_number}%`]);
-
-    const shouldActivate = contract.approval_status === 'approved';
-    const start = contract.start_date ? formatDateOnly(contract.start_date) : formatDateOnly(new Date());
-    const end = contract.end_date ? formatDateOnly(contract.end_date) : formatDateOnly(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
-
-    await pool.query(`
-      UPDATE amc_contracts
-      SET payment_status = 'paid', invoice_id = ?, status = ?, start_date = ?, end_date = ?
-      WHERE id = ?
-    `, [invoiceId, shouldActivate ? 'active' : (contract.status === 'offered' ? 'accepted' : contract.status), start, end, contractId]);
-
-    if (shouldActivate) {
-      await pool.query(`
-        UPDATE amc_covered_devices
-        SET coverage_start_date = ?, coverage_end_date = ?
-        WHERE contract_id = ? AND status = 'active'
-      `, [start, end, contractId]);
+    if (contract.payment_status !== 'pending_verification') {
+      throw new Error(`Cannot ${decision === 'verified' ? 'verify' : 'reject'} offline payment when contract payment status is "${contract.payment_status}".`);
     }
 
-    await pool.query(`
-      INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
-      VALUES (?, 'OFFLINE_PAYMENT_VERIFIED', ?, ?)
-    `, [contractId, adminUserId, JSON.stringify({ invoiceId, adminNotes, activated: shouldActivate })]);
+    // Resolve and lock exact pending offline payment before mutating invoices or contract status
+    const offlineResolution = await resolveContractOfflinePayment({ contract, pendingOnly: true, connection });
+    if (!offlineResolution.paymentRow) {
+      throw new Error('No pending offline payment record found for verification on this contract.');
+    }
 
-    // Notify company
+    const paymentRow = offlineResolution.paymentRow;
+
+    if (decision === 'verified') {
+      const [payUpdateRes] = await connection.query(`
+        UPDATE payments 
+        SET status = 'paid', verification_status = 'verified', verified_by = ?, verified_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND company_id = ? AND gateway = 'offline' AND status = 'pending_verification'
+      `, [adminUserId, paymentRow.id, contract.company_id]);
+
+      if (payUpdateRes.affectedRows !== 1) {
+        throw new Error('Pending offline payment record could not be updated or was already processed.');
+      }
+
+      if (Array.isArray(offlineResolution.priorHistoryOrderIds) && offlineResolution.priorHistoryOrderIds.length > 0) {
+        await connection.query(`
+          UPDATE payments
+          SET status = 'cancelled',
+              error_message = COALESCE(error_message, 'Superseded by newer verified offline payment')
+          WHERE company_id = ?
+            AND gateway = 'offline'
+            AND status = 'pending_verification'
+            AND id <> ?
+            AND order_id IN (?)
+        `, [contract.company_id, paymentRow.id, offlineResolution.priorHistoryOrderIds]);
+      }
+
+      // Generate invoice atomically inside the transaction
+      const [profiles] = await connection.query('SELECT company_name FROM company_profiles WHERE user_id = ?', [contract.company_id]);
+      const [users] = await connection.query('SELECT name FROM users WHERE id = ?', [contract.company_id]);
+      const clientName = profiles[0]?.company_name || users[0]?.name || 'Corporate Client';
+      const invoiceId = await generateInvoiceId(connection);
+
+      await connection.query(`
+        INSERT INTO invoices (
+          id, user_id, client_name, amount, subtotal, tax_amount, currency, invoice_date, due_date, status, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'Paid', ?)
+      `, [
+        invoiceId, contract.company_id, clientName,
+        contract.total_amount, contract.price, contract.tax_amount || 0,
+        contract.currency || 'INR', `AMC Contract Payment (Offline): ${contract.contract_number} (${contract.plan_name})`
+      ]);
+
+      await connection.query(`
+        INSERT INTO invoice_line_items (invoice_id, description, quantity, unit_price, total, tax_amount)
+        VALUES (?, ?, 1, ?, ?, ?)
+      `, [invoiceId, `AMC Plan: ${contract.plan_name} (${contract.device_capacity} Devices)`, contract.price, contract.price, contract.tax_amount || 0]);
+
+      const shouldActivate = contract.approval_status === 'approved';
+      const nextContractStatus = shouldActivate ? 'active' : (contract.status === 'offered' ? 'accepted' : contract.status);
+      const start = contract.start_date ? formatDateOnly(contract.start_date) : formatDateOnly(new Date());
+      const end = contract.end_date ? formatDateOnly(contract.end_date) : formatDateOnly(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+
+      await connection.query(`
+        UPDATE amc_contracts
+        SET payment_status = 'paid', invoice_id = ?, status = ?, start_date = ?, end_date = ?
+        WHERE id = ?
+      `, [invoiceId, nextContractStatus, start, end, contractId]);
+
+      if (shouldActivate) {
+        await connection.query(`
+          UPDATE amc_covered_devices
+          SET coverage_start_date = ?, coverage_end_date = ?
+          WHERE contract_id = ? AND status = 'active'
+        `, [start, end, contractId]);
+      }
+
+      await connection.query(`
+        INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+        VALUES (?, 'OFFLINE_PAYMENT_VERIFIED', ?, ?)
+      `, [contractId, adminUserId, JSON.stringify({ invoiceId, adminNotes, activated: shouldActivate, orderId: paymentRow.order_id || null })]);
+
+      await connection.commit();
+      verifiedResult = { success: true, contractId, paymentStatus: 'paid', invoiceId, status: nextContractStatus, shouldActivate };
+    } else {
+      const [payRejectRes] = await connection.query(`
+        UPDATE payments
+        SET status = 'rejected', verification_status = 'rejected', verified_by = ?, verified_at = CURRENT_TIMESTAMP, error_message = ?
+        WHERE id = ? AND company_id = ? AND gateway = 'offline' AND status = 'pending_verification'
+      `, [adminUserId, adminNotes || 'Offline payment verification rejected by admin', paymentRow.id, contract.company_id]);
+
+      if (payRejectRes.affectedRows !== 1) {
+        throw new Error('Pending offline payment record could not be updated or was already processed.');
+      }
+
+      await connection.query('UPDATE amc_contracts SET payment_status = "failed" WHERE id = ?', [contractId]);
+
+      await connection.query(`
+        INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+        VALUES (?, 'OFFLINE_PAYMENT_REJECTED', ?, ?)
+      `, [contractId, adminUserId, JSON.stringify({ adminNotes, orderId: paymentRow.order_id || null })]);
+
+      await connection.commit();
+      rejectedResult = { success: true, contractId, paymentStatus: 'failed' };
+    }
+  } catch (err) {
+    try {
+      await connection.rollback();
+    } catch (_) {}
+    throw err;
+  } finally {
+    connection.release();
+  }
+
+  if (verifiedResult) {
     await sendAmcNotification({
       userId: contract.company_id,
       title: `AMC Offline Payment Verified (${contract.contract_number})`,
-      message: `Your offline payment for contract ${contract.contract_number} has been verified! Invoice ${invoiceId} is generated.${shouldActivate ? ' Your AMC coverage is now ACTIVE.' : ' Contract is awaiting final admin approval.'}`
+      message: `Your offline payment for contract ${contract.contract_number} has been verified! Invoice ${verifiedResult.invoiceId} is generated.${verifiedResult.shouldActivate ? ' Your AMC coverage is now ACTIVE.' : ' Contract is awaiting final admin approval.'}`
     });
-
-    return { success: true, contractId, paymentStatus: 'paid', invoiceId, status: shouldActivate ? 'active' : contract.status };
-  } else {
-    // Rejected
-    await pool.query('UPDATE amc_contracts SET payment_status = "failed" WHERE id = ?', [contractId]);
-    await pool.query(`
-      UPDATE payments
-      SET status = 'rejected', verification_status = 'rejected', verified_by = ?, verified_at = CURRENT_TIMESTAMP, error_message = ?
-      WHERE company_id = ? AND reference_note LIKE ? AND status = 'pending_verification'
-      ORDER BY id DESC LIMIT 1
-    `, [adminUserId, adminNotes || 'Offline payment verification rejected by admin', contract.company_id, `%${contract.contract_number}%`]);
-
-    await pool.query(`
-      INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
-      VALUES (?, 'OFFLINE_PAYMENT_REJECTED', ?, ?)
-    `, [contractId, adminUserId, JSON.stringify({ adminNotes })]);
-
-    // Notify company
-    await sendAmcNotification({
-      userId: contract.company_id,
-      title: `AMC Payment Rejected (${contract.contract_number})`,
-      message: `Your offline payment for contract ${contract.contract_number} was rejected by admin.${adminNotes ? ` Reason: ${adminNotes}` : ''} Please contact support or retry payment.`
-    });
-
-    return { success: true, contractId, paymentStatus: 'failed' };
+    return {
+      success: true,
+      contractId: verifiedResult.contractId,
+      paymentStatus: verifiedResult.paymentStatus,
+      invoiceId: verifiedResult.invoiceId,
+      status: verifiedResult.status
+    };
   }
+
+  await sendAmcNotification({
+    userId: contract.company_id,
+    title: `AMC Payment Rejected (${contract.contract_number})`,
+    message: `Your offline payment for contract ${contract.contract_number} was rejected by admin.${adminNotes ? ` Reason: ${adminNotes}` : ''} Please contact support or retry payment.`
+  });
+  return rejectedResult;
 };
 
 /**

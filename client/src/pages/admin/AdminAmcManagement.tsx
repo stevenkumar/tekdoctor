@@ -44,11 +44,28 @@ interface AmcRequest {
   plan_id?: number;
   plan_name?: string;
   plan_code?: string;
+  previous_contract_id?: number | null;
   requested_device_count: number;
   notes?: string;
   status: 'pending' | 'under_review' | 'offered' | 'rejected' | 'cancelled';
   admin_notes?: string;
   created_at: string;
+}
+
+interface AmcOfflinePaymentSummary {
+  orderId?: string | null;
+  paymentMethod?: string | null;
+  referenceNumber?: string | null;
+  notes?: string | null;
+  amount?: number | null;
+  status?: string | null;
+  verificationStatus?: string | null;
+  errorMessage?: string | null;
+  referenceNote?: string | null;
+  initiatedAt?: string | null;
+  verifiedAt?: string | null;
+  ambiguous?: boolean;
+  pendingCount?: number;
 }
 
 interface AmcContract {
@@ -68,6 +85,7 @@ interface AmcContract {
   rejection_source?: string | null;
   rejected_at?: string | null;
   rejected_by_name?: string | null;
+  offlinePayment?: AmcOfflinePaymentSummary | null;
   price: string | number;
   discount_amount: string | number;
   tax_amount: string | number;
@@ -82,9 +100,18 @@ interface AmcContract {
   payment_status: 'unpaid' | 'pending_verification' | 'paid' | 'failed';
   invoice_id?: string;
   created_at: string;
-  coveredDevices?: any[];
+  coveredDevices?: AmcCoveredDevice[];
   history?: any[];
-  replacements?: any[];
+  replacements?: AmcReplacement[];
+}
+
+interface AmcCoveredDevice {
+  id: number;
+  amc_tag: string;
+  brand?: string;
+  model_number?: string;
+  serial_number?: string;
+  status: string;
 }
 
 interface AmcReplacement {
@@ -187,6 +214,7 @@ export default function AdminAmcManagement() {
   // Renewal Offer Modal (Phase 3)
   const [showRenewalModal, setShowRenewalModal] = useState(false);
   const [renewalTargetContract, setRenewalTargetContract] = useState<AmcContract | null>(null);
+  const [renewalSourceRequest, setRenewalSourceRequest] = useState<AmcRequest | null>(null);
   const [renewalForm, setRenewalForm] = useState({
     deviceCapacity: '10',
     price: '',
@@ -205,6 +233,7 @@ export default function AdminAmcManagement() {
   const [companiesList, setCompaniesList] = useState<CompanyOption[]>([]);
   const [loadingCompanies, setLoadingCompanies] = useState(false);
   const [companiesError, setCompaniesError] = useState<string | null>(null);
+  const [companySearchQuery, setCompanySearchQuery] = useState('');
 
   // Modals
   const [showCreatePlanModal, setShowCreatePlanModal] = useState(false);
@@ -286,12 +315,13 @@ export default function AdminAmcManagement() {
   };
 
   // Load Contracts
-  const fetchContracts = async () => {
+  const fetchContracts = async (statusOverride?: string) => {
     if (!token) return;
     setLoadingContracts(true);
     try {
+      const activeStatus = statusOverride !== undefined ? statusOverride : contractStatusFilter;
       const res = await amcApi.getAdminContracts(token, {
-        status: contractStatusFilter || undefined
+        status: activeStatus || undefined
       });
       if (res.ok) {
         setContracts(extractResponseList<AmcContract>(res));
@@ -308,12 +338,13 @@ export default function AdminAmcManagement() {
   };
 
   // Load Requests
-  const fetchRequests = async () => {
+  const fetchRequests = async (statusOverride?: string) => {
     if (!token) return;
     setLoadingRequests(true);
     try {
+      const activeStatus = statusOverride !== undefined ? statusOverride : requestStatusFilter;
       const res = await amcApi.getAdminRequests(token, {
-        status: requestStatusFilter || undefined
+        status: activeStatus || undefined
       });
       if (res.ok) {
         setRequests(extractResponseList<AmcRequest>(res));
@@ -350,12 +381,13 @@ export default function AdminAmcManagement() {
   };
 
   // Load Replacements
-  const fetchReplacements = async () => {
+  const fetchReplacements = async (statusOverride?: string) => {
     if (!token) return;
     setLoadingReplacements(true);
     try {
+      const activeStatus = statusOverride !== undefined ? statusOverride : replacementStatusFilter;
       const res = await amcApi.getAdminReplacements(token, {
-        status: replacementStatusFilter || undefined
+        status: activeStatus || undefined
       });
       if (res.ok) {
         setReplacements(extractResponseList<AmcReplacement>(res));
@@ -371,26 +403,67 @@ export default function AdminAmcManagement() {
     }
   };
 
-  // Load Companies for Dropdown
-  const fetchCompanies = async () => {
+  // Load Companies for Dropdown (supports pagination + search via existing getCompanies API)
+  const fetchCompanies = async (searchQuery = '') => {
     if (!token) return;
     setLoadingCompanies(true);
     setCompaniesError(null);
     try {
-      const res = await adminApi.getCompanies(token, 1, 200);
-      if (res.ok && res.data) {
+      const extractCompaniesPayload = (res: Awaited<ReturnType<typeof adminApi.getCompanies>>) => {
+        const envelope = res?.data as {
+          data?: { data?: CompanyOption[]; companies?: CompanyOption[]; pagination?: { totalPages?: number } };
+          companies?: CompanyOption[];
+          pagination?: { totalPages?: number };
+          message?: string;
+        } | undefined;
         const rawList =
-          (res.data as any)?.data?.data ||
-          (res.data as any)?.data?.companies ||
-          (res.data as any)?.companies ||
+          envelope?.data?.data ||
+          envelope?.data?.companies ||
+          envelope?.companies ||
           extractResponseList<CompanyOption>(res);
-        const list = Array.isArray(rawList) ? rawList : [];
-        setCompaniesList(list);
-      } else {
-        const errorMsg = res.error || (res.data as any)?.message || 'Failed to load company directory.';
-        setCompaniesError(errorMsg);
-        toast.error(errorMsg);
+        const pagination =
+          envelope?.data?.pagination ||
+          envelope?.pagination ||
+          null;
+        return {
+          list: Array.isArray(rawList) ? rawList : [],
+          totalPages: Number(pagination?.totalPages || 1)
+        };
+      };
+
+      const trimmedSearch = searchQuery.trim();
+      if (trimmedSearch) {
+        const res = await adminApi.getCompanies(token, 1, 100, trimmedSearch);
+        if (res.ok && res.data) {
+          setCompaniesList(extractCompaniesPayload(res).list);
+        } else {
+          const errorMsg = res.error || (res.data as { message?: string } | undefined)?.message || 'Failed to load company directory.';
+          setCompaniesError(errorMsg);
+          toast.error(errorMsg);
+        }
+        return;
       }
+
+      const aggregated: CompanyOption[] = [];
+      let page = 1;
+      let totalPages = 1;
+      const maxPages = 20;
+
+      do {
+        const res = await adminApi.getCompanies(token, page, 100);
+        if (!res.ok || !res.data) {
+          const errorMsg = res.error || (res.data as { message?: string } | undefined)?.message || 'Failed to load company directory.';
+          setCompaniesError(errorMsg);
+          toast.error(errorMsg);
+          return;
+        }
+        const parsed = extractCompaniesPayload(res);
+        aggregated.push(...parsed.list);
+        totalPages = Math.min(parsed.totalPages || 1, maxPages);
+        page += 1;
+      } while (page <= totalPages);
+
+      setCompaniesList(aggregated);
     } catch (err: any) {
       const errorMsg = err?.message || 'Error loading companies.';
       setCompaniesError(errorMsg);
@@ -525,9 +598,13 @@ export default function AdminAmcManagement() {
     }
   };
 
-  // Open Renewal Modal (Phase 3)
-  const handleOpenRenewalModal = (contract: AmcContract) => {
+  // Open Renewal Modal (Phase 3 & Phase 4 Request-Linked Renewal)
+  const handleOpenRenewalModal = (
+    contract: AmcContract,
+    sourceRequest: AmcRequest | null = null
+  ) => {
     setRenewalTargetContract(contract);
+    setRenewalSourceRequest(sourceRequest);
     const today = new Date().toISOString().split('T')[0];
     const prevEnd = contract.end_date ? contract.end_date.slice(0, 10) : today;
     const isExpired = prevEnd < today;
@@ -543,16 +620,24 @@ export default function AdminAmcManagement() {
     endD.setUTCDate(endD.getUTCDate() + 365);
     const defaultEnd = endD.toISOString().split('T')[0];
 
-    const priceNum = parseFloat(String(contract.price || contract.total_amount)) || 14999;
-    const taxNum = Math.round(priceNum * 0.18);
-    const totalNum = priceNum + taxNum;
+    const matchedPlan = sourceRequest?.plan_id
+      ? plans.find((p) => Number(p.id) === Number(sourceRequest.plan_id))
+      : plans.find((p) => Number(p.id) === Number(contract.plan_id));
+    const parsedContractPrice = parseFloat(String(contract.price || ''));
+    const parsedPlanPrice = matchedPlan ? parseFloat(String(matchedPlan.base_price || '')) : NaN;
+    const priceNum = Number.isFinite(parsedContractPrice) && parsedContractPrice > 0
+      ? parsedContractPrice
+      : (Number.isFinite(parsedPlanPrice) && parsedPlanPrice > 0 ? parsedPlanPrice : NaN);
+    const hasPrice = Number.isFinite(priceNum) && priceNum > 0;
+    const taxNum = hasPrice ? Math.round(priceNum * 0.18) : 0;
+    const totalNum = hasPrice ? priceNum + taxNum : 0;
 
     setRenewalForm({
-      deviceCapacity: String(contract.device_capacity),
-      price: String(priceNum),
+      deviceCapacity: String(sourceRequest?.requested_device_count || contract.device_capacity),
+      price: hasPrice ? String(priceNum) : '',
       discountAmount: '0',
-      taxAmount: String(taxNum),
-      totalAmount: String(totalNum),
+      taxAmount: hasPrice ? String(taxNum) : '0',
+      totalAmount: hasPrice ? String(totalNum) : '',
       startDate: defaultStart,
       endDate: defaultEnd,
       selectionDeadline: defaultStart,
@@ -562,7 +647,29 @@ export default function AdminAmcManagement() {
     setShowRenewalModal(true);
   };
 
-  // Submit Renewal Offer (Phase 3)
+  // Open Renewal Modal from REQ-RNW-... request row
+  const handleOpenRenewalFromRequest = async (reqRow: AmcRequest) => {
+    if (!token) return;
+    if (!reqRow.previous_contract_id) {
+      toast.error('This renewal request has no linked previous contract ID. Open the target contract row to issue a renewal offer.');
+      return;
+    }
+    try {
+      const res = await amcApi.getAdminContractDetails(token, reqRow.previous_contract_id);
+      if (res.ok && res.data) {
+        const prevContract = extractResponseData<AmcContract | null>(res, null);
+        if (prevContract) {
+          handleOpenRenewalModal(prevContract, reqRow);
+          return;
+        }
+      }
+      toast.error(res.error || 'Failed to load previous contract details for renewal.');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Error loading previous contract for renewal.');
+    }
+  };
+
+  // Submit Renewal Offer (Phase 3 & Phase 4)
   const handleSubmitRenewalOffer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || !renewalTargetContract) return;
@@ -570,6 +677,7 @@ export default function AdminAmcManagement() {
     setIsSubmittingRenewalOffer(true);
     try {
       const res = await amcApi.createRenewalContract(token, renewalTargetContract.id, {
+        requestId: renewalSourceRequest?.id,
         planName: renewalTargetContract.plan_name,
         deviceCapacity: parseInt(renewalForm.deviceCapacity, 10),
         price: parseFloat(renewalForm.price),
@@ -586,13 +694,15 @@ export default function AdminAmcManagement() {
       if (res.ok) {
         toast.success('AMC Renewal Offer issued successfully to company!');
         setShowRenewalModal(false);
+        setRenewalSourceRequest(null);
         fetchContracts();
+        fetchRequests();
         fetchOverview();
       } else {
-        toast.error(res.error || 'Failed to create renewal offer.');
+        toast.error(res.error || (res.data as { message?: string } | undefined)?.message || 'Failed to create renewal offer.');
       }
-    } catch (err: any) {
-      toast.error(err?.message || 'Error submitting renewal offer.');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Error submitting renewal offer.');
     } finally {
       setIsSubmittingRenewalOffer(false);
     }
@@ -762,6 +872,9 @@ export default function AdminAmcManagement() {
         setShowCreateContractModal(false);
         fetchContracts();
         fetchOverview();
+        if (contractForm.requestId) {
+          fetchRequests();
+        }
       } else {
         toast.error(res.error || (res.data as any)?.message || 'Failed to create contract.');
       }
@@ -911,7 +1024,7 @@ export default function AdminAmcManagement() {
               fetchPlans();
               fetchReplacements();
               fetchCompanies();
-    fetchReminders();
+              fetchReminders();
             }}
             className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-700 transition"
           >
@@ -922,20 +1035,20 @@ export default function AdminAmcManagement() {
             onClick={() => {
               if (companiesList.length === 0) {
                 fetchCompanies();
-    fetchReminders();
               }
+              setCompanySearchQuery('');
               setContractForm({
                 companyId: '',
                 requestId: '',
                 planId: '',
                 contractType: 'standard',
-                planName: 'Corporate Annual Maintenance',
+                planName: '',
                 deviceCapacity: '10',
-                price: '14999',
+                price: '',
                 discountAmount: '0',
-                taxAmount: '2700',
-                totalAmount: '17699',
-                termsAndConditions: 'Comprehensive hardware maintenance & priority on-site support included.',
+                taxAmount: '0',
+                totalAmount: '',
+                termsAndConditions: '',
                 offerValidUntil: new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
                 startDate: new Date().toISOString().slice(0, 10),
                 endDate: new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10)
@@ -951,7 +1064,7 @@ export default function AdminAmcManagement() {
       </div>
 
       {/* Metrics Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4">
           <div className="flex items-center justify-between text-zinc-400 mb-2">
             <span className="text-xs font-medium uppercase tracking-wider">Active Contracts</span>
@@ -986,6 +1099,24 @@ export default function AdminAmcManagement() {
           </div>
           <div className="text-2xl font-bold text-rose-400">{overview?.pendingReplacements ?? '--'}</div>
           <p className="text-[11px] text-zinc-500 mt-1">Device replacement approvals queued</p>
+        </div>
+
+        <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4">
+          <div className="flex items-center justify-between text-zinc-400 mb-2">
+            <span className="text-xs font-medium uppercase tracking-wider">Pending Requests</span>
+            <FileText className="h-4 w-4 text-cyan-400" />
+          </div>
+          <div className="text-2xl font-bold text-cyan-400">{overview?.pendingRequests ?? '--'}</div>
+          <p className="text-[11px] text-zinc-500 mt-1">Inquiries &amp; renewals awaiting offer</p>
+        </div>
+
+        <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4">
+          <div className="flex items-center justify-between text-zinc-400 mb-2">
+            <span className="text-xs font-medium uppercase tracking-wider">Nearing Expiry (30d)</span>
+            <AlertTriangle className="h-4 w-4 text-orange-400" />
+          </div>
+          <div className="text-2xl font-bold text-orange-400">{overview?.nearingExpiry ?? '--'}</div>
+          <p className="text-[11px] text-zinc-500 mt-1">Active contracts expiring within 30 days</p>
         </div>
       </div>
 
@@ -1066,8 +1197,9 @@ export default function AdminAmcManagement() {
               <select
                 value={contractStatusFilter}
                 onChange={(e) => {
-                  setContractStatusFilter(e.target.value);
-                  fetchContracts();
+                  const val = e.target.value;
+                  setContractStatusFilter(val);
+                  fetchContracts(val);
                 }}
                 className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs rounded-lg px-3 py-2 outline-none"
               >
@@ -1075,6 +1207,7 @@ export default function AdminAmcManagement() {
                 <option value="active">Active</option>
                 <option value="offered">Offered</option>
                 <option value="accepted">Accepted</option>
+                <option value="rejected">Rejected</option>
                 <option value="draft">Draft</option>
                 <option value="suspended">Suspended</option>
                 <option value="cancelled">Cancelled</option>
@@ -1121,7 +1254,7 @@ export default function AdminAmcManagement() {
                           </td>
                           <td className="px-4 py-3">
                             <div className="font-medium text-white">{c.company_name || `Company #${c.company_id}`}</div>
-                            <div className="text-[11px] text-zinc-500 font-mono">{c.canonical_company_id || 'CMP-XXX'}</div>
+                            <div className="text-[11px] text-zinc-500 font-mono">{c.canonical_company_id || 'ID Pending'}</div>
                           </td>
                           <td className="px-4 py-3">
                             <div className="font-medium">{c.plan_name}</div>
@@ -1215,8 +1348,9 @@ export default function AdminAmcManagement() {
             <select
               value={requestStatusFilter}
               onChange={(e) => {
-                setRequestStatusFilter(e.target.value);
-                fetchRequests();
+                const val = e.target.value;
+                setRequestStatusFilter(val);
+                fetchRequests(val);
               }}
               className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs rounded-lg px-3 py-2 outline-none"
             >
@@ -1225,6 +1359,7 @@ export default function AdminAmcManagement() {
               <option value="under_review">Under Review</option>
               <option value="offered">Offered</option>
               <option value="rejected">Rejected</option>
+              <option value="cancelled">Cancelled</option>
             </select>
           </div>
 
@@ -1257,17 +1392,32 @@ export default function AdminAmcManagement() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-800/60">
-                    {filteredRequests.map((r) => (
+                    {filteredRequests.map((r) => {
+                      const isRenewalRequest = Boolean(r.previous_contract_id) || (r.request_number || '').startsWith('REQ-RNW-');
+                      const canIssueOffer = r.status === 'pending' || r.status === 'under_review';
+                      return (
                         <tr key={r.id} className="hover:bg-zinc-800/30 transition">
                           <td className="px-4 py-3 font-mono text-xs text-indigo-400 font-medium">
-                            {r.request_number}
+                            <div className="flex items-center gap-1.5">
+                              <span>{r.request_number}</span>
+                              {isRenewalRequest && (
+                                <span className="px-1.5 py-0.5 text-[10px] rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-sans">
+                                  Renewal
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="px-4 py-3">
                             <div className="font-medium text-white">{r.company_name || `Company #${r.company_id}`}</div>
                             <div className="text-[11px] text-zinc-500 font-mono">{r.canonical_company_id || ''}</div>
                           </td>
                           <td className="px-4 py-3">
-                            {r.plan_name ? `${r.plan_name} (${r.plan_code})` : 'Custom Specification'}
+                            <div>{r.plan_name ? `${r.plan_name} (${r.plan_code})` : 'Custom Specification'}</div>
+                            {r.notes && (
+                              <div className="text-[11px] text-zinc-400 mt-1 max-w-xs line-clamp-2 italic" title={r.notes}>
+                                "{r.notes}"
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3 font-medium">
                             {r.requested_device_count} devices
@@ -1298,37 +1448,66 @@ export default function AdminAmcManagement() {
                             >
                               Review
                             </button>
-                            <button
-                              onClick={() => {
-                                if (companiesList.length === 0) {
-                                  fetchCompanies();
-    fetchReminders();
-                                }
-                                setContractForm({
-                                  companyId: String(r.company_id),
-                                  requestId: String(r.id),
-                                  planId: r.plan_id ? String(r.plan_id) : '',
-                                  contractType: 'standard',
-                                  planName: r.plan_name || 'Standard Fleet Maintenance',
-                                  deviceCapacity: String(r.requested_device_count || 10),
-                                  price: '14999',
-                                  discountAmount: '0',
-                                  taxAmount: '2700',
-                                  totalAmount: '17699',
-                                  termsAndConditions: 'Hardware maintenance agreement with priority SLA.',
-                                  offerValidUntil: new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
-                                  startDate: new Date().toISOString().slice(0, 10),
-                                  endDate: new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10)
-                                });
-                                setShowCreateContractModal(true);
-                              }}
-                              className="px-2.5 py-1 text-xs font-medium rounded bg-indigo-600 text-white hover:bg-indigo-500 transition"
-                            >
-                              Offer
-                            </button>
+                            {canIssueOffer && (
+                              isRenewalRequest ? (
+                                <button
+                                  onClick={() => handleOpenRenewalFromRequest(r)}
+                                  className="px-2.5 py-1 text-xs font-medium rounded bg-cyan-600 text-white hover:bg-cyan-500 transition flex items-center gap-1"
+                                >
+                                  <RefreshCw className="h-3 w-3" />
+                                  Create Renewal
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => {
+                                    if (
+                                      companiesList.length === 0 ||
+                                      companySearchQuery.trim() !== '' ||
+                                      !companiesList.some((c) => String(c.id) === String(r.company_id))
+                                    ) {
+                                      fetchCompanies();
+                                    }
+                                    setCompanySearchQuery('');
+                                    const matchedPlan = r.plan_id
+                                      ? plans.find((p) => Number(p.id) === Number(r.plan_id))
+                                      : undefined;
+                                    const planPrice = matchedPlan ? parseFloat(String(matchedPlan.base_price || '0')) : NaN;
+                                    const hasPlanPrice = Number.isFinite(planPrice) && planPrice > 0;
+                                    const tax = hasPlanPrice ? Math.round(planPrice * 0.18) : 0;
+                                    const total = hasPlanPrice ? planPrice + tax : 0;
+                                    const durationMonths = matchedPlan?.duration_months || 12;
+                                    const startDateStr = new Date().toISOString().slice(0, 10);
+                                    const endDateObj = new Date(startDateStr + 'T00:00:00Z');
+                                    endDateObj.setUTCMonth(endDateObj.getUTCMonth() + durationMonths);
+
+                                    setContractForm({
+                                      companyId: String(r.company_id),
+                                      requestId: String(r.id),
+                                      planId: r.plan_id ? String(r.plan_id) : '',
+                                      contractType: matchedPlan ? 'standard' : 'custom',
+                                      planName: r.plan_name || matchedPlan?.name || '',
+                                      deviceCapacity: String(r.requested_device_count || matchedPlan?.default_device_capacity || 10),
+                                      price: hasPlanPrice ? String(planPrice) : '',
+                                      discountAmount: '0',
+                                      taxAmount: hasPlanPrice ? String(tax) : '0',
+                                      totalAmount: hasPlanPrice ? String(total) : '',
+                                      termsAndConditions: matchedPlan?.description || (typeof matchedPlan?.coverage_terms === 'string' ? matchedPlan.coverage_terms : '') || r.notes || '',
+                                      offerValidUntil: new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
+                                      startDate: startDateStr,
+                                      endDate: endDateObj.toISOString().slice(0, 10)
+                                    });
+                                    setShowCreateContractModal(true);
+                                  }}
+                                  className="px-2.5 py-1 text-xs font-medium rounded bg-indigo-600 text-white hover:bg-indigo-500 transition"
+                                >
+                                  Offer
+                                </button>
+                              )
+                            )}
                           </td>
                         </tr>
-                      ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1451,8 +1630,9 @@ export default function AdminAmcManagement() {
             <select
               value={replacementStatusFilter}
               onChange={(e) => {
-                setReplacementStatusFilter(e.target.value);
-                fetchReplacements();
+                const val = e.target.value;
+                setReplacementStatusFilter(val);
+                fetchReplacements(val);
               }}
               className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs rounded-lg px-3 py-2 outline-none"
             >
@@ -1830,7 +2010,10 @@ export default function AdminAmcManagement() {
                 <div className="border border-zinc-800 p-4 rounded-xl bg-zinc-900/30 space-y-3">
                   <h4 className="text-xs font-bold text-zinc-300 uppercase tracking-wider">Admin Contract Controls</h4>
                   <div className="flex flex-wrap gap-2">
-                    {selectedContract.approval_status !== 'approved' && selectedContract.status !== 'rejected' && selectedContract.approval_status !== 'rejected' && (
+                    {selectedContract.approval_status !== 'approved' &&
+                      selectedContract.status !== 'rejected' &&
+                      selectedContract.approval_status !== 'rejected' &&
+                      !['expired', 'cancelled'].includes(selectedContract.status) && (
                       <button
                         onClick={() => setShowConfirmApproveModal(true)}
                         className="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 transition"
@@ -1849,15 +2032,27 @@ export default function AdminAmcManagement() {
                         Verify Offline Payment
                       </button>
                     )}
-                    <button
-                      onClick={() => {
-                        setContractStatusForm({ status: selectedContract.status, reason: '' });
-                        setShowStatusModal(true);
-                      }}
-                      className="px-3 py-1.5 text-xs font-medium rounded-lg bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition"
-                    >
-                      Change Status (Suspend / Cancel)
-                    </button>
+                    {!['rejected', 'expired', 'cancelled'].includes(selectedContract.status) && selectedContract.approval_status !== 'rejected' && (
+                      <button
+                        onClick={() => {
+                          const canActivate =
+                            ['accepted', 'suspended'].includes(selectedContract.status) &&
+                            selectedContract.approval_status === 'approved' &&
+                            selectedContract.payment_status === 'paid';
+                          const defaultNextStatus =
+                            selectedContract.status === 'active'
+                              ? 'suspended'
+                              : canActivate
+                                ? 'active'
+                                : 'cancelled';
+                          setContractStatusForm({ status: defaultNextStatus, reason: '' });
+                          setShowStatusModal(true);
+                        }}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition"
+                      >
+                        Change Status ({selectedContract.status === 'active' ? 'Suspend / Cancel' : 'Update / Cancel'})
+                      </button>
+                    )}
 
                     {(selectedContract.status === 'active' || (selectedContract.approval_status === 'approved' && selectedContract.payment_status === 'paid')) && (
                       <>
@@ -1897,7 +2092,14 @@ export default function AdminAmcManagement() {
                 {/* Covered Devices Table */}
                 <div className="space-y-2">
                   <h4 className="text-sm font-bold text-white flex items-center justify-between">
-                    <span>Actively Covered Fleet Devices ({Array.isArray(selectedContract.coveredDevices) ? selectedContract.coveredDevices.length : 0})</span>
+                    <span>
+                      Covered Fleet Devices (
+                      {selectedContract.active_covered_count ??
+                        (Array.isArray(selectedContract.coveredDevices)
+                          ? selectedContract.coveredDevices.filter((cd) => cd.status === 'active').length
+                          : 0)}{' '}
+                      Active / {Array.isArray(selectedContract.coveredDevices) ? selectedContract.coveredDevices.length : 0} Total)
+                    </span>
                   </h4>
                   {(!Array.isArray(selectedContract.coveredDevices) || selectedContract.coveredDevices.length === 0) ? (
                     <p className="text-xs text-zinc-500 italic bg-zinc-900/30 p-3 rounded-lg border border-zinc-800/60">
@@ -1925,6 +2127,40 @@ export default function AdminAmcManagement() {
                           ))}
                         </tbody>
                       </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Replacement History */}
+                <div className="space-y-2">
+                  <h4 className="text-sm font-bold text-white flex items-center justify-between">
+                    <span>Device Replacement History ({Array.isArray(selectedContract.replacements) ? selectedContract.replacements.length : 0})</span>
+                  </h4>
+                  {!Array.isArray(selectedContract.replacements) || selectedContract.replacements.length === 0 ? (
+                    <p className="text-xs text-zinc-500 italic bg-zinc-900/30 p-3 rounded-lg border border-zinc-800/60">
+                      No device replacement requests recorded for this contract.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {selectedContract.replacements.map((rep) => (
+                        <div key={rep.id} className="text-xs bg-zinc-900/40 p-3 rounded-lg border border-zinc-800/80 space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono font-semibold text-indigo-400">{rep.replacement_number}</span>
+                            {getStatusBadge(rep.status)}
+                          </div>
+                          <div className="text-zinc-300">
+                            <span className="text-zinc-500">Replaced:</span> {rep.old_brand} {rep.old_model} ({rep.old_serial}) →{' '}
+                            <span className="text-white font-medium">{rep.new_brand} {rep.new_model} ({rep.new_serial})</span>
+                          </div>
+                          {rep.reason && (
+                            <div className="text-[11px] text-zinc-400 italic">"{rep.reason}"</div>
+                          )}
+                          <div className="text-[10px] text-zinc-500 font-mono">
+                            Requested: {rep.created_at ? new Date(rep.created_at).toLocaleString() : 'N/A'}
+                            {rep.effective_date ? ` • Effective: ${formatDisplayDate(rep.effective_date)}` : ''}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -1988,12 +2224,28 @@ export default function AdminAmcManagement() {
                   {companiesError && (
                     <button
                       type="button"
-                      onClick={fetchCompanies}
+                      onClick={() => fetchCompanies(companySearchQuery)}
                       className="text-[11px] text-indigo-400 hover:text-indigo-300 underline font-medium"
                     >
                       Retry
                     </button>
                   )}
+                </div>
+                <div className="flex gap-2 mb-2">
+                  <input
+                    type="text"
+                    value={companySearchQuery}
+                    onChange={(e) => setCompanySearchQuery(e.target.value)}
+                    placeholder="Filter or search company by name, email, or CMP ID..."
+                    className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-200 outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fetchCompanies(companySearchQuery)}
+                    className="px-2.5 py-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:bg-zinc-700 text-xs"
+                  >
+                    Search
+                  </button>
                 </div>
                 <select
                   required
@@ -2005,9 +2257,21 @@ export default function AdminAmcManagement() {
                   <option value="">
                     {loadingCompanies ? 'Loading Corporate Clients...' : 'Select Corporate Client...'}
                   </option>
-                  {(Array.isArray(companiesList) ? companiesList : []).map((c) => (
+                  {(Array.isArray(companiesList) ? companiesList : [])
+                    .filter((c) => {
+                      const q = companySearchQuery.trim().toLowerCase();
+                      if (!q) return true;
+                      return (
+                        (c.company_name || '').toLowerCase().includes(q) ||
+                        (c.name || '').toLowerCase().includes(q) ||
+                        (c.email || '').toLowerCase().includes(q) ||
+                        (c.company_id || '').toLowerCase().includes(q) ||
+                        (c.permanent_company_id || '').toLowerCase().includes(q)
+                      );
+                    })
+                    .map((c) => (
                     <option key={c.id} value={String(c.id)}>
-                      {c.company_name || c.name || c.email} ({c.company_id || c.permanent_company_id || `CMP-${String(c.id).padStart(3, '0')}`}){c.is_active === 0 || c.is_active === false ? ' [Inactive]' : ''}
+                      {c.company_name || c.name || c.email} ({c.company_id || c.permanent_company_id || 'ID Pending'}){c.is_active === 0 || c.is_active === false ? ' [Inactive]' : ''}
                     </option>
                   ))}
                   {!loadingCompanies && companiesList.length === 0 && (
@@ -2019,6 +2283,59 @@ export default function AdminAmcManagement() {
                 ) : !loadingCompanies && companiesList.length === 0 ? (
                   <p className="text-[11px] text-zinc-500 mt-1">No corporate accounts registered yet.</p>
                 ) : null}
+              </div>
+
+              <div>
+                <label className="text-zinc-400 block mb-1">Standard Plan Template (Optional)</label>
+                <select
+                  value={contractForm.planId}
+                  onChange={(e) => {
+                    const selectedId = e.target.value;
+                    if (!selectedId) {
+                      setContractForm({ ...contractForm, planId: '', contractType: 'custom' });
+                      return;
+                    }
+                    const chosenPlan = plans.find((p) => String(p.id) === selectedId);
+                    if (!chosenPlan) return;
+                    const basePrice = parseFloat(String(chosenPlan.base_price || '0')) || 0;
+                    const discount = parseFloat(contractForm.discountAmount || '0') || 0;
+                    const tax = Math.round(basePrice * 0.18);
+                    const total = basePrice - discount + tax;
+                    const durationMonths = Number(chosenPlan.duration_months || 12);
+                    const startStr = contractForm.startDate || new Date().toISOString().slice(0, 10);
+                    const endDateObj = new Date(startStr + 'T00:00:00Z');
+                    if (!isNaN(endDateObj.getTime())) {
+                      endDateObj.setUTCMonth(endDateObj.getUTCMonth() + durationMonths);
+                    }
+                    const termsSummary =
+                      typeof chosenPlan.coverage_terms === 'string'
+                        ? chosenPlan.coverage_terms
+                        : chosenPlan.description || contractForm.termsAndConditions;
+
+                    setContractForm({
+                      ...contractForm,
+                      planId: String(chosenPlan.id),
+                      contractType: 'standard',
+                      planName: chosenPlan.name,
+                      deviceCapacity: String(chosenPlan.default_device_capacity || contractForm.deviceCapacity),
+                      price: String(basePrice),
+                      taxAmount: String(tax),
+                      totalAmount: String(total),
+                      termsAndConditions: termsSummary || '',
+                      endDate: !isNaN(endDateObj.getTime()) ? endDateObj.toISOString().slice(0, 10) : contractForm.endDate
+                    });
+                  }}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-200 outline-none focus:border-indigo-500"
+                >
+                  <option value="">Custom Offer (Manual Entry)</option>
+                  {(Array.isArray(plans) ? plans : [])
+                    .filter((p) => p.is_active)
+                    .map((p) => (
+                      <option key={p.id} value={String(p.id)}>
+                        {p.name} ({p.plan_code}) — ₹{Number(p.base_price).toLocaleString('en-IN')} / {p.default_device_capacity} devices
+                      </option>
+                    ))}
+                </select>
               </div>
 
               <div>
@@ -2474,9 +2791,18 @@ export default function AdminAmcManagement() {
                   onChange={(e) => setContractStatusForm({ ...contractStatusForm, status: e.target.value })}
                   className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-200 outline-none"
                 >
-                  <option value="active">Active</option>
-                  <option value="suspended">Suspended</option>
-                  <option value="cancelled">Cancelled</option>
+                  {['accepted', 'suspended'].includes(selectedContract.status) &&
+                    selectedContract.approval_status === 'approved' &&
+                    selectedContract.payment_status === 'paid' && (
+                      <option value="active">Active</option>
+                    )}
+                  {selectedContract.status === 'active' && (
+                    <option value="suspended">Suspended</option>
+                  )}
+                  {['draft', 'offered', 'accepted', 'active', 'suspended'].includes(selectedContract.status) &&
+                    selectedContract.approval_status !== 'rejected' && (
+                      <option value="cancelled">Cancelled</option>
+                    )}
                 </select>
               </div>
 
@@ -2527,6 +2853,53 @@ export default function AdminAmcManagement() {
               Contract Amount: <span className="font-bold text-white">₹{Number(selectedContract.total_amount).toLocaleString('en-IN')}</span>
             </p>
 
+            {selectedContract.offlinePayment ? (
+              <div className="bg-zinc-900/70 border border-zinc-800 rounded-lg p-3 text-xs space-y-1.5">
+                {selectedContract.offlinePayment.ambiguous && (
+                  <div className="text-rose-400 font-semibold flex items-center gap-1.5 pb-1 border-b border-rose-900/40">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                    Multiple legacy pending payments ({selectedContract.offlinePayment.pendingCount}) match this contract. Manual reconciliation required.
+                  </div>
+                )}
+                <div className="flex justify-between gap-2">
+                  <span className="text-zinc-500">Payment Method:</span>
+                  <span className="font-mono uppercase text-zinc-200">
+                    {selectedContract.offlinePayment.paymentMethod || 'N/A'}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-zinc-500">Submitted UTR / Ref:</span>
+                  <span className="font-mono font-semibold text-indigo-400 break-all text-right">
+                    {selectedContract.offlinePayment.referenceNumber || 'N/A'}
+                  </span>
+                </div>
+                {selectedContract.offlinePayment.orderId && (
+                  <div className="flex justify-between gap-2">
+                    <span className="text-zinc-500">Offline Order ID:</span>
+                    <span className="font-mono text-[11px] text-zinc-400 break-all text-right">
+                      {selectedContract.offlinePayment.orderId}
+                    </span>
+                  </div>
+                )}
+                {selectedContract.offlinePayment.notes && (
+                  <div>
+                    <span className="text-zinc-500 block">Company Notes:</span>
+                    <span className="text-zinc-300 italic">"{selectedContract.offlinePayment.notes}"</span>
+                  </div>
+                )}
+                {selectedContract.offlinePayment.initiatedAt && (
+                  <div className="flex justify-between gap-2 text-[11px] text-zinc-500 pt-1 border-t border-zinc-800/80">
+                    <span>Submitted At:</span>
+                    <span className="font-mono">{new Date(selectedContract.offlinePayment.initiatedAt).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="text-[11px] text-amber-400/90 bg-amber-950/20 border border-amber-900/40 rounded-lg p-2.5">
+                No offline submission details found on contract audit history. Verify carefully against bank statements.
+              </div>
+            )}
+
             <form onSubmit={handleVerifyOfflinePayment} className="space-y-3 text-xs">
               <div>
                 <label className="text-zinc-400 block mb-1">Decision</label>
@@ -2561,7 +2934,8 @@ export default function AdminAmcManagement() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-500"
+                  disabled={Boolean(selectedContract.offlinePayment?.ambiguous)}
+                  className="px-4 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Save Verification
                 </button>
@@ -2580,16 +2954,27 @@ export default function AdminAmcManagement() {
                 <span className="text-xs font-mono text-cyan-400 font-bold uppercase tracking-wider block">Phase 3 Lifecycle</span>
                 <h3 className="text-lg font-bold text-white">Create AMC Renewal Offer</h3>
               </div>
-              <button onClick={() => setShowRenewalModal(false)} className="text-zinc-400 hover:text-white">
+              <button onClick={() => { setShowRenewalModal(false); setRenewalSourceRequest(null); }} className="text-zinc-400 hover:text-white">
                 <X className="h-5 w-5" />
               </button>
             </div>
 
             <div className="p-3 bg-zinc-900/60 rounded-xl border border-zinc-800 text-xs space-y-1.5">
+              {renewalSourceRequest && (
+                <div className="flex justify-between items-center pb-1.5 border-b border-zinc-800">
+                  <span className="text-zinc-400">Linked Renewal Request:</span>
+                  <span className="font-mono text-indigo-400 font-semibold">{renewalSourceRequest.request_number}</span>
+                </div>
+              )}
               <div className="flex justify-between"><span className="text-zinc-400">Target Company:</span> <span className="font-semibold text-white">{renewalTargetContract.company_name}</span></div>
               <div className="flex justify-between"><span className="text-zinc-400">Previous Contract:</span> <span className="font-mono text-cyan-400">{renewalTargetContract.contract_number}</span></div>
               <div className="flex justify-between"><span className="text-zinc-400">Prior Expiry Date:</span> <span className="font-mono text-zinc-300">{renewalTargetContract.end_date ? formatDisplayDate(renewalTargetContract.end_date) : 'N/A'}</span></div>
               <div className="flex justify-between"><span className="text-zinc-400">Prior Capacity:</span> <span className="font-mono text-zinc-300">{renewalTargetContract.device_capacity} Devices</span></div>
+              {renewalSourceRequest?.notes && (
+                <div className="pt-1 text-[11px] text-zinc-400 italic border-t border-zinc-800">
+                  Request Note: "{renewalSourceRequest.notes}"
+                </div>
+              )}
             </div>
 
             <form onSubmit={handleSubmitRenewalOffer} className="space-y-3 text-xs">
@@ -2714,7 +3099,7 @@ export default function AdminAmcManagement() {
               <div className="flex justify-end gap-2 pt-3 border-t border-zinc-800">
                 <button
                   type="button"
-                  onClick={() => setShowRenewalModal(false)}
+                  onClick={() => { setShowRenewalModal(false); setRenewalSourceRequest(null); }}
                   className="px-3 py-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
                 >
                   Cancel
