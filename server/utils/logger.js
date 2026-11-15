@@ -21,11 +21,15 @@ const logger = winston.createLogger({
     // Output error logs to error.log
     new winston.transports.File({ 
       filename: path.join(config.logging.directory, config.logging.errorLogFile), 
-      level: 'error' 
+      level: 'error',
+      maxsize: 10 * 1024 * 1024, // 10MB rotation
+      maxFiles: 5
     }),
     // Output all logs to combined.log
     new winston.transports.File({ 
-      filename: path.join(config.logging.directory, config.logging.combinedLogFile) 
+      filename: path.join(config.logging.directory, config.logging.combinedLogFile),
+      maxsize: 10 * 1024 * 1024, // 10MB rotation
+      maxFiles: 5
     })
   ],
   exitOnError: false // Do not exit on handled exceptions

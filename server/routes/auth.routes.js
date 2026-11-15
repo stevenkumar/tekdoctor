@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 
-const { signup, signin, verifyLoginOtp, resendOtp, setPassword, forgotPassword, verifyResetOtp, resetPassword, googleSignIn, logout, updateProfile } = require('../controllers/auth.controller');
+const { signup, signin, verifyLoginOtp, resendOtp, setPassword, forgotPassword, verifyResetOtp, resetPassword, googleSignIn, logout, updateProfile, getMe } = require('../controllers/auth.controller');
 const { validateSignUp, validateSignIn, validateVerifyLoginOtp, validateResendOtp, validateVerifyResetOtp, validateSetPassword, validateForgotPassword, validateResetPassword, validateGoogleSignIn, validateUpdateProfile } = require('../middleware/validate.middleware');
 const { authLimiter } = require('../middleware/rateLimiter.middleware');
 const { authenticate } = require('../middleware/auth.middleware');
@@ -36,6 +36,9 @@ router.put('/set-password', authenticate, validateSetPassword, setPassword);
 
 // Route: POST /api/auth/logout (Authenticated — invalidates session in DB)
 router.post('/logout', authenticate, logout);
+
+// Route: GET /api/auth/me (Authenticated — Authoritative user session verification)
+router.get('/me', authenticate, getMe);
 
 // Route: PUT /api/auth/profile (Authenticated — update Name and Phone)
 router.put('/profile', authenticate, validateUpdateProfile, updateProfile);

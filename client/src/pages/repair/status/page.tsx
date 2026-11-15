@@ -2,7 +2,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   Search, Package, CheckCircle2, Clock, Wrench, Cpu, History, User,
   ExternalLink, CreditCard, Hash, Settings, FileImage, Image, RefreshCw,
@@ -26,16 +26,20 @@ import { SkeletonTicketWorkspace, SkeletonList } from '@/components/Skeleton';
 
 const getFileUrl = (path: string | null) => {
   if (!path) return null;
-  const base = (appConfig.apiUrl || window.location.origin).replace(/\/$/, '');
+  const base = (appConfig.apiUrl.startsWith('http') ? appConfig.apiUrl : window.location.origin).replace(/\/$/, '');
   const cleanPath = path.replace(/^\//, '');
   return `${base}/${cleanPath}`;
 };
 
 export default function ServiceTracker() {
   const { user, token, isAuthenticated } = useAuth();
+  const shouldReduceMotion = useReducedMotion();
   const [searchParams] = useSearchParams();
   const queryTicketParam = searchParams.get('id') || searchParams.get('ticket') || searchParams.get('ticketId') || '';
+  const queryPhoneParam = searchParams.get('mobile') || searchParams.get('phone') || '';
   const [ticketId, setTicketId] = useState(queryTicketParam);
+  const [customerMobile, setCustomerMobile] = useState(queryPhoneParam);
+  const [requiresMobile, setRequiresMobile] = useState(false);
   const [isSearching, setIsSearching] = useState(Boolean(queryTicketParam));
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showStatus, setShowStatus] = useState(false);
@@ -75,7 +79,7 @@ export default function ServiceTracker() {
   const [isSubmittingRevision, setIsSubmittingRevision] = useState(false);
   const [guestInvoiceToken, setGuestInvoiceToken] = useState<string | null>(null);
 
-  const fetchTicketStatus = useCallback(async (idToSearch: string, isManualRefresh = false) => {
+  const fetchTicketStatus = useCallback(async (idToSearch: string, isManualRefresh = false, mobileOverride?: string) => {
     if (!idToSearch) return;
     if (isManualRefresh) {
       setIsRefreshing(true);
@@ -84,13 +88,24 @@ export default function ServiceTracker() {
     }
     setSearchError('');
 
+    const activeMobile = (mobileOverride !== undefined ? mobileOverride : customerMobile).trim();
+    const queryToken = searchParams.get('token') || searchParams.get('approvalToken') || searchParams.get('actionToken') || searchParams.get('invoiceToken') || '';
+
     try {
-      const res = await repairApi.trackRequest(idToSearch.trim());
+      const res = await repairApi.trackRequest(idToSearch.trim(), {
+        mobile: activeMobile || undefined,
+        token: queryToken || undefined
+      });
       if (res.ok && res.data) {
         setTrackingData(res.data.data);
         setShowStatus(true);
+        setRequiresMobile(false);
       } else {
-        setSearchError(res.error || 'Ticket not found. Please verify the ticket ID and try again.');
+        const errorMsg = res.error || 'Ticket not found. Please verify the ticket ID and try again.';
+        setSearchError(errorMsg);
+        if (errorMsg.toLowerCase().includes('verification required') || errorMsg.toLowerCase().includes('mobile number') || res.status === 403) {
+          setRequiresMobile(true);
+        }
         setShowStatus(false);
       }
     } catch (err) {
@@ -100,7 +115,7 @@ export default function ServiceTracker() {
       setIsSearching(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [customerMobile, searchParams]);
 
   const queryToken = searchParams.get('token') || searchParams.get('approvalToken') || searchParams.get('actionToken') || searchParams.get('invoiceToken');
   const effectiveToken = token || guestInvoiceToken || queryToken || null;
@@ -110,7 +125,8 @@ export default function ServiceTracker() {
     const queryId = searchParams.get('id') || searchParams.get('ticket') || searchParams.get('ticketId');
     if (queryId) {
       setTicketId(queryId);
-      fetchTicketStatus(queryId);
+      const initialMobile = searchParams.get('mobile') || searchParams.get('phone') || '';
+      fetchTicketStatus(queryId, false, initialMobile);
     }
   }, [searchParams, fetchTicketStatus]);
 
@@ -134,7 +150,11 @@ export default function ServiceTracker() {
         toast.success('Repair request cancelled successfully.');
         // Refresh history to reflect cancellation natively
         repairApi.getMyHistory(token).then((res) => {
-          if (res.ok && res.data) setHistory(res.data.data.data);
+          if (res.ok && res.data) {
+            const raw = (res.data as any)?.data;
+            const list = Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []);
+            setHistory(list);
+          }
         });
       } else {
         toast.error(res.error || 'Failed to cancel the repair request. Please try again.');
@@ -151,7 +171,9 @@ export default function ServiceTracker() {
       setLoadingHistory(true);
       repairApi.getMyHistory(token).then((res) => {
         if (res.ok && res.data) {
-          setHistory(res.data.data.data);
+          const raw = (res.data as any)?.data;
+          const list = Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []);
+          setHistory(list);
         }
       }).finally(() => setLoadingHistory(false));
     }
@@ -436,23 +458,45 @@ export default function ServiceTracker() {
             </p>
           </div>
 
-          <form onSubmit={handleSearch} className="relative z-10 max-w-md mx-auto flex flex-col sm:flex-row gap-2.5 sm:gap-3">
-            <div className="flex-grow relative w-full">
-              <input
-                type="text"
-                placeholder="Ex: TD-001-01, CMP-001-001"
-                value={ticketId}
-                onChange={(e) => setTicketId(e.target.value)}
-                className="w-full bg-black border border-zinc-700 rounded-xl px-4 sm:px-5 py-3.5 sm:py-4 text-white text-sm sm:text-base focus:outline-none focus:border-neon-cyan transition-all font-mono uppercase tracking-wider sm:tracking-widest"
-              />
+          <form onSubmit={handleSearch} className="relative z-10 max-w-md mx-auto flex flex-col gap-2.5 sm:gap-3">
+            <div className="flex flex-col sm:flex-row gap-2.5 sm:gap-3">
+              <div className="flex-grow relative w-full">
+                <input
+                  type="text"
+                  placeholder="Ex: TD-001-01, CMP-001-001"
+                  value={ticketId}
+                  onChange={(e) => setTicketId(e.target.value)}
+                  className="w-full bg-black border border-zinc-700 rounded-xl px-4 sm:px-5 py-3.5 sm:py-4 text-white text-sm sm:text-base focus:outline-none focus:border-neon-cyan transition-all font-mono uppercase tracking-wider sm:tracking-widest"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={isSearching}
+                className="w-full sm:w-auto shrink-0 bg-neon-cyan hover:bg-white text-black px-6 py-3.5 sm:py-4 rounded-xl font-black uppercase tracking-tighter transition-all disabled:opacity-50 text-sm sm:text-base flex items-center justify-center min-h-[48px] cursor-pointer"
+              >
+                {isSearching ? 'Analyzing...' : 'Check Status'}
+              </button>
             </div>
-            <button
-              type="submit"
-              disabled={isSearching}
-              className="w-full sm:w-auto shrink-0 bg-neon-cyan hover:bg-white text-black px-6 py-3.5 sm:py-4 rounded-xl font-black uppercase tracking-tighter transition-all disabled:opacity-50 text-sm sm:text-base flex items-center justify-center min-h-[48px] cursor-pointer"
-            >
-              {isSearching ? 'Analyzing...' : 'Check Status'}
-            </button>
+
+            {(!isAuthenticated || requiresMobile) && (
+              <div className="w-full text-left">
+                <input
+                  type="tel"
+                  placeholder="Customer Phone (or last 4 digits) for security"
+                  value={customerMobile}
+                  onChange={(e) => {
+                    setCustomerMobile(e.target.value);
+                    if (searchError) setSearchError('');
+                  }}
+                  className={`w-full bg-black/70 border ${requiresMobile ? 'border-amber-500 focus:border-amber-400' : 'border-zinc-800 focus:border-neon-cyan'} rounded-xl px-4 py-3 text-xs sm:text-sm text-white placeholder-zinc-500 focus:outline-none transition-all font-mono`}
+                />
+                {requiresMobile && (
+                  <p className="text-[11px] text-amber-400 font-mono mt-1 px-1">
+                    Secondary factor required: Please enter the mobile number associated with this ticket.
+                  </p>
+                )}
+              </div>
+            )}
           </form>
 
           {/* History Button (if logged in and has history) */}
@@ -479,11 +523,14 @@ export default function ServiceTracker() {
             </div>
           )}
 
-          <AnimatePresence>
+          <AnimatePresence mode="wait">
             {showStatus && trackingData && (
               <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
+                key={trackingData.id || trackingData.ticketNumber}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: shouldReduceMotion ? 0.01 : 0.2 }}
                 className="mt-8 sm:mt-12 pt-8 sm:pt-10 border-t border-zinc-800/50"
               >
                 {/* Prominent Current Status Banner */}

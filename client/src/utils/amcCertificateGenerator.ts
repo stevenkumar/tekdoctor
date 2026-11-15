@@ -4,9 +4,20 @@
  * Annual Maintenance Contracts (AMC) based on authoritative backend contract records.
  */
 
+import DOMPurify from 'dompurify';
 import { generateQrCodeSvg } from './qrCode';
 import { appConfig } from '@/config/appConfig';
 import { getBlackLogoDataUri } from './billGenerator';
+
+export function escapeHtml(str: any): string {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 /**
  * Returns the public application base URL for generating verification URLs and QR codes.
@@ -19,9 +30,6 @@ import { getBlackLogoDataUri } from './billGenerator';
 export const getPublicAppBaseUrl = (): string => {
   if (appConfig.frontendUrl) {
     return appConfig.frontendUrl.replace(/\/+$/, '');
-  }
-  if (appConfig.isProduction) {
-    return 'https://thetekdoctor.com';
   }
   if (typeof window !== 'undefined' && window.location?.origin) {
     return window.location.origin.replace(/\/+$/, '');
@@ -141,17 +149,31 @@ export function generateAmcCertificateHtml(cert: AmcCertificateData, logoSrc: st
   const verifyUrl = getCertificateVerificationUrl(cert.verificationCode, cert.contract.contractNumber);
   const qrSvg = generateQrCodeSvg(verifyUrl, 108, 'M');
 
+  const safeCompanyName = escapeHtml(cert.company.name);
+  const safeCompanyCode = escapeHtml(cert.company.code);
+  const safeCompanyEmail = escapeHtml(cert.company.email);
+  const safeCompanyPhone = escapeHtml(cert.company.phone);
+  const safeCompanyAddress = escapeHtml(cert.company.address || 'Registered corporate premises on record');
+  const safeCompanyGstin = escapeHtml(cert.company.gstin || 'Unregistered / Exempt');
+
+  const safeCertNumber = escapeHtml(cert.certificateNumber);
+  const safeContractNumber = escapeHtml(cert.contract.contractNumber);
+  const safePlanName = escapeHtml(cert.contract.planName);
+
+  const safeIssuerAddress = escapeHtml(cert.issuer.address);
+  const safeIssuerGstin = escapeHtml(cert.issuer.gstin);
+
   const devicesRows = cert.coveredDevices.length > 0 ? cert.coveredDevices.map((dev, idx) => `
     <tr style="border-bottom: 1px solid #e2e8f0; font-size: 10px;">
       <td style="padding: 6px 8px; text-align: center; color: #64748b; font-weight: 600;">${idx + 1}</td>
-      <td style="padding: 6px 8px; font-weight: 700; color: #0f172a;">${dev.brand} ${dev.modelNumber}</td>
-      <td style="padding: 6px 8px; font-family: monospace; color: #334155;">${dev.serialNumber || 'N/A'}</td>
-      <td style="padding: 6px 8px; color: #475569;">${dev.assetId || '—'}</td>
-      <td style="padding: 6px 8px; font-family: monospace; font-weight: 700; color: #0284c7;">${dev.amcTag}</td>
+      <td style="padding: 6px 8px; font-weight: 700; color: #0f172a;">${escapeHtml(dev.brand)} ${escapeHtml(dev.modelNumber)}</td>
+      <td style="padding: 6px 8px; font-family: monospace; color: #334155;">${escapeHtml(dev.serialNumber || 'N/A')}</td>
+      <td style="padding: 6px 8px; color: #475569;">${escapeHtml(dev.assetId || '—')}</td>
+      <td style="padding: 6px 8px; font-family: monospace; font-weight: 700; color: #0284c7;">${escapeHtml(dev.amcTag)}</td>
       <td style="padding: 6px 8px; color: #475569;">${formatDate(dev.coverageStartDate)} to ${formatDate(dev.coverageEndDate)}</td>
       <td style="padding: 6px 8px; text-align: center;">
         <span style="display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 8.5px; font-weight: 700; text-transform: uppercase; background: ${dev.status === 'active' ? '#dcfce7' : '#f1f5f9'}; color: ${dev.status === 'active' ? '#15803d' : '#64748b'};">
-          ${dev.status}
+          ${escapeHtml(dev.status)}
         </span>
       </td>
     </tr>
@@ -190,7 +212,7 @@ export function generateAmcCertificateHtml(cert: AmcCertificateData, logoSrc: st
           </div>
           <div style="font-size: 11px; font-weight: 600; color: #475569;">Device Lifecycle & Maintenance Management Systems</div>
           <div style="font-size: 10px; color: #64748b; margin-top: 2px;">
-            ${cert.issuer.address} • GSTIN: ${cert.issuer.gstin}
+            ${safeIssuerAddress} • GSTIN: ${safeIssuerGstin}
           </div>
         </div>
 
@@ -199,7 +221,7 @@ export function generateAmcCertificateHtml(cert: AmcCertificateData, logoSrc: st
             ${statusText}
           </div>
           <div style="font-size: 11px; font-family: monospace; font-weight: 800; color: #0284c7;">
-            ${cert.certificateNumber}
+            ${safeCertNumber}
           </div>
           <div style="font-size: 9.5px; color: #64748b; margin-top: 2px;">
             Issued: ${formatDate(cert.issuedAt)}
@@ -226,20 +248,20 @@ export function generateAmcCertificateHtml(cert: AmcCertificateData, logoSrc: st
             Client / Fleet Operator
           </div>
           <div style="font-size: 13.5px; font-weight: 800; color: #0f172a;">
-            ${cert.company.name}
+            ${safeCompanyName}
           </div>
           <div style="font-size: 10.5px; color: #475569; margin-top: 3px;">
-            <strong>Company ID:</strong> <span style="font-family: monospace; color: #0284c7;">${cert.company.code}</span>
+            <strong>Company ID:</strong> <span style="font-family: monospace; color: #0284c7;">${safeCompanyCode}</span>
           </div>
           <div style="font-size: 10.5px; color: #475569; margin-top: 2px;">
-            <strong>Email:</strong> ${cert.company.email}
+            <strong>Email:</strong> ${safeCompanyEmail}
           </div>
-          ${cert.company.phone ? `<div style="font-size: 10.5px; color: #475569; margin-top: 2px;"><strong>Contact:</strong> ${cert.company.phone}</div>` : ''}
+          ${cert.company.phone ? `<div style="font-size: 10.5px; color: #475569; margin-top: 2px;"><strong>Contact:</strong> ${safeCompanyPhone}</div>` : ''}
           <div style="font-size: 10px; color: #64748b; margin-top: 4px;">
-            ${cert.company.address || 'Registered corporate premises on record'}
+            ${safeCompanyAddress}
           </div>
           <div style="font-size: 10px; color: #334155; margin-top: 4px; padding-top: 4px; border-top: 1px dashed #cbd5e1;">
-            <strong>GSTIN:</strong> ${cert.company.gstin || 'Unregistered / Exempt'}
+            <strong>GSTIN:</strong> ${safeCompanyGstin}
           </div>
         </div>
 
@@ -249,10 +271,10 @@ export function generateAmcCertificateHtml(cert: AmcCertificateData, logoSrc: st
             AMC Contract Details
           </div>
           <div style="font-size: 13.5px; font-weight: 800; color: #0f172a;">
-            ${cert.contract.planName}
+            ${safePlanName}
           </div>
           <div style="font-size: 10.5px; color: #475569; margin-top: 3px;">
-            <strong>Contract No:</strong> <span style="font-family: monospace; color: #0284c7;">${cert.contract.contractNumber}</span>
+            <strong>Contract No:</strong> <span style="font-family: monospace; color: #0284c7;">${safeContractNumber}</span>
             ${cert.contract.isRenewal ? ' <span style="background: #e0f2fe; color: #0369a1; padding: 1px 4px; border-radius: 3px; font-size: 9px; font-weight: 700;">RENEWAL</span>' : ''}
           </div>
           <div style="font-size: 10.5px; color: #475569; margin-top: 2px;">
@@ -398,7 +420,10 @@ export async function downloadAmcCertificatePdf(cert: AmcCertificateData): Promi
   container.style.top = '-9999px';
   container.style.left = '-9999px';
   container.style.width = '800px';
-  container.innerHTML = generateAmcCertificateHtml(cert, logoSrc);
+  container.innerHTML = DOMPurify.sanitize(generateAmcCertificateHtml(cert, logoSrc), {
+    ADD_ATTR: ['crossorigin'],
+    ADD_TAGS: ['style', 'svg', 'path', 'rect']
+  });
 
   document.body.appendChild(container);
 

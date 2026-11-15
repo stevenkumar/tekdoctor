@@ -12,12 +12,19 @@ import { getRecaptchaToken } from '@/utils/recaptcha';
 
 // Helper to construct endpoint URLs
 const getUrl = (endpoint: string) => {
-  // If apiHost is empty, URLs will remain relative e.g. "/api/..."
-  // If apiHost is set, URLs will be absolute e.g. "https://domain.com/api/..."
-  const base = appConfig.apiUrl.endsWith('/')
-    ? appConfig.apiUrl.slice(0, -1)
-    : appConfig.apiUrl;
   const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const base = (appConfig.apiUrl || '').trim().replace(/\/+$/, '');
+
+  // If base is empty or relative '/api', return relative path starting with /api
+  if (!base || base === '/api') {
+    return path.startsWith('/api') ? path : `/api${path}`;
+  }
+
+  // If base ends with /api and path also starts with /api, strip redundant /api from base
+  if (base.endsWith('/api') && path.startsWith('/api')) {
+    return `${base.slice(0, -4)}${path}`;
+  }
+
   return `${base}${path}`;
 };
 
@@ -342,6 +349,15 @@ export const authApi = {
         'Content-Type': 'application/json',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {})
       },
+    });
+  },
+
+  getMe: async (token: string): Promise<SafeResponse<{ success: boolean; data: any }>> => {
+    return safeFetch<{ success: boolean; data: any }>(getUrl('/api/auth/me'), {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
     });
   },
 
@@ -788,8 +804,14 @@ export const repairApi = {
     });
   },
 
-  trackRequest: async (id: string): Promise<SafeResponse<{ data: any }>> => {
-    return safeFetch<{ data: any }>(getUrl(`/api/repair-request/track/${id}`), { method: 'GET' });
+  trackRequest: async (id: string, options?: { mobile?: string; token?: string }): Promise<SafeResponse<{ data: any }>> => {
+    let url = `/api/repair-request/track/${encodeURIComponent(id)}`;
+    const params = new URLSearchParams();
+    if (options?.mobile) params.append('mobile', options.mobile.trim());
+    if (options?.token) params.append('token', options.token.trim());
+    const qs = params.toString();
+    if (qs) url += `?${qs}`;
+    return safeFetch<{ data: any }>(getUrl(url), { method: 'GET' });
   },
 
   notifyCustomer: async (token: string, id: number): Promise<SafeResponse<{ message: string }>> => {

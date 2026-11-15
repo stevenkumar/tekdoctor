@@ -174,7 +174,8 @@ export default function CustomerManagement() {
     const getMediaUrl = (filename: string) => {
         if (!filename) return '';
         if (filename.startsWith('http://') || filename.startsWith('https://')) return filename;
-        return `${appConfig.apiUrl}/uploads/${filename}`;
+        const base = (appConfig.apiUrl.startsWith('http') ? appConfig.apiUrl : (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/$/, '');
+        return `${base}/uploads/${filename}`;
     };
 
     // Resolves authoritative identifier for each entity type
@@ -702,7 +703,8 @@ export default function CustomerManagement() {
         formData.append('file', file);
 
         try {
-            const apiRes = await fetch(`${appConfig.apiUrl}/api/admin/upload`, {
+            const uploadUrl = appConfig.apiUrl.startsWith('http') ? `${appConfig.apiUrl}/api/admin/upload` : '/api/admin/upload';
+            const apiRes = await fetch(uploadUrl, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` },
                 body: formData

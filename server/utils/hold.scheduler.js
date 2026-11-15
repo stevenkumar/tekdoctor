@@ -33,8 +33,8 @@ const processHoldExpirations = async (pool) => {
     for (const ticket of expiredTickets) {
       const cancellationReason = 'Cancelled — Customer Approval Not Received (Hold period expired)';
       
-      // Update ticket status
-      await connection.query(`
+      // Update ticket status with strict state guards
+      const [updateRes] = await connection.query(`
         UPDATE service_requests
         SET status = 'cancelled',
             customer_approval_status = 'auto_cancelled',
@@ -42,7 +42,16 @@ const processHoldExpirations = async (pool) => {
             cancelled_at = NOW(),
             cancelled_by = NULL
         WHERE id = ?
+          AND customer_approval_status IN ('on_hold', 'rejected')
+          AND status NOT IN ('completed', 'delivered', 'cancelled')
+          AND payment_status != 'paid'
       `, [cancellationReason, ticket.id]);
+
+      // If the ticket was settled, completed, or updated concurrently, skip notifications
+      if (updateRes.affectedRows === 0) {
+        logger.warn(`Skipped auto-cancellation for ticket ${ticket.id}: state changed concurrently.`);
+        continue;
+      }
 
       const ticketNum = ticket.ticket_number || `#${ticket.id}`;
       const deviceStr = `${ticket.brand} ${ticket.model_number || ''}`.trim();

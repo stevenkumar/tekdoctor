@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import {
   CreditCard, CheckCircle2, AlertCircle, ShieldCheck, Download, Printer, Loader2,
   Building2, Banknote, QrCode, Copy, Check, Clock, RotateCcw
@@ -21,6 +21,7 @@ export default function PaymentPage() {
   const invoiceId = paramInvoiceId || searchParams.get('id') || searchParams.get('invoiceId') || '';
   const navigate = useNavigate();
   const { token } = useAuth();
+  const shouldReduceMotion = useReducedMotion();
 
   const [invoice, setInvoice] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -253,14 +254,15 @@ export default function PaymentPage() {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center text-center p-6">
         <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
+          initial={shouldReduceMotion ? { opacity: 0 } : { scale: 0.8, opacity: 0 }}
+          animate={shouldReduceMotion ? { opacity: 1 } : { scale: 1, opacity: 1 }}
+          transition={{ duration: shouldReduceMotion ? 0.01 : 0.3 }}
           className="bg-emerald-950/30 border border-emerald-500/50 rounded-3xl p-8 max-w-md w-full shadow-2xl"
         >
           <motion.div
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            transition={{ delay: 0.2, type: 'spring' }}
+            initial={shouldReduceMotion ? { opacity: 0 } : { scale: 0 }}
+            animate={shouldReduceMotion ? { opacity: 1 } : { scale: 1 }}
+            transition={shouldReduceMotion ? { duration: 0.01 } : { delay: 0.2, type: 'spring' }}
             className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-6 text-emerald-400 border border-emerald-500/40"
           >
             <CheckCircle2 size={40} />
@@ -309,8 +311,9 @@ export default function PaymentPage() {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center text-center p-6">
         <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
+          initial={shouldReduceMotion ? { opacity: 0 } : { scale: 0.8, opacity: 0 }}
+          animate={shouldReduceMotion ? { opacity: 1 } : { scale: 1, opacity: 1 }}
+          transition={{ duration: shouldReduceMotion ? 0.01 : 0.3 }}
           className="bg-amber-950/30 border border-amber-500/50 rounded-3xl p-8 max-w-md w-full shadow-2xl space-y-5"
         >
           <div className="w-20 h-20 bg-amber-500/20 rounded-full flex items-center justify-center mx-auto text-amber-400 border border-amber-500/40">
@@ -337,8 +340,9 @@ export default function PaymentPage() {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center text-center p-6">
         <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
+          initial={shouldReduceMotion ? { opacity: 0 } : { scale: 0.8, opacity: 0 }}
+          animate={shouldReduceMotion ? { opacity: 1 } : { scale: 1, opacity: 1 }}
+          transition={{ duration: shouldReduceMotion ? 0.01 : 0.3 }}
           className="bg-rose-950/30 border border-rose-500/50 rounded-3xl p-8 max-w-md w-full shadow-2xl space-y-5"
         >
           <div className="w-20 h-20 bg-rose-500/20 rounded-full flex items-center justify-center mx-auto text-rose-400 border border-rose-500/40">
@@ -365,14 +369,15 @@ export default function PaymentPage() {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center text-center p-6">
         <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
+          initial={shouldReduceMotion ? { opacity: 0 } : { scale: 0.8, opacity: 0 }}
+          animate={shouldReduceMotion ? { opacity: 1 } : { scale: 1, opacity: 1 }}
+          transition={{ duration: shouldReduceMotion ? 0.01 : 0.3 }}
           className="bg-amber-950/30 border border-amber-500/50 rounded-3xl p-8 max-w-md w-full shadow-2xl space-y-5"
         >
           <motion.div
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            transition={{ delay: 0.2, type: 'spring' }}
+            initial={shouldReduceMotion ? { opacity: 0 } : { scale: 0 }}
+            animate={shouldReduceMotion ? { opacity: 1 } : { scale: 1 }}
+            transition={shouldReduceMotion ? { duration: 0.01 } : { delay: 0.2, type: 'spring' }}
             className="w-20 h-20 bg-amber-500/20 rounded-full flex items-center justify-center mx-auto text-amber-400 border border-amber-500/40"
           >
             <Clock size={40} />

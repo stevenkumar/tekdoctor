@@ -23,6 +23,10 @@
 # The app root is the docroot here, so Apache would otherwise hand out .env
 # (DB password, JWT secret, Razorpay/Gmail keys) and the backend source. These
 # rules mirror the guard inside server.js.
+<FilesMatch "\.(sql|log|md|bak|example|env.*)$">
+    Require all denied
+</FilesMatch>
+
 <FilesMatch "^\.(env|git|gitignore|htaccess|htpasswd)">
     Require all denied
 </FilesMatch>

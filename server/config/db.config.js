@@ -9,8 +9,17 @@ const pool = mysql.createPool({
   password: config.db.password,
   database: config.db.database,
   waitForConnections: config.db.waitForConnections,
-  connectionLimit: config.db.connectionLimit,
-  queueLimit: config.db.queueLimit
+  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT, 10) || config.db.connectionLimit || 25,
+  queueLimit: config.db.queueLimit,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10000
+});
+
+// Log and handle unexpected pool errors
+pool.on('connection', (connection) => {
+  connection.on('error', (err) => {
+    console.error('[MySQL Pool Error] Connection level error:', err.message);
+  });
 });
 
 // Test connection helper

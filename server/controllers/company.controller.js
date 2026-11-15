@@ -14,26 +14,39 @@ const { sendAdminNotification } = require('../utils/email.utils');
 const { logActivity } = require('../utils/activity.logger');
 
 const getFrontendBaseUrl = (req) => {
+    const allowedOrigins = new Set();
     if (config.frontend && config.frontend.url) {
-        return config.frontend.url.replace(/\/+$/, '');
+        allowedOrigins.add(config.frontend.url.replace(/\/+$/, ''));
     }
-    if (process.env.FRONTEND_URL && process.env.FRONTEND_URL.trim()) {
-        return process.env.FRONTEND_URL.trim().replace(/\/+$/, '');
+    if (config.server && config.server.publicOrigin) {
+        allowedOrigins.add(config.server.publicOrigin.replace(/\/+$/, ''));
     }
+    if (Array.isArray(config.server && config.server.corsOrigins)) {
+        config.server.corsOrigins.forEach(o => {
+            if (o && o !== '*') allowedOrigins.add(o.replace(/\/+$/, ''));
+        });
+    }
+
     const origin = req.get('origin');
-    if (origin && origin !== 'null' && !origin.includes(`localhost:${config.server?.port || 5000}`)) {
-        return origin.replace(/\/+$/, '');
+    if (origin && origin !== 'null') {
+        const cleanOrigin = origin.replace(/\/+$/, '');
+        if (allowedOrigins.has(cleanOrigin)) {
+            return cleanOrigin;
+        }
     }
+
     const referer = req.get('referer');
     if (referer) {
         try {
             const parsed = new URL(referer);
-            if (!parsed.host.includes(`localhost:${config.server?.port || 5000}`)) {
-                return `${parsed.protocol}//${parsed.host}`;
+            const refererOrigin = `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, '');
+            if (allowedOrigins.has(refererOrigin)) {
+                return refererOrigin;
             }
         } catch (_) {}
     }
-    return config.frontend?.url || 'http://localhost:3000';
+
+    return config.frontend?.url || config.server?.publicOrigin || Array.from(allowedOrigins)[0] || '';
 };
 
 // Helper for logging company activity

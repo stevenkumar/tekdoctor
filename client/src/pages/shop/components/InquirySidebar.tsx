@@ -1,7 +1,7 @@
 'use client';
 
-import React from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useEffect } from 'react';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { X, ShoppingBag, Trash2, Send, ChevronRight } from 'lucide-react';
 
 interface InquirySidebarProps {
@@ -13,6 +13,27 @@ interface InquirySidebarProps {
 }
 
 export default function InquirySidebar({ isOpen, setIsOpen, items, onRemove, onClear }: InquirySidebarProps) {
+  const shouldReduceMotion = useReducedMotion();
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = prevOverflow || '';
+    };
+  }, [isOpen, setIsOpen]);
+
   return (
     <AnimatePresence>
       {isOpen && (
@@ -22,16 +43,20 @@ export default function InquirySidebar({ isOpen, setIsOpen, items, onRemove, onC
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
+            transition={{ duration: shouldReduceMotion ? 0.01 : 0.2 }}
             onClick={() => setIsOpen(false)}
             className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100]"
           />
 
           {/* Sidebar */}
           <motion.div
-            initial={{ x: '100%' }}
-            animate={{ x: 0 }}
-            exit={{ x: '100%' }}
-            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Inquiry List"
+            initial={shouldReduceMotion ? { opacity: 0 } : { x: '100%' }}
+            animate={shouldReduceMotion ? { opacity: 1 } : { x: 0 }}
+            exit={shouldReduceMotion ? { opacity: 0 } : { x: '100%' }}
+            transition={shouldReduceMotion ? { duration: 0.1 } : { type: 'spring', damping: 25, stiffness: 200 }}
             className="fixed top-0 right-0 h-full w-full max-w-md bg-zinc-950 border-l border-zinc-800/80 shadow-2xl z-[101] flex flex-col"
           >
             {/* Header */}
@@ -48,7 +73,8 @@ export default function InquirySidebar({ isOpen, setIsOpen, items, onRemove, onC
               <button
                 onClick={() => setIsOpen(false)}
                 title="Close inquiry list"
-                className="p-3 bg-zinc-900 border border-zinc-800 rounded-2xl text-zinc-500 hover:text-white transition-all"
+                aria-label="Close inquiry list"
+                className="p-3 bg-zinc-900 border border-zinc-800 rounded-2xl text-zinc-500 hover:text-white transition-all cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
               >
                 <X size={20} />
               </button>
@@ -65,9 +91,10 @@ export default function InquirySidebar({ isOpen, setIsOpen, items, onRemove, onC
                 items.map((item) => (
                   <motion.div
                     key={item.id}
-                    layout
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
+                    layout={!shouldReduceMotion}
+                    initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: 10 }}
+                    animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
+                    transition={{ duration: shouldReduceMotion ? 0.01 : 0.2 }}
                     className="p-4 bg-zinc-900/40 border border-zinc-800/60 rounded-2xl flex items-center justify-between group"
                   >
                     <div className="flex flex-col gap-1">
@@ -88,7 +115,8 @@ export default function InquirySidebar({ isOpen, setIsOpen, items, onRemove, onC
                     <button
                       onClick={() => onRemove(item.id)}
                       title="Remove from inquiry list"
-                      className="p-2 text-zinc-600 hover:text-red-400 transition-colors"
+                      aria-label={`Remove ${item.name || 'item'} from inquiry list`}
+                      className="p-2 text-zinc-600 hover:text-red-400 transition-colors cursor-pointer"
                     >
                       <Trash2 size={16} />
                     </button>
@@ -102,12 +130,12 @@ export default function InquirySidebar({ isOpen, setIsOpen, items, onRemove, onC
               <div className="p-8 border-t border-zinc-800/80 space-y-4 bg-zinc-950">
                 <button
                   onClick={onClear}
-                  className="w-full py-3 text-xs font-bold text-zinc-500 hover:text-zinc-300 transition-colors flex items-center justify-center gap-2"
+                  className="w-full py-3 text-xs font-bold text-zinc-500 hover:text-zinc-300 transition-colors flex items-center justify-center gap-2 cursor-pointer"
                 >
                   Clear All Items
                 </button>
                 <button
-                  className="w-full py-4 bg-neon-cyan hover:bg-neon-cyan text-black font-black uppercase tracking-widest text-xs rounded-2xl flex items-center justify-center gap-3 shadow-xl shadow-neon-cyan/20 transition-all active:scale-[0.98]"
+                  className="w-full py-4 bg-neon-cyan hover:bg-neon-cyan text-black font-black uppercase tracking-widest text-xs rounded-2xl flex items-center justify-center gap-3 shadow-xl shadow-neon-cyan/20 transition-all active:scale-[0.98] cursor-pointer"
                 >
                   Submit Inquiry Bundle
                   <Send size={16} />

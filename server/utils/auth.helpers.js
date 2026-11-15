@@ -529,24 +529,64 @@ const maskEmail = (email) => {
   return `${userPart.slice(0, 2)}${'*'.repeat(Math.min(5, userPart.length - 2))}@${domainPart}`;
 };
 
+// Server-side in-memory store for pending password hashes (never send password hashes to clients)
+const pendingPasswordHashStore = new Map();
+
+/**
+ * Stores a pending password hash server-side associated with a random session ID.
+ */
+const storePendingPasswordHash = (sessionId, hash, userId) => {
+  const now = Date.now();
+  for (const [key, val] of pendingPasswordHashStore.entries()) {
+    if (val.expiresAt < now) pendingPasswordHashStore.delete(key);
+  }
+  pendingPasswordHashStore.set(sessionId, {
+    hash,
+    userId,
+    expiresAt: now + 10 * 60 * 1000 // 10 minutes TTL
+  });
+};
+
+/**
+ * Retrieves a pending password hash server-side and verifies ownership.
+ */
+const getPendingPasswordHash = (sessionId, userId) => {
+  const entry = pendingPasswordHashStore.get(sessionId);
+  if (!entry) return null;
+  if (entry.expiresAt < Date.now()) {
+    pendingPasswordHashStore.delete(sessionId);
+    return null;
+  }
+  if (Number(entry.userId) !== Number(userId)) return null;
+  return entry.hash;
+};
+
+/**
+ * Clears the pending password hash after successful verification.
+ */
+const clearPendingPasswordHash = (sessionId) => {
+  pendingPasswordHashStore.delete(sessionId);
+};
+
 /**
  * Generate a short-lived restricted JWT for the pending Admin Change Password state.
+ * Never includes newPasswordHash in the client payload.
  * @param {Object} user - User object with { id, email, role, token_version }
- * @param {string} newPasswordHash - Bcrypt hash of the new password to apply upon verification
+ * @param {string} sessionId - Random cryptographic session identifier matching server-side store
  * @returns {string} Signed pending JWT valid for 10 minutes
  */
-const generatePendingChangePasswordToken = (user, newPasswordHash) => {
+const generatePendingChangePasswordToken = (user, sessionId) => {
   return jwt.sign(
     {
       id: user.id,
       email: user.email,
       role: user.role,
-      newPasswordHash,
+      sessionId,
       token_version: user.token_version || 1,
       type: 'admin_change_password_pending'
     },
     config.jwt.secret,
-    { expiresIn: '10m' }
+    { expiresIn: '10m', algorithm: 'HS256' }
   );
 };
 
@@ -563,6 +603,9 @@ module.exports = {
   generatePendingAuthToken,
   verifyPendingAuthToken,
   generatePendingChangePasswordToken,
+  storePendingPasswordHash,
+  getPendingPasswordHash,
+  clearPendingPasswordHash,
   maskEmail
 };
 

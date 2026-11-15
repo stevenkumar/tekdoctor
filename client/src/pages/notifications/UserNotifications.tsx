@@ -9,12 +9,13 @@ import { useAuth } from '@/context/AuthContext';
 import { notificationApi } from '@/services/api';
 import type { NotificationItem } from '@/services/api';
 import { ROUTES } from '@/config/routes';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { createPortal } from 'react-dom';
 import { SkeletonList } from '@/components/Skeleton';
 
 export default function UserNotifications() {
   const { user: _user, token, isAuthenticated } = useAuth();
+  const shouldReduceMotion = useReducedMotion();
   const navigate = useNavigate();
 
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -412,17 +413,21 @@ export default function UserNotifications() {
       {typeof document !== 'undefined' && createPortal(
         <AnimatePresence>
           {activeModalNotif && (
-            <div
+            <motion.div
               onClick={() => setActiveModalNotif(null)}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: shouldReduceMotion ? 0.01 : 0.2 }}
               className="fixed inset-0 bg-black/85 flex items-center justify-center p-4 sm:p-6 z-[99999] backdrop-blur-sm overflow-y-auto"
               style={{ minHeight: '100vh' }}
             >
               <motion.div
                 onClick={(e) => e.stopPropagation()}
-                initial={{ opacity: 0, scale: 0.95, y: 16 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 16 }}
-                transition={{ duration: 0.2 }}
+                initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.95, y: 16 }}
+                animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+                exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.95, y: 16 }}
+                transition={{ duration: shouldReduceMotion ? 0.01 : 0.2 }}
                 className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-lg shadow-2xl relative text-left max-h-[85vh] sm:max-h-[80vh] flex flex-col my-auto overflow-hidden"
               >
                 {/* Modal Header */}
@@ -528,7 +533,7 @@ export default function UserNotifications() {
                   </button>
                 </div>
               </motion.div>
-            </div>
+            </motion.div>
           )}
         </AnimatePresence>,
         document.body

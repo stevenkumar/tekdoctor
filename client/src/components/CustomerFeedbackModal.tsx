@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { MessageSquare, Star, X, Send, Loader2, CheckCircle } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { repairApi } from '@/services/api';
@@ -8,13 +8,15 @@ import { MESSAGE_MAX_LENGTH } from '@/config/constants';
 interface CustomerFeedbackModalProps {
     isOpen: boolean;
     onClose: () => void;
+    onExitComplete?: () => void;
     ticketId: number;
     ticketNumber: string;
     onSuccess: () => void;
 }
 
-export default function CustomerFeedbackModal({ isOpen, onClose, ticketId, ticketNumber, onSuccess }: CustomerFeedbackModalProps) {
+export default function CustomerFeedbackModal({ isOpen, onClose, onExitComplete, ticketId, ticketNumber, onSuccess }: CustomerFeedbackModalProps) {
     const { token } = useAuth();
+    const shouldReduceMotion = useReducedMotion();
     const [rating, setRating] = useState<number>(0);
     const [hoveredRating, setHoveredRating] = useState<number>(0);
     const [comment, setComment] = useState('');
@@ -23,6 +25,25 @@ export default function CustomerFeedbackModal({ isOpen, onClose, ticketId, ticke
         type: '',
         text: '',
     });
+
+    // Keyboard navigation (ESC to close) and body scroll locking
+    useEffect(() => {
+        if (!isOpen) return;
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                onClose();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        document.body.style.overflow = 'hidden';
+
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            document.body.style.overflow = 'unset';
+        };
+    }, [isOpen, onClose]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -66,42 +87,45 @@ export default function CustomerFeedbackModal({ isOpen, onClose, ticketId, ticke
         }
     };
 
-    if (!isOpen) return null;
-
     return (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 rounded-3xl">
-            {/* Backdrop */}
-            <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-                onClick={onClose}
-            />
+        <AnimatePresence onExitComplete={onExitComplete}>
+            {isOpen && (
+                <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: shouldReduceMotion ? 0.1 : 0.2 }}
+                    className="fixed inset-0 z-[9999] flex items-center justify-center p-4 rounded-3xl"
+                    onClick={onClose}
+                >
+                    {/* Backdrop */}
+                    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
 
-            <motion.div
-                initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.9, y: 20 }}
-                className="relative w-full max-w-md bg-zinc-950 border border-zinc-800 rounded-3xl p-6 shadow-2xl overflow-hidden"
-            >
-                <div className="flex items-center justify-between border-b border-zinc-900 pb-4 mb-5">
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-neon-cyan/10 border border-neon-cyan/20 flex items-center justify-center">
-                            <Star size={18} className="text-neon-cyan fill-neon-cyan/20" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                            <h3 className="font-bold text-white font-outfit uppercase tracking-wider">Leave Feedback</h3>
-                            <p className="text-[10px] text-zinc-500 font-mono tracking-widest mt-0.5 break-all">TICKET {ticketNumber}</p>
-                        </div>
-                    </div>
-                    <button
-                        onClick={onClose}
-                        className="p-2 bg-zinc-900 hover:bg-zinc-800 rounded-full text-zinc-400 hover:text-white transition-all cursor-pointer"
+                    <motion.div
+                        initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.9, y: 20 }}
+                        animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+                        exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.9, y: 20 }}
+                        transition={{ duration: shouldReduceMotion ? 0.1 : 0.2 }}
+                        className="relative w-full max-w-md bg-zinc-950 border border-zinc-800 rounded-3xl p-6 shadow-2xl overflow-hidden z-10"
+                        onClick={(e) => e.stopPropagation()}
                     >
-                        <X size={16} />
-                    </button>
-                </div>
+                        <div className="flex items-center justify-between border-b border-zinc-900 pb-4 mb-5">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-xl bg-neon-cyan/10 border border-neon-cyan/20 flex items-center justify-center">
+                                    <Star size={18} className="text-neon-cyan fill-neon-cyan/20" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                    <h3 className="font-bold text-white font-outfit uppercase tracking-wider">Leave Feedback</h3>
+                                    <p className="text-[10px] text-zinc-500 font-mono tracking-widest mt-0.5 break-all">TICKET {ticketNumber}</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={onClose}
+                                className="p-2 bg-zinc-900 hover:bg-zinc-800 rounded-full text-zinc-400 hover:text-white transition-all cursor-pointer"
+                            >
+                                <X size={16} />
+                            </button>
+                        </div>
 
                 {msg.text && (
                     <motion.div
@@ -190,7 +214,9 @@ export default function CustomerFeedbackModal({ isOpen, onClose, ticketId, ticke
                         </button>
                     </form>
                 )}
-            </motion.div>
-        </div>
+                    </motion.div>
+                </motion.div>
+            )}
+        </AnimatePresence>
     );
 }

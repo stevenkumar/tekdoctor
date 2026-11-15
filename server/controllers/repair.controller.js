@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const jwt = require('jsonwebtoken');
@@ -11,26 +12,39 @@ const { logActivity } = require('../utils/activity.logger');
 const { generateToken, generateEstimateActionToken, verifyEstimateAuthorization, canTechnicianAccessTicket } = require('../utils/auth.helpers');
 
 const getFrontendBaseUrl = (req) => {
+  const allowedOrigins = new Set();
   if (config.frontend && config.frontend.url) {
-    return config.frontend.url.replace(/\/+$/, '');
+    allowedOrigins.add(config.frontend.url.replace(/\/+$/, ''));
   }
-  if (process.env.FRONTEND_URL && process.env.FRONTEND_URL.trim()) {
-    return process.env.FRONTEND_URL.trim().replace(/\/+$/, '');
+  if (config.server && config.server.publicOrigin) {
+    allowedOrigins.add(config.server.publicOrigin.replace(/\/+$/, ''));
   }
+  if (Array.isArray(config.server && config.server.corsOrigins)) {
+    config.server.corsOrigins.forEach(o => {
+      if (o && o !== '*') allowedOrigins.add(o.replace(/\/+$/, ''));
+    });
+  }
+
   const origin = req.get('origin');
-  if (origin && origin !== 'null' && !origin.includes(`localhost:${config.server?.port || 5000}`)) {
-    return origin.replace(/\/+$/, '');
+  if (origin && origin !== 'null') {
+    const cleanOrigin = origin.replace(/\/+$/, '');
+    if (allowedOrigins.has(cleanOrigin)) {
+      return cleanOrigin;
+    }
   }
+
   const referer = req.get('referer');
   if (referer) {
     try {
       const parsed = new URL(referer);
-      if (!parsed.host.includes(`localhost:${config.server?.port || 5000}`)) {
-        return `${parsed.protocol}//${parsed.host}`;
+      const refererOrigin = `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, '');
+      if (allowedOrigins.has(refererOrigin)) {
+        return refererOrigin;
       }
     } catch (_) {}
   }
-  return config.frontend?.url || config.server?.publicOrigin || '';
+
+  return config.frontend?.url || config.server?.publicOrigin || Array.from(allowedOrigins)[0] || '';
 };
 
 /**
@@ -2227,6 +2241,56 @@ const trackRequest = async (req, res, next) => {
 
     const row = rows[0];
 
+    // Secondary verification factor: Role, Ownership, Signed Token, or Customer Mobile match
+    const isAuthorizedStaff = req.user && (req.user.role === 'admin' || req.user.role === 'technician');
+    const isOwner = req.user && (
+      (row.user_id && req.user.id === row.user_id) || 
+      (row.company_id && req.user.id === row.company_id)
+    );
+
+    let isVerified = Boolean(isAuthorizedStaff || isOwner);
+
+    if (!isVerified) {
+      const inputMobile = String(req.query.mobile || req.query.phone || req.headers['x-customer-mobile'] || '').replace(/\D/g, '');
+      const trackingToken = (req.query.token || req.headers['x-tracking-token'] || req.query.actionToken || req.query.approvalToken || '').trim();
+      const rowMobile = String(row.mobile || '').replace(/\D/g, '');
+
+      if (trackingToken && (trackingToken === row.submission_id || trackingToken === row.tracking_token)) {
+        isVerified = true;
+      } else if (trackingToken) {
+        try {
+          const decoded = jwt.verify(trackingToken, config.jwt.secret);
+          if (decoded && (decoded.ticketId === row.id || decoded.ticketNumber === row.ticket_number || decoded.id === row.user_id)) {
+            isVerified = true;
+          }
+        } catch (jwtErr) { }
+      }
+
+      if (!isVerified && inputMobile && inputMobile.length >= 4) {
+        if (rowMobile && (rowMobile === inputMobile || rowMobile.endsWith(inputMobile))) {
+          isVerified = true;
+        }
+      }
+    }
+
+    if (!isVerified) {
+      return res.status(403).json(formatResponse(false, 'Verification required: please provide the customer mobile number (or last 4 digits) associated with this repair ticket.'));
+    }
+
+    const sanitizePublicFilePath = (p) => {
+      if (!p) return null;
+      const normalized = String(p).replace(/\\/g, '/');
+      const uploadIdx = normalized.indexOf('/uploads/');
+      if (uploadIdx !== -1) {
+        return normalized.substring(uploadIdx);
+      }
+      if (normalized.startsWith('uploads/')) {
+        return `/${normalized}`;
+      }
+      const parts = normalized.split('/');
+      return `/uploads/repairs/${parts[parts.length - 1]}`;
+    };
+
     const [invRows] = await connection.query(
       'SELECT id, status, is_active FROM invoices WHERE ticket_id = ? AND is_active = TRUE ORDER BY id DESC LIMIT 1',
       [row.id]
@@ -2279,7 +2343,8 @@ const trackRequest = async (req, res, next) => {
       totalEstimatedCost: (row.estimated_cost !== null && row.estimated_cost !== undefined && Number(row.estimated_cost) > 0)
         ? (parseFloat(row.estimated_cost) + (row.additional_charges ? parseFloat(row.additional_charges) : 0))
         : (row.repair_cost ? parseFloat(row.repair_cost) : 0),
-      inspectionNotes: row.inspection_notes || null,
+      // Redact internal notes from public tracking
+      inspectionNotes: isAuthorizedStaff ? (row.inspection_notes || null) : null,
       deviceCondition: row.device_condition || null,
       inspectedAt: row.inspected_at || null,
       estimateSubmittedAt: row.estimate_submitted_at || null,
@@ -2293,9 +2358,9 @@ const trackRequest = async (req, res, next) => {
       holdStartDate: row.hold_start_date || null,
       holdEndDate: row.hold_end_date || null,
       holdReason: row.hold_reason || null,
-      holdNotes: row.hold_notes || null,
+      holdNotes: isAuthorizedStaff ? (row.hold_notes || null) : null,
       reapprovalRequestedAt: row.reapproval_requested_at || null,
-      reapprovalNotes: row.reapproval_notes || null,
+      reapprovalNotes: isAuthorizedStaff ? (row.reapproval_notes || null) : null,
       cancellationReason: row.cancellation_reason || null,
       cancelledAt: row.cancelled_at || null,
       cancelledBy: row.cancelled_by || null,
@@ -2304,8 +2369,8 @@ const trackRequest = async (req, res, next) => {
       amountUpdatedAt: row.amount_updated_at || null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-      imagePath: row.image_path,
-      screenshotPath: row.screenshot_path
+      imagePath: sanitizePublicFilePath(row.image_path),
+      screenshotPath: sanitizePublicFilePath(row.screenshot_path)
     };
 
     return res.status(200).json(formatResponse(true, 'Tracking data fetched successfully.', trackingData));
@@ -3067,24 +3132,84 @@ const cancelRepairRequest = async (req, res, next) => {
 // FORM DRAFT ENDPOINTS
 // ==========================================
 
+const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const getCookieValue = (req, name) => {
+  const cookieHeader = req.headers.cookie;
+  if (!cookieHeader) return null;
+  const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+};
+
 const saveRepairDraft = async (req, res, next) => {
   let connection;
   try {
     const { draftId } = req.params;
     const formData = req.body;
 
-    if (!draftId || !formData) {
-      return res.status(400).json(formatResponse(false, 'draftId and formData are required.'));
+    if (!draftId || !UUID_V4_REGEX.test(draftId)) {
+      return res.status(400).json(formatResponse(false, 'Invalid draft ID. Must be a valid UUIDv4.'));
     }
 
+    if (!formData || typeof formData !== 'object') {
+      return res.status(400).json(formatResponse(false, 'formData payload is required.'));
+    }
+
+    const payloadString = JSON.stringify(formData);
+    if (Buffer.byteLength(payloadString, 'utf8') > 15 * 1024) {
+      return res.status(413).json(formatResponse(false, 'Draft payload exceeds maximum allowed size (15KB).'));
+    }
+
+    let sessionToken = getCookieValue(req, 'draft_session') || req.headers['x-draft-session'];
+    if (!sessionToken && !req.user) {
+      sessionToken = crypto.randomBytes(16).toString('hex');
+      res.cookie('draft_session', sessionToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 30 * 24 * 60 * 60 * 1000
+      });
+    }
+
+    const sessionHash = sessionToken
+      ? crypto.createHmac('sha256', config.jwt.secret).update(sessionToken).digest('hex')
+      : null;
+
     connection = await pool.getConnection();
+
+    // Check existing draft ownership
+    const [existing] = await connection.query('SELECT form_data FROM repair_form_drafts WHERE draft_id = ?', [draftId]);
+    if (existing.length > 0) {
+      let existingMeta = null;
+      try {
+        const raw = typeof existing[0].form_data === 'string' ? JSON.parse(existing[0].form_data) : existing[0].form_data;
+        existingMeta = raw?._meta || null;
+      } catch (e) { }
+
+      if (existingMeta) {
+        const isOwner = (req.user && req.user.id === existingMeta.ownerId) ||
+                        (sessionHash && sessionHash === existingMeta.sessionHash);
+        const isAdmin = req.user && req.user.role === 'admin';
+        if (!isOwner && !isAdmin) {
+          return res.status(403).json(formatResponse(false, 'Forbidden: You do not have permission to modify this draft.'));
+        }
+      }
+    }
+
+    // Clean payload of any client-supplied _meta
+    const cleanData = { ...formData };
+    delete cleanData._meta;
+    cleanData._meta = {
+      ownerId: req.user ? req.user.id : null,
+      sessionHash: sessionHash
+    };
 
     const query = `
       INSERT INTO repair_form_drafts (draft_id, form_data)
       VALUES (?, ?)
       ON DUPLICATE KEY UPDATE form_data = VALUES(form_data), updated_at = CURRENT_TIMESTAMP
     `;
-    await connection.query(query, [draftId, JSON.stringify(formData)]);
+    await connection.query(query, [draftId, JSON.stringify(cleanData)]);
 
     return res.status(200).json(formatResponse(true, 'Draft saved successfully.'));
   } catch (error) {
@@ -3100,9 +3225,10 @@ const getRepairDraft = async (req, res, next) => {
   try {
     const { draftId } = req.params;
 
-    if (!draftId) {
-      return res.status(400).json(formatResponse(false, 'draftId is required.'));
+    if (!draftId || !UUID_V4_REGEX.test(draftId)) {
+      return res.status(400).json(formatResponse(false, 'Invalid draft ID. Must be a valid UUIDv4.'));
     }
+
     connection = await pool.getConnection();
 
     const [rows] = await connection.query('SELECT form_data FROM repair_form_drafts WHERE draft_id = ?', [draftId]);
@@ -3111,13 +3237,28 @@ const getRepairDraft = async (req, res, next) => {
       return res.status(404).json(formatResponse(false, 'Draft not found.'));
     }
 
-    // Since form_data is a JSON field in MySQL, mysql2 might parse it automatically 
-    // or return it as string depending on config. Let's handle both.
     let parsedData = rows[0].form_data;
     if (typeof parsedData === 'string') {
       try {
         parsedData = JSON.parse(parsedData);
       } catch (e) { }
+    }
+
+    if (parsedData && parsedData._meta) {
+      const meta = parsedData._meta;
+      const sessionToken = getCookieValue(req, 'draft_session') || req.headers['x-draft-session'];
+      const sessionHash = sessionToken
+        ? crypto.createHmac('sha256', config.jwt.secret).update(sessionToken).digest('hex')
+        : null;
+
+      const isOwner = (req.user && req.user.id === meta.ownerId) ||
+                      (sessionHash && sessionHash === meta.sessionHash);
+      const isAdmin = req.user && req.user.role === 'admin';
+
+      if (!isOwner && !isAdmin) {
+        return res.status(403).json(formatResponse(false, 'Forbidden: You do not have permission to access this draft.'));
+      }
+      delete parsedData._meta;
     }
 
     return res.status(200).json(formatResponse(true, 'Draft loaded.', parsedData));
@@ -3886,13 +4027,15 @@ const approveEstimate = async (req, res, next) => {
 
   try {
     connection = await pool.getConnection();
+    await connection.beginTransaction();
 
     const [existing] = await connection.query(
-      'SELECT * FROM service_requests WHERE id = ? LIMIT 1',
+      'SELECT * FROM service_requests WHERE id = ? LIMIT 1 FOR UPDATE',
       [id]
     );
 
     if (existing.length === 0) {
+      await connection.rollback();
       return res.status(404).json(formatResponse(false, 'Repair request not found.'));
     }
 
@@ -3901,40 +4044,47 @@ const approveEstimate = async (req, res, next) => {
     // 1. Authoritative Ownership & Role Authorization Check
     const authResult = verifyEstimateAuthorization(req, request, 'approve_estimate');
     if (!authResult.authorized) {
+      await connection.rollback();
       return res.status(authResult.statusCode || 403).json(formatResponse(false, authResult.error || 'Unauthorized'));
     }
 
     // 2. State Eligibility Guards
     if (request.status === 'cancelled') {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'Cannot approve estimate for a cancelled repair request.'));
     }
 
     if (request.payment_status === 'paid') {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'This repair ticket has already been paid and settled.'));
     }
 
     if (request.status === 'completed' || request.status === 'delivered') {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'Cannot approve estimate for an already completed repair request.'));
     }
 
     // Check if estimate exists
     if (!request.diagnosis && (!request.estimated_cost || Number(request.estimated_cost) <= 0)) {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'No estimate has been submitted for this ticket yet.'));
     }
 
     // Prevent duplicate approval / replay
     if (request.customer_approval_status === 'approved') {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'Estimate is already approved.'));
     }
 
     const allowedApprovalStatuses = ['pending_approval', 'on_hold', 'reapproval_requested', 'none'];
     if (!allowedApprovalStatuses.includes(request.customer_approval_status)) {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, `Ticket cannot be approved from current approval status: ${request.customer_approval_status}.`));
     }
 
     // Update approval status, exit hold if applicable, and move status to in_progress
     const approverUserId = req.user ? req.user.id : (authResult.userId || request.user_id || null);
-    await connection.query(`
+    const [updateRes] = await connection.query(`
       UPDATE service_requests
       SET customer_approval_status = 'approved',
           approved_at = NOW(),
@@ -3945,8 +4095,15 @@ const approveEstimate = async (req, res, next) => {
           hold_end_date = NULL,
           hold_reason = NULL,
           hold_notes = NULL
-      WHERE id = ?
+      WHERE id = ? 
+        AND customer_approval_status != 'approved' 
+        AND status NOT IN ('cancelled', 'completed', 'delivered')
     `, [approverUserId, notes || null, id]);
+
+    if (updateRes.affectedRows !== 1) {
+      await connection.rollback();
+      return res.status(409).json(formatResponse(false, 'Estimate was already approved or modified concurrently.'));
+    }
 
     const ticketNum = request.ticket_number || `#${request.id}`;
     const totalCostStr = `₹${(parseFloat(request.repair_cost || request.estimated_cost || 0)).toFixed(2)}`;
@@ -3996,6 +4153,8 @@ const approveEstimate = async (req, res, next) => {
       ]);
     } catch (wlErr) { }
 
+    await connection.commit();
+
     // 4. Activity Log
     await logActivity(
       req.user ? req.user.id : null,
@@ -4015,6 +4174,9 @@ const approveEstimate = async (req, res, next) => {
     return res.status(200).json(formatResponse(true, 'Estimate approved successfully. Technician has been authorized to proceed with repair.'));
 
   } catch (error) {
+    if (connection) {
+      try { await connection.rollback(); } catch (rbErr) { }
+    }
     next(error);
   } finally {
     if (connection) connection.release();
@@ -4032,13 +4194,15 @@ const rejectEstimate = async (req, res, next) => {
 
   try {
     connection = await pool.getConnection();
+    await connection.beginTransaction();
 
     const [existing] = await connection.query(
-      'SELECT * FROM service_requests WHERE id = ? LIMIT 1',
+      'SELECT * FROM service_requests WHERE id = ? LIMIT 1 FOR UPDATE',
       [id]
     );
 
     if (existing.length === 0) {
+      await connection.rollback();
       return res.status(404).json(formatResponse(false, 'Repair request not found.'));
     }
 
@@ -4047,12 +4211,14 @@ const rejectEstimate = async (req, res, next) => {
     // 1. Authoritative Ownership & Role Authorization Check
     const authResult = verifyEstimateAuthorization(req, request, 'reject_estimate');
     if (!authResult.authorized) {
+      await connection.rollback();
       return res.status(authResult.statusCode || 403).json(formatResponse(false, authResult.error || 'Unauthorized'));
     }
 
     // 2. Validate Rejection Reason
     let cleanReason = (reason && typeof reason === 'string') ? reason.trim() : '';
     if (cleanReason.length > 500) {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'Rejection reason cannot exceed 500 characters.'));
     }
     if (!cleanReason) {
@@ -4061,33 +4227,39 @@ const rejectEstimate = async (req, res, next) => {
 
     // 3. State Eligibility Guards
     if (request.status === 'cancelled') {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'Cannot reject estimate for a cancelled repair request.'));
     }
 
     if (request.payment_status === 'paid') {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'Cannot reject estimate for a paid repair request. This repair ticket has already been paid and settled.'));
     }
 
     if (request.status === 'completed' || request.status === 'delivered') {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'Cannot reject estimate for an already completed repair request.'));
     }
 
     // Prevent duplicate rejection / replay
     if (request.customer_approval_status === 'rejected') {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'Estimate has already been rejected.'));
     }
 
     if (request.customer_approval_status === 'approved') {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'Cannot reject an already approved estimate. Please contact customer support.'));
     }
 
     // Check if estimate exists
     if (!request.diagnosis && (!request.estimated_cost || Number(request.estimated_cost) <= 0)) {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'No estimate has been submitted for this ticket to decline.'));
     }
 
     // Update rejection status with 3-day hold period for reconsideration
-    await connection.query(`
+    const [updateRes] = await connection.query(`
       UPDATE service_requests
       SET customer_approval_status = 'rejected',
           rejected_at = NOW(),
@@ -4095,12 +4267,19 @@ const rejectEstimate = async (req, res, next) => {
           hold_start_date = NOW(),
           hold_end_date = DATE_ADD(NOW(), INTERVAL 3 DAY),
           hold_reason = ?
-      WHERE id = ?
+      WHERE id = ? 
+        AND customer_approval_status NOT IN ('approved', 'rejected') 
+        AND status NOT IN ('cancelled', 'completed', 'delivered')
     `, [
       cleanReason,
       `Estimate declined by customer: ${cleanReason}`,
       id
     ]);
+
+    if (updateRes.affectedRows !== 1) {
+      await connection.rollback();
+      return res.status(409).json(formatResponse(false, 'Estimate was already rejected or modified concurrently.'));
+    }
 
     // Record rejection in work logs
     try {
@@ -4149,6 +4328,8 @@ const rejectEstimate = async (req, res, next) => {
       }
     } catch (notifErr) { }
 
+    await connection.commit();
+
     // 3. Activity Log
     await logActivity(
       req.user ? req.user.id : null,
@@ -4167,6 +4348,9 @@ const rejectEstimate = async (req, res, next) => {
     return res.status(200).json(formatResponse(true, 'Estimate rejected. Admin and technician have been notified.'));
 
   } catch (error) {
+    if (connection) {
+      try { await connection.rollback(); } catch (rbErr) { }
+    }
     next(error);
   } finally {
     if (connection) connection.release();

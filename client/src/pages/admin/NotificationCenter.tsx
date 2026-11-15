@@ -114,22 +114,29 @@ export default function NotificationCenter() {
     const handleSend = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!token) return;
-        setSending(true); setErrorMsg(''); setSuccessMsg('');
-        let res;
-        if (isBroadcast) {
-            res = await adminApi.broadcastNotification(token, { title: form.title, message: form.message, targetRole: form.targetRole });
-        } else {
-            res = await adminApi.sendNotification(token, { userId: Number(form.userId), title: form.title, message: form.message });
+        setSending(true);
+        setErrorMsg('');
+        setSuccessMsg('');
+        try {
+            let res;
+            if (isBroadcast) {
+                res = await adminApi.broadcastNotification(token, { title: form.title, message: form.message, targetRole: form.targetRole });
+            } else {
+                res = await adminApi.sendNotification(token, { userId: Number(form.userId), title: form.title, message: form.message });
+            }
+            if (res.ok) {
+                setSuccessMsg(isBroadcast ? `Broadcast sent to ${(res.data as any)?.data?.count || 'all'} users.` : 'Notification sent.');
+                setForm({ userId: '', title: '', message: '', targetRole: 'all' });
+                setTimeout(() => setSuccessMsg(''), 3000);
+                if (tab === 'history') fetchHistory();
+            } else {
+                setErrorMsg(res.error || 'Failed to send notification.');
+            }
+        } catch (err: any) {
+            setErrorMsg(err?.message || 'Network error while sending notification.');
+        } finally {
+            setSending(false);
         }
-        if (res.ok) {
-            setSuccessMsg(isBroadcast ? `Broadcast sent to ${(res.data as any)?.data?.count || 'all'} users.` : 'Notification sent.');
-            setForm({ userId: '', title: '', message: '', targetRole: 'all' });
-            setTimeout(() => setSuccessMsg(''), 3000);
-            if (tab === 'history') fetchHistory();
-        } else {
-            setErrorMsg(res.error || 'Failed to send.');
-        }
-        setSending(false);
     };
 
     return (

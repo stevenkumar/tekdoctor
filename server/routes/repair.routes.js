@@ -105,9 +105,10 @@ router.get(
   getCustomerHistory
 );
 
-// Route: GET /api/repair-request/track/:id (Public Tracking — no auth required)
+// Route: GET /api/repair-request/track/:id (Public Tracking with optional auth)
 router.get(
   '/track/:id',
+  optionalAuth,
   trackRequest
 );
 

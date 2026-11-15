@@ -10,11 +10,13 @@ import { Loader2 } from 'lucide-react';
 
 // Layouts & Route Guards (Eager for instant routing & auth evaluation)
 import PublicLayout from './layouts/PublicLayout';
+import AuthLayout from './layouts/AuthLayout';
 import AdminLayout from './layouts/AdminLayout';
 import ProtectedAdminRoute from './components/ProtectedAdminRoute';
 import ProtectedTechnicianRoute from './components/ProtectedTechnicianRoute';
 import ProtectedCompanyRoute from './components/ProtectedCompanyRoute';
 import CompanyLayout from './layouts/CompanyLayout';
+import ErrorBoundary from './components/ErrorBoundary';
 
 // Public Pages: HomePage kept eager for instant first-paint on domain landing
 import HomePage from './pages/home/page';
@@ -98,98 +100,104 @@ function App() {
           <TitleManager />
           <InstallPwaPrompt />
           <Toaster position="bottom-right" toastOptions={{ style: { background: '#18181b', color: '#fff', border: '1px solid #27272a' } }} />
-          <Suspense fallback={<PageLoader />}>
-            <Routes>
+          <ErrorBoundary fallbackTitle="Application Shell Error">
+            <Suspense fallback={<PageLoader />}>
+              <Routes>
 
-              {/* ── Admin Area ── */}
-              <Route element={<ProtectedAdminRoute />}>
-                <Route element={<AdminLayout />}>
-                  <Route path={ROUTES.ADMIN} element={<Navigate to={ROUTES.ADMIN_DASHBOARD} replace />} />
-                  <Route path={ROUTES.ADMIN_DASHBOARD} element={<DashboardOverview />} />
-                  <Route path={ROUTES.ADMIN_TICKETS} element={<RepairTickets />} />
-                  <Route path="/admin/repair-tickets" element={<RepairTickets />} />
-                  <Route path={ROUTES.ADMIN_TRANSFERS} element={<TaskTransfers />} />
-                  <Route path={ROUTES.ADMIN_TECHNICIANS} element={<TechnicianManagement />} />
-                  <Route path={ROUTES.ADMIN_CUSTOMERS} element={<CustomerManagement />} />
-                  <Route path={ROUTES.ADMIN_COMPANIES} element={<CompanyManagementDashboard />} />
-                  <Route path={ROUTES.ADMIN_AMC} element={<AdminAmcManagement />} />
-                  <Route path={ROUTES.ADMIN_NOTIFICATIONS} element={<NotificationCenter />} />
-                  <Route path={ROUTES.ADMIN_CONTACTS} element={<ContactMessages />} />
-                  <Route path={ROUTES.ADMIN_WEBSITE_SETTINGS} element={<WebsiteSettings />} />
-                  <Route path={ROUTES.ADMIN_REVIEWS} element={<ReviewsManagement />} />
-                  <Route path={ROUTES.ADMIN_EMAIL_SETTINGS} element={<EmailSettings />} />
-                  <Route path={ROUTES.ADMIN_REPORTS} element={<ReportsAnalytics />} />
-                  <Route path={ROUTES.ADMIN_ACTIVITY_LOGS} element={<ActivityLogs />} />
-                  <Route path={ROUTES.ADMIN_PROFILE} element={<AdminProfile />} />
-                  <Route path={ROUTES.BILLING} element={<BillingPage />} />
+                {/* ── Admin Area ── */}
+                <Route element={<ProtectedAdminRoute />}>
+                  <Route element={<ErrorBoundary fallbackTitle="Admin Portal Error"><AdminLayout /></ErrorBoundary>}>
+                    <Route path={ROUTES.ADMIN} element={<Navigate to={ROUTES.ADMIN_DASHBOARD} replace />} />
+                    <Route path={ROUTES.ADMIN_DASHBOARD} element={<DashboardOverview />} />
+                    <Route path={ROUTES.ADMIN_TICKETS} element={<RepairTickets />} />
+                    <Route path="/admin/repair-tickets" element={<RepairTickets />} />
+                    <Route path={ROUTES.ADMIN_TRANSFERS} element={<TaskTransfers />} />
+                    <Route path={ROUTES.ADMIN_TECHNICIANS} element={<TechnicianManagement />} />
+                    <Route path={ROUTES.ADMIN_CUSTOMERS} element={<CustomerManagement />} />
+                    <Route path={ROUTES.ADMIN_COMPANIES} element={<CompanyManagementDashboard />} />
+                    <Route path={ROUTES.ADMIN_AMC} element={<AdminAmcManagement />} />
+                    <Route path={ROUTES.ADMIN_NOTIFICATIONS} element={<NotificationCenter />} />
+                    <Route path={ROUTES.ADMIN_CONTACTS} element={<ContactMessages />} />
+                    <Route path={ROUTES.ADMIN_WEBSITE_SETTINGS} element={<WebsiteSettings />} />
+                    <Route path={ROUTES.ADMIN_REVIEWS} element={<ReviewsManagement />} />
+                    <Route path={ROUTES.ADMIN_EMAIL_SETTINGS} element={<EmailSettings />} />
+                    <Route path={ROUTES.ADMIN_REPORTS} element={<ReportsAnalytics />} />
+                    <Route path={ROUTES.ADMIN_ACTIVITY_LOGS} element={<ActivityLogs />} />
+                    <Route path={ROUTES.ADMIN_PROFILE} element={<AdminProfile />} />
+                    <Route path={ROUTES.BILLING} element={<BillingPage />} />
+                  </Route>
                 </Route>
-              </Route>
 
-              {/* ── Technician Area ── */}
-              <Route element={<ProtectedTechnicianRoute />}>
-                <Route element={<AdminLayout />}>
-                  <Route path={ROUTES.TECHNICIAN_DASHBOARD} element={<TechnicianDashboard />} />
-                  <Route path={ROUTES.TECHNICIAN_ASSIGNED_TICKETS} element={<TechnicianDashboard />} />
-                  <Route path={ROUTES.TECHNICIAN_TRANSFERS} element={<TechnicianDashboard />} />
-                  <Route path={ROUTES.TECHNICIAN_DIAGNOSIS} element={<TechnicianDashboard />} />
-                  <Route path={ROUTES.TECHNICIAN_IN_PROGRESS} element={<TechnicianDashboard />} />
-                  <Route path={ROUTES.TECHNICIAN_COMPLETED} element={<TechnicianDashboard />} />
-                  <Route path={ROUTES.TECHNICIAN_DELIVERED} element={<TechnicianDashboard />} />
-                  <Route path={ROUTES.TECHNICIAN_NOTIFICATIONS} element={<TechnicianDashboard />} />
-                  <Route path={ROUTES.TECHNICIAN_PROFILE} element={<AdminProfile />} />
-                  <Route path="/technician/my-tasks" element={<Navigate to={ROUTES.TECHNICIAN_ASSIGNED_TICKETS} replace />} />
-                  <Route path="/technician/tasks" element={<Navigate to={ROUTES.TECHNICIAN_ASSIGNED_TICKETS} replace />} />
-                  <Route path="/technician/tickets" element={<Navigate to={ROUTES.TECHNICIAN_ASSIGNED_TICKETS} replace />} />
-                  <Route path="/technician/task-transfers" element={<Navigate to={ROUTES.TECHNICIAN_TRANSFERS} replace />} />
+                {/* ── Technician Area ── */}
+                <Route element={<ProtectedTechnicianRoute />}>
+                  <Route element={<ErrorBoundary fallbackTitle="Technician Workspace Error"><AdminLayout /></ErrorBoundary>}>
+                    <Route path={ROUTES.TECHNICIAN_DASHBOARD} element={<TechnicianDashboard />} />
+                    <Route path={ROUTES.TECHNICIAN_ASSIGNED_TICKETS} element={<TechnicianDashboard />} />
+                    <Route path={ROUTES.TECHNICIAN_TRANSFERS} element={<TechnicianDashboard />} />
+                    <Route path={ROUTES.TECHNICIAN_DIAGNOSIS} element={<TechnicianDashboard />} />
+                    <Route path={ROUTES.TECHNICIAN_IN_PROGRESS} element={<TechnicianDashboard />} />
+                    <Route path={ROUTES.TECHNICIAN_COMPLETED} element={<TechnicianDashboard />} />
+                    <Route path={ROUTES.TECHNICIAN_DELIVERED} element={<TechnicianDashboard />} />
+                    <Route path={ROUTES.TECHNICIAN_NOTIFICATIONS} element={<TechnicianDashboard />} />
+                    <Route path={ROUTES.TECHNICIAN_PROFILE} element={<AdminProfile />} />
+                    <Route path="/technician/my-tasks" element={<Navigate to={ROUTES.TECHNICIAN_ASSIGNED_TICKETS} replace />} />
+                    <Route path="/technician/tasks" element={<Navigate to={ROUTES.TECHNICIAN_ASSIGNED_TICKETS} replace />} />
+                    <Route path="/technician/tickets" element={<Navigate to={ROUTES.TECHNICIAN_ASSIGNED_TICKETS} replace />} />
+                    <Route path="/technician/task-transfers" element={<Navigate to={ROUTES.TECHNICIAN_TRANSFERS} replace />} />
+                  </Route>
                 </Route>
-              </Route>
 
-              {/* ── Company (B2B) Area ── */}
-              <Route element={<ProtectedCompanyRoute />}>
-                <Route element={<CompanyLayout />}>
-                  <Route path="/company" element={<Navigate to={ROUTES.COMPANY_DASHBOARD} replace />} />
-                  <Route path={ROUTES.COMPANY_DASHBOARD} element={<CompanyDashboard />} />
-                  <Route path={ROUTES.COMPANY_BRANCHES} element={<CompanyBranches />} />
-                  <Route path={ROUTES.COMPANY_EMPLOYEES} element={<CompanyEmployees />} />
-                  <Route path={ROUTES.COMPANY_DEVICES} element={<CompanyDevices />} />
-                  <Route path={ROUTES.COMPANY_REPAIRS} element={<CompanyRepairs />} />
-                  <Route path={ROUTES.COMPANY_AMC} element={<CompanyAmcManagement />} />
-                  <Route path={ROUTES.COMPANY_PROFILE} element={<CompanyProfile />} />
-                  <Route path={ROUTES.COMPANY_MESSAGES} element={<CompanyMessages />} />
-                  <Route path={ROUTES.COMPANY_BILLING} element={<CompanyBilling />} />
-                  <Route path={ROUTES.COMPANY_ACTIVITY_LOGS} element={<CompanyActivityLogs />} />
+                {/* ── Company (B2B) Area ── */}
+                <Route element={<ProtectedCompanyRoute />}>
+                  <Route element={<ErrorBoundary fallbackTitle="Company Portal Error"><CompanyLayout /></ErrorBoundary>}>
+                    <Route path="/company" element={<Navigate to={ROUTES.COMPANY_DASHBOARD} replace />} />
+                    <Route path={ROUTES.COMPANY_DASHBOARD} element={<CompanyDashboard />} />
+                    <Route path={ROUTES.COMPANY_BRANCHES} element={<CompanyBranches />} />
+                    <Route path={ROUTES.COMPANY_EMPLOYEES} element={<CompanyEmployees />} />
+                    <Route path={ROUTES.COMPANY_DEVICES} element={<CompanyDevices />} />
+                    <Route path={ROUTES.COMPANY_REPAIRS} element={<CompanyRepairs />} />
+                    <Route path={ROUTES.COMPANY_AMC} element={<CompanyAmcManagement />} />
+                    <Route path={ROUTES.COMPANY_PROFILE} element={<CompanyProfile />} />
+                    <Route path={ROUTES.COMPANY_MESSAGES} element={<CompanyMessages />} />
+                    <Route path={ROUTES.COMPANY_BILLING} element={<CompanyBilling />} />
+                    <Route path={ROUTES.COMPANY_ACTIVITY_LOGS} element={<CompanyActivityLogs />} />
+                  </Route>
                 </Route>
-              </Route>
 
-              {/* ── Public Area ── */}
-              <Route element={<PublicLayout />}>
-                <Route path={ROUTES.HOME} element={<HomePage />} />
-                <Route path={ROUTES.ABOUT} element={<AboutPage />} />
-                <Route path={ROUTES.SIGN_IN} element={<SignIn />} />
-                <Route path={ROUTES.SIGN_UP} element={<SignUp />} />
-                <Route path={ROUTES.FORGOT_PASSWORD} element={<ForgotPassword />} />
-                <Route path={ROUTES.RESET_PASSWORD} element={<ResetPassword />} />
-                <Route path={ROUTES.BILLING_PAY} element={<PaymentPage />} />
-                <Route path="/billing/pay/:invoiceId" element={<PaymentPage />} />
-                <Route path={ROUTES.CONTACT} element={<Contact />} />
-                <Route path={ROUTES.REPAIR} element={<RepairBooking />} />
-                <Route path={ROUTES.FAQ} element={<FAQPage />} />
-                <Route path={ROUTES.REPAIR_STATUS} element={<ServiceTracker />} />
-                <Route path={ROUTES.SERVICES} element={<ServicesPage />} />
-                <Route path={ROUTES.SHOP} element={<ShopPage />} />
-                <Route path={ROUTES.SHOP_V2} element={<ShopV2Page />} />
-                <Route path={ROUTES.PROTOCOL} element={<RepairProtocolPage />} />
-                <Route path={ROUTES.PROFILE} element={<ProfilePage />} />
-                <Route path={ROUTES.NOTIFICATIONS} element={<UserNotifications />} />
-                <Route path={ROUTES.VERIFY_CERTIFICATE} element={<AmcCertificateVerification />} />
-                <Route path="/verify-certificate/:code" element={<AmcCertificateVerification />} />
+                {/* ── Auth Area (Exempt from Maintenance Mode Lockout) ── */}
+                <Route element={<ErrorBoundary fallbackTitle="Authentication Error"><AuthLayout /></ErrorBoundary>}>
+                  <Route path={ROUTES.SIGN_IN} element={<SignIn />} />
+                  <Route path={ROUTES.SIGN_UP} element={<SignUp />} />
+                  <Route path={ROUTES.FORGOT_PASSWORD} element={<ForgotPassword />} />
+                  <Route path={ROUTES.RESET_PASSWORD} element={<ResetPassword />} />
+                </Route>
 
-                {/* Fallback */}
-                <Route path="*" element={<HomePage />} />
-              </Route>
+                {/* ── Public Area ── */}
+                <Route element={<ErrorBoundary fallbackTitle="Public Portal Error"><PublicLayout /></ErrorBoundary>}>
+                  <Route path={ROUTES.HOME} element={<HomePage />} />
+                  <Route path={ROUTES.ABOUT} element={<AboutPage />} />
+                  <Route path={ROUTES.BILLING_PAY} element={<PaymentPage />} />
+                  <Route path="/billing/pay/:invoiceId" element={<PaymentPage />} />
+                  <Route path={ROUTES.CONTACT} element={<Contact />} />
+                  <Route path={ROUTES.REPAIR} element={<RepairBooking />} />
+                  <Route path={ROUTES.FAQ} element={<FAQPage />} />
+                  <Route path={ROUTES.REPAIR_STATUS} element={<ServiceTracker />} />
+                  <Route path={ROUTES.SERVICES} element={<ServicesPage />} />
+                  <Route path={ROUTES.SHOP} element={<ShopPage />} />
+                  <Route path={ROUTES.SHOP_V2} element={<ShopV2Page />} />
+                  <Route path={ROUTES.PROTOCOL} element={<RepairProtocolPage />} />
+                  <Route path={ROUTES.PROFILE} element={<ProfilePage />} />
+                  <Route path={ROUTES.NOTIFICATIONS} element={<UserNotifications />} />
+                  <Route path={ROUTES.VERIFY_CERTIFICATE} element={<AmcCertificateVerification />} />
+                  <Route path="/verify-certificate/:code" element={<AmcCertificateVerification />} />
 
-            </Routes>
-          </Suspense>
+                  {/* Fallback */}
+                  <Route path="*" element={<HomePage />} />
+                </Route>
+
+              </Routes>
+            </Suspense>
+          </ErrorBoundary>
         </SiteProvider>
       </AuthProvider>
     </Router>

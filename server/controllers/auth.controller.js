@@ -153,9 +153,7 @@ const signin = async (req, res, next) => {
         logger.error(`[Admin Login OTP Delivery Error] Failed to send OTP to ${user.email}: ${err.message}`);
       });
 
-      if (config.env === 'development' || config.env === 'test') {
-        logger.info(`[DEV ADMIN LOGIN OTP] User: ${user.email} | OTP: ${otp}`);
-      }
+      logger.info(`[Admin Login OTP Dispatched] User: ${user.email}`);
 
       await logActivity(user.id, 'security', 'admin_otp_dispatched', 'users', user.id, { email: user.email }, req.ip);
 
@@ -363,9 +361,7 @@ const resendOtp = async (req, res, next) => {
       logger.error(`[Admin Resend OTP Delivery Error] Failed to send OTP to ${decoded.email}: ${err.message}`);
     });
 
-    if (config.env === 'development' || config.env === 'test') {
-      logger.info(`[DEV ADMIN LOGIN OTP RESEND] User: ${decoded.email} | OTP: ${newOtp}`);
-    }
+    logger.info(`[Admin Login OTP Resent] User: ${decoded.email}`);
 
     return res.status(200).json(formatResponse(true, 'A new verification code has been sent to your registered Admin email.'));
 
@@ -454,45 +450,47 @@ const setPassword = async (req, res, next) => {
 };
 
 /**
- * Helper to determine the client frontend base URL reliably
+ * Helper to determine the client frontend base URL reliably.
+ * Strictly validates against the configured origins whitelist (CORS origins, publicOrigin, frontend.url)
+ * to prevent host header injection / password reset poisoning.
  */
 const getFrontendBaseUrl = (req) => {
-  // 1. Explicit configured FRONTEND_URL
+  const allowedOrigins = new Set();
   if (config.frontend && config.frontend.url) {
-    return config.frontend.url;
+    allowedOrigins.add(config.frontend.url.replace(/\/+$/, ''));
   }
-  if (process.env.FRONTEND_URL && process.env.FRONTEND_URL.trim()) {
-    return process.env.FRONTEND_URL.trim().replace(/\/+$/, '');
+  if (config.server && config.server.publicOrigin) {
+    allowedOrigins.add(config.server.publicOrigin.replace(/\/+$/, ''));
+  }
+  if (Array.isArray(config.server && config.server.corsOrigins)) {
+    config.server.corsOrigins.forEach(o => {
+      if (o && o !== '*') allowedOrigins.add(o.replace(/\/+$/, ''));
+    });
   }
 
-  // 2. Origin header from browser CORS requests
+  // 1. Origin header from browser request - MUST match whitelist
   const origin = req.get('origin');
-  if (origin && origin !== 'null' && !origin.includes(`localhost:${config.server.port}`)) {
-    return origin.replace(/\/+$/, '');
+  if (origin && origin !== 'null') {
+    const cleanOrigin = origin.replace(/\/+$/, '');
+    if (allowedOrigins.has(cleanOrigin)) {
+      return cleanOrigin;
+    }
   }
 
-  // 3. Referer header fallback
+  // 2. Referer header fallback - MUST match whitelist
   const referer = req.get('referer');
   if (referer) {
     try {
       const parsed = new URL(referer);
-      if (!parsed.host.includes(`localhost:${config.server.port}`)) {
-        return `${parsed.protocol}//${parsed.host}`;
+      const refererOrigin = `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, '');
+      if (allowedOrigins.has(refererOrigin)) {
+        return refererOrigin;
       }
     } catch (_) {}
   }
 
-  // 4. Production fallback to trusted CORS origins
-  if (config.isProduction && config.server.corsOrigins && config.server.corsOrigins.length > 0) {
-    const trustedOrigin = config.server.corsOrigins.find(o => !o.includes('localhost'));
-    if (trustedOrigin) {
-      return trustedOrigin.replace(/\/+$/, '');
-    }
-  }
-
-  // 5. Default to the configured public origin (app.config.js guarantees this
-  //    is a real https:// domain in production, never a dev host).
-  return config.frontend?.url || config.server?.publicOrigin || '';
+  // 3. Fallback strictly to configured frontend URL or first allowed origin
+  return config.frontend?.url || config.server?.publicOrigin || Array.from(allowedOrigins)[0] || '';
 };
 
 /**
@@ -545,9 +543,7 @@ const forgotPassword = async (req, res, next) => {
         logger.error(`[Admin Password Reset OTP Error] Failed to send OTP to ${user.email}: ${err.message}`);
       });
 
-      if (config.env === 'development' || config.env === 'test') {
-        logger.info(`[DEV ADMIN PASSWORD RESET OTP] User: ${user.email} | OTP: ${otp}`);
-      }
+      logger.info(`[Admin Password Reset OTP Dispatched] User: ${user.email}`);
 
       await logActivity(user.id, 'security', 'admin_reset_otp_dispatched', 'users', user.id, { email: user.email }, req.ip);
 
@@ -596,10 +592,7 @@ const forgotPassword = async (req, res, next) => {
     // Await delivery result
     const emailSent = await sendCustomerNotification(user.email, emailSubject, emailHtml);
 
-    // In development only, log the clickable link for developer convenience (never in production)
-    if (config.env === 'development') {
-      logger.info(`[DEV PASSWORD RESET LINK] User: ${user.email} | Reset URL: ${resetUrl}`);
-    }
+    logger.info(`[Password Reset Link Generated] User: ${user.email}`);
 
     if (!emailSent && config.isProduction) {
       logger.error(`[PASSWORD_RESET_FAIL] Password reset email could not be delivered to ${user.email}`);
@@ -936,9 +929,7 @@ const googleSignIn = async (req, res, next) => {
           expiresInMinutes: 5
         });
 
-        if (config.env === 'development' || config.env === 'test') {
-          logger.info(`[DEV ADMIN GOOGLE LOGIN OTP] User: ${user.email} | OTP: ${otp}`);
-        }
+        logger.info(`[Admin Google Login OTP Dispatched] User: ${user.email}`);
 
         await logActivity(user.id, 'security', 'admin_otp_dispatched', 'users', user.id, { email: user.email, authProvider: 'google' }, req.ip);
 
@@ -1021,9 +1012,7 @@ const googleSignIn = async (req, res, next) => {
           expiresInMinutes: 5
         });
 
-        if (config.env === 'development' || config.env === 'test') {
-          logger.info(`[DEV ADMIN GOOGLE LOGIN OTP] User: ${user.email} | OTP: ${otp}`);
-        }
+        logger.info(`[Admin Google Login OTP Dispatched] User: ${user.email}`);
 
         await logActivity(user.id, 'security', 'admin_otp_dispatched', 'users', user.id, { email: user.email, authProvider: 'google' }, req.ip);
 
@@ -1102,6 +1091,54 @@ const googleSignIn = async (req, res, next) => {
   }
 };
 
+/**
+ * Authoritative session verification
+ * GET /api/auth/me
+ */
+const getMe = async (req, res, next) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [rows] = await connection.query(
+      'SELECT id, name, email, role, phone, avatar_url, token_version, is_active FROM users WHERE id = ? LIMIT 1',
+      [req.user.id]
+    );
+
+    if (rows.length === 0 || rows[0].is_active === 0) {
+      return res.status(401).json(formatResponse(false, 'User session inactive or not found.'));
+    }
+
+    const user = rows[0];
+
+    // If company role, fetch company profile details
+    let companyProfile = null;
+    if (user.role === 'company') {
+      const [compRows] = await connection.query(
+        'SELECT company_id, company_name, company_logo FROM company_profiles WHERE user_id = ? LIMIT 1',
+        [user.id]
+      );
+      if (compRows.length > 0) {
+        companyProfile = compRows[0];
+      }
+    }
+
+    return res.status(200).json(formatResponse(true, 'Session verified.', {
+      id: user.id,
+      name: companyProfile?.company_name || user.name,
+      email: user.email,
+      role: user.role,
+      phone: user.phone,
+      avatar_url: companyProfile?.company_logo || user.avatar_url,
+      token_version: user.token_version,
+      company_id: companyProfile?.company_id || null
+    }));
+  } catch (error) {
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
 module.exports = {
   signup,
   signin,
@@ -1113,5 +1150,6 @@ module.exports = {
   resetPassword,
   googleSignIn,
   logout,
-  updateProfile
+  updateProfile,
+  getMe
 };

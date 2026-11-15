@@ -1809,7 +1809,10 @@ const verifyContractPayment = async ({ contractId, companyId, razorpayOrderId, r
       .createHmac('sha256', keySecret)
       .update(`${razorpayOrderId}|${razorpayPaymentId}`)
       .digest('hex');
-    if (expectedSignature !== razorpaySignature) {
+    const bufExpected = Buffer.from(expectedSignature, 'utf8');
+    const bufReceived = Buffer.from(razorpaySignature || '', 'utf8');
+    const isSignatureValid = bufExpected.length === bufReceived.length && crypto.timingSafeEqual(bufExpected, bufReceived);
+    if (!isSignatureValid) {
       await pool.query('UPDATE payments SET status = "failed", error_message = "Invalid signature" WHERE order_id = ?', [razorpayOrderId]);
       await pool.query('UPDATE amc_contracts SET payment_status = "failed" WHERE id = ?', [contractId]);
       throw new Error('Payment signature verification failed.');

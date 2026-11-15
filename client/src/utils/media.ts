@@ -12,7 +12,12 @@ import { appConfig } from '@/config/appConfig';
 export function getMediaUrl(url: string): string {
     if (!url) return '';
     if (url.startsWith('http')) return url;
-    const base = appConfig.apiUrl || (typeof window !== 'undefined' ? window.location.origin : '');
+    let base = typeof window !== 'undefined' ? window.location.origin : '';
+    if (appConfig.apiUrl.startsWith('http://') || appConfig.apiUrl.startsWith('https://')) {
+        try {
+            base = new URL(appConfig.apiUrl).origin;
+        } catch (_) {}
+    }
     const cleanBase = base.endsWith('/') ? base.slice(0, -1) : base;
     return `${cleanBase}${url.startsWith('/') ? '' : '/'}${url}`;
 }

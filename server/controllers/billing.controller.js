@@ -70,6 +70,17 @@ const callRazorpayCreateOrder = async ({ amountInPaise, currency = 'INR', receip
 };
 
 /**
+ * Timing-safe string equality comparison to prevent HMAC timing side-channel attacks.
+ */
+const timingSafeMatch = (expected, received) => {
+  if (typeof expected !== 'string' || typeof received !== 'string') return false;
+  const bufExpected = Buffer.from(expected, 'utf8');
+  const bufReceived = Buffer.from(received, 'utf8');
+  if (bufExpected.length !== bufReceived.length) return false;
+  return crypto.timingSafeEqual(bufExpected, bufReceived);
+};
+
+/**
  * Helper to verify Razorpay signature (strict HMAC; fails closed)
  */
 const verifyRazorpaySignature = (orderId, paymentId, signature) => {
@@ -84,7 +95,7 @@ const verifyRazorpaySignature = (orderId, paymentId, signature) => {
     .createHmac('sha256', keySecret)
     .update(`${orderId}|${paymentId}`)
     .digest('hex');
-  return expectedSignature === signature;
+  return timingSafeMatch(expectedSignature, signature);
 };
 
 /**
@@ -1518,6 +1529,7 @@ const processAuthoritativePaymentSettlement = async ({
   ip = '127.0.0.1'
 }) => {
   let connection;
+  let isCommitted = false;
   try {
     connection = await pool.getConnection();
     await connection.beginTransaction();
@@ -1826,82 +1838,87 @@ const processAuthoritativePaymentSettlement = async ({
     }
 
     await connection.commit();
+    let isCommitted = true;
 
     logger.info(`Authoritative payment settled: Order ${orderId}, Payment ${paymentId}, Amount ₹${finalAmount}`);
 
-    // 5. Log Activity & Notifications (only once on first settlement)
-    if (finalUserId) {
-      await logActivity(finalUserId, 'billing', 'payment_success', 'service_requests', resolvedTicketId || resolvedInvoiceId, {
-        paymentId,
-        orderId,
-        amount: finalAmount,
-        method: paymentMethod
-      }, ip);
-    }
-
-    // Notifications to Admin & Tech
+    // 5. Log Activity & Notifications (only once on first settlement; isolated from transaction)
     try {
-      let customerName = 'Customer';
-      let ticketRef = resolvedTicketId ? `#${resolvedTicketId}` : (resolvedInvoiceId ? `Invoice #${resolvedInvoiceId}` : 'N/A');
-      let deviceInfo = 'Device Repair';
+      if (finalUserId) {
+        await logActivity(finalUserId, 'billing', 'payment_success', 'service_requests', resolvedTicketId || resolvedInvoiceId, {
+          paymentId,
+          orderId,
+          amount: finalAmount,
+          method: paymentMethod
+        }, ip);
+      }
+
+      // Notifications to Admin & Tech
+      try {
+        let customerName = 'Customer';
+        let ticketRef = resolvedTicketId ? `#${resolvedTicketId}` : (resolvedInvoiceId ? `Invoice #${resolvedInvoiceId}` : 'N/A');
+        let deviceInfo = 'Device Repair';
+
+        if (resolvedTicketId) {
+          const [tks] = await connection.query(
+            'SELECT ticket_number, customer_name, brand, model_number, device_category FROM service_requests WHERE id = ? LIMIT 1',
+            [resolvedTicketId]
+          );
+          if (tks.length > 0) {
+            const t = tks[0];
+            if (t.customer_name) customerName = t.customer_name;
+            if (t.ticket_number) ticketRef = t.ticket_number;
+            const dev = `${t.brand || ''} ${t.model_number || ''}`.trim() || t.device_category;
+            if (dev) deviceInfo = dev;
+          }
+        }
+
+        if (customerName === 'Customer' && finalUserId) {
+          const [usrs] = await connection.query('SELECT name, email FROM users WHERE id = ? LIMIT 1', [finalUserId]);
+          if (usrs.length > 0 && usrs[0].name) {
+            customerName = usrs[0].name;
+          }
+        }
+
+        const paymentTimestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+        const adminMessage = [
+          `Customer: ${customerName}`,
+          `Repair Ticket: ${ticketRef} (Ticket ID: ${ticketRef})`,
+          `Device: ${deviceInfo}`,
+          `Amount Paid: ₹${finalAmount.toFixed(2)} (Amount: ₹${finalAmount.toFixed(2)})`,
+          `Payment Date: ${paymentTimestamp}`,
+          `Status: Paid`,
+          `Transaction ID: ${paymentId} | Ref: ${paymentId}`
+        ].join(' | ');
+
+        const [admins] = await connection.query("SELECT id FROM users WHERE role = 'admin'");
+        for (const admin of admins) {
+          await connection.query(
+            `INSERT INTO notifications (user_id, ticket_id, title, message, sender_id)
+             VALUES (?, ?, 'Payment Received Successfully', ?, ?)`,
+            [admin.id, resolvedTicketId || null, adminMessage, finalUserId || null]
+          );
+        }
+      } catch (e) {
+        logger.debug('Admin payment notification error: ' + e.message);
+      }
 
       if (resolvedTicketId) {
-        const [tks] = await connection.query(
-          'SELECT ticket_number, customer_name, brand, model_number, device_category FROM service_requests WHERE id = ? LIMIT 1',
-          [resolvedTicketId]
-        );
-        if (tks.length > 0) {
-          const t = tks[0];
-          if (t.customer_name) customerName = t.customer_name;
-          if (t.ticket_number) ticketRef = t.ticket_number;
-          const dev = `${t.brand || ''} ${t.model_number || ''}`.trim() || t.device_category;
-          if (dev) deviceInfo = dev;
+        try {
+          await notifyTechnicianOnPayment({
+            connection,
+            ticketId: resolvedTicketId,
+            paymentId,
+            amount: finalAmount,
+            senderId: finalUserId || null,
+            paymentMethod
+          });
+        } catch (techNotifErr) {
+          logger.debug('Technician payment notification error: ' + techNotifErr.message);
         }
       }
-
-      if (customerName === 'Customer' && finalUserId) {
-        const [usrs] = await connection.query('SELECT name, email FROM users WHERE id = ? LIMIT 1', [finalUserId]);
-        if (usrs.length > 0 && usrs[0].name) {
-          customerName = usrs[0].name;
-        }
-      }
-
-      const paymentTimestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-      const adminMessage = [
-        `Customer: ${customerName}`,
-        `Repair Ticket: ${ticketRef} (Ticket ID: ${ticketRef})`,
-        `Device: ${deviceInfo}`,
-        `Amount Paid: ₹${finalAmount.toFixed(2)} (Amount: ₹${finalAmount.toFixed(2)})`,
-        `Payment Date: ${paymentTimestamp}`,
-        `Status: Paid`,
-        `Transaction ID: ${paymentId} | Ref: ${paymentId}`
-      ].join(' | ');
-
-      const [admins] = await connection.query("SELECT id FROM users WHERE role = 'admin'");
-      for (const admin of admins) {
-        await connection.query(
-          `INSERT INTO notifications (user_id, ticket_id, title, message, sender_id)
-           VALUES (?, ?, 'Payment Received Successfully', ?, ?)`,
-          [admin.id, resolvedTicketId || null, adminMessage, finalUserId || null]
-        );
-      }
-    } catch (e) {
-      logger.debug('Admin payment notification error: ' + e.message);
-    }
-
-    if (resolvedTicketId) {
-      try {
-        await notifyTechnicianOnPayment({
-          connection,
-          ticketId: resolvedTicketId,
-          paymentId,
-          amount: finalAmount,
-          senderId: finalUserId || null,
-          paymentMethod
-        });
-      } catch (techNotifErr) {
-        logger.debug('Technician payment notification error: ' + techNotifErr.message);
-      }
+    } catch (postCommitErr) {
+      logger.warn('Non-fatal error in post-settlement notification queries: ' + postCommitErr.message);
     }
 
     // Generate guest token
@@ -1945,7 +1962,13 @@ const processAuthoritativePaymentSettlement = async ({
       }
     };
   } catch (err) {
-    if (connection) await connection.rollback();
+    if (connection && !isCommitted) {
+      try {
+        await connection.rollback();
+      } catch (rbErr) {
+        logger.debug('Rollback error: ' + rbErr.message);
+      }
+    }
     throw err;
   } finally {
     if (connection) connection.release();
@@ -2140,7 +2163,7 @@ const handleRazorpayWebhook = async (req, res, next) => {
       .update(rawBody)
       .digest('hex');
 
-    if (expectedSignature !== signature) {
+    if (!timingSafeMatch(expectedSignature, signature)) {
       logger.warn('Razorpay webhook signature mismatch.');
       return res.status(400).json({ status: 'invalid_signature' });
     }
@@ -2229,12 +2252,18 @@ const handleRazorpayWebhook = async (req, res, next) => {
 };
 
 /**
- * Process invoice payment (Direct / Simulated or manual settlement)
+ * Process invoice payment (Manual offline administrative settlement)
+ * Strict Security: Restricted exclusively to administrators for manual offline reconciliation.
  */
 const payInvoice = async (req, res, next) => {
-  const { invoiceId, paymentMethod = 'card' } = req.body;
-  const { role, id: authUserId } = req.user;
+  const { invoiceId, paymentMethod = 'Direct' } = req.body;
+  const role = req.user?.role;
   let connection;
+
+  // Strict Security Guard: Only administrators can record direct manual offline invoice settlements
+  if (role !== 'admin') {
+    return res.status(403).json(formatResponse(false, 'Forbidden. Direct offline payment recording is restricted to administrators. Customers must complete payment via the payment gateway.'));
+  }
 
   try {
     connection = await pool.getConnection();
@@ -2249,11 +2278,6 @@ const payInvoice = async (req, res, next) => {
     }
 
     const inv = invoices[0];
-
-    // Security Check: Customers and Companies cannot pay other users' invoices
-    if ((role === 'customer' || role === 'company') && inv.user_id !== authUserId) {
-      return res.status(403).json(formatResponse(false, 'Forbidden. Access restricted.'));
-    }
 
     if (inv.status === 'Paid') {
       return res.status(400).json(formatResponse(false, 'Invoice is already paid.'));
@@ -2282,24 +2306,42 @@ const payInvoice = async (req, res, next) => {
     const simulatedPaymentId = `pay_direct_${Date.now()}`;
     const simulatedOrderId = `order_direct_${Date.now()}`;
 
-    // Mark as Paid
-    await connection.query(
-      `UPDATE invoices 
-       SET status = "Paid", payment_id = ?, payment_order_id = ?, payment_method = ?, paid_at = NOW() 
-       WHERE id = ?`,
-      [simulatedPaymentId, simulatedOrderId, paymentMethod, invoiceId]
-    );
-
-    // If ticket is linked to invoice, update ticket too
-    if (inv.ticket_id) {
+    // Execute multi-table updates in an atomic database transaction
+    await connection.beginTransaction();
+    try {
+      // Mark as Paid
       await connection.query(
-        `UPDATE service_requests 
-         SET payment_status = 'paid', payment_id = ?, payment_order_id = ?, payment_method = ?, paid_at = NOW() 
+        `UPDATE invoices 
+         SET status = "Paid", payment_id = ?, payment_order_id = ?, payment_method = ?, paid_at = NOW() 
          WHERE id = ?`,
-        [simulatedPaymentId, simulatedOrderId, paymentMethod, inv.ticket_id]
+        [simulatedPaymentId, simulatedOrderId, paymentMethod, invoiceId]
       );
 
-      // Notify assigned technician on direct offline payment settlement
+      // If ticket is linked to invoice, update ticket too
+      if (inv.ticket_id) {
+        await connection.query(
+          `UPDATE service_requests 
+           SET payment_status = 'paid', payment_id = ?, payment_order_id = ?, payment_method = ?, paid_at = NOW() 
+           WHERE id = ?`,
+          [simulatedPaymentId, simulatedOrderId, paymentMethod, inv.ticket_id]
+        );
+      }
+
+      // Insert payment record
+      await connection.query(
+        `INSERT INTO payments (payment_id, order_id, invoice_id, ticket_id, user_id, amount, currency, payment_method, status, gateway)
+         VALUES (?, ?, ?, ?, ?, ?, 'INR', ?, 'paid', 'direct')`,
+        [simulatedPaymentId, simulatedOrderId, invoiceId, inv.ticket_id || null, inv.user_id, inv.amount, paymentMethod]
+      );
+
+      await connection.commit();
+    } catch (txErr) {
+      await connection.rollback();
+      throw txErr;
+    }
+
+    // Post-commit side effects: Technician notification & activity log
+    if (inv.ticket_id) {
       try {
         await notifyTechnicianOnPayment({
           connection,
@@ -2313,17 +2355,14 @@ const payInvoice = async (req, res, next) => {
       }
     }
 
-    // Insert payment record
-    await connection.query(
-      `INSERT INTO payments (payment_id, order_id, invoice_id, ticket_id, user_id, amount, currency, payment_method, status, gateway)
-       VALUES (?, ?, ?, ?, ?, ?, 'INR', ?, 'paid', 'direct')`,
-      [simulatedPaymentId, simulatedOrderId, invoiceId, inv.ticket_id || null, inv.user_id, inv.amount, paymentMethod]
-    );
-
-    logger.info(`Invoice marked as Paid: ${invoiceId}`);
+    logger.info(`Invoice marked as Paid by admin (ID: ${req.user.id}): ${invoiceId}`);
 
     // Log Activity
-    await logActivity(req.user.id, 'billing', 'pay_invoice', 'invoices', invoiceId, { status: 'Paid', amount: inv.amount }, req.ip);
+    try {
+      await logActivity(req.user.id, 'billing', 'pay_invoice', 'invoices', invoiceId, { status: 'Paid', amount: inv.amount, recordedBy: 'admin' }, req.ip);
+    } catch (actErr) {
+      logger.debug('Activity logging error on payInvoice: ' + actErr.message);
+    }
 
     return res.status(200).json(formatResponse(true, 'Payment recorded successfully. Invoice status is now Paid.', {
       invoiceId,
@@ -2357,6 +2396,7 @@ const initiateOfflinePayment = async (req, res, next) => {
   }
 
   let connection;
+  let isCommitted = false;
   try {
     connection = await pool.getConnection();
     await connection.beginTransaction();
@@ -2908,6 +2948,7 @@ const recordCashCollected = async (req, res, next) => {
   }
 
   let connection;
+  let isCommitted = false;
   try {
     connection = await pool.getConnection();
     await connection.beginTransaction();
@@ -3124,6 +3165,7 @@ const verifyOfflinePayment = async (req, res, next) => {
   }
 
   let connection;
+  let isCommitted = false;
   try {
     connection = await pool.getConnection();
     await connection.beginTransaction();
@@ -3133,16 +3175,16 @@ const verifyOfflinePayment = async (req, res, next) => {
     const pmtParams = [];
 
     if (paymentId) {
-      pmtQuery += '(payment_id = ? OR id = ?) LIMIT 1';
+      pmtQuery += '(payment_id = ? OR id = ?) LIMIT 1 FOR UPDATE';
       pmtParams.push(paymentId, paymentId);
     } else if (orderId) {
-      pmtQuery += 'order_id = ? LIMIT 1';
+      pmtQuery += 'order_id = ? LIMIT 1 FOR UPDATE';
       pmtParams.push(orderId);
     } else if (ticketId) {
-      pmtQuery += "ticket_id = ? AND status = 'pending_verification' ORDER BY id DESC LIMIT 1";
+      pmtQuery += "ticket_id = ? AND status = 'pending_verification' ORDER BY id DESC LIMIT 1 FOR UPDATE";
       pmtParams.push(ticketId);
     } else if (invoiceId) {
-      pmtQuery += "invoice_id = ? AND status = 'pending_verification' ORDER BY id DESC LIMIT 1";
+      pmtQuery += "invoice_id = ? AND status = 'pending_verification' ORDER BY id DESC LIMIT 1 FOR UPDATE";
       pmtParams.push(invoiceId);
     } else {
       await connection.rollback();
@@ -3289,7 +3331,7 @@ const verifyOfflinePayment = async (req, res, next) => {
         ? (payment.reference_note ? `${payment.reference_note} | Verified: ${notes}` : `Verified: ${notes}`)
         : payment.reference_note;
 
-      await connection.query(
+      const [updatePaymentResult] = await connection.query(
         `UPDATE payments 
          SET status = 'paid', 
              verification_status = 'verified', 
@@ -3298,9 +3340,14 @@ const verifyOfflinePayment = async (req, res, next) => {
              invoice_id = COALESCE(invoice_id, ?),
              collection_status = 'collected',
              reference_note = ?
-         WHERE id = ?`,
+         WHERE id = ? AND status = 'pending_verification'`,
         [adminId, resolvedInvoiceId || null, updatedNote, payment.id]
       );
+
+      if (updatePaymentResult.affectedRows !== 1) {
+        await connection.rollback();
+        return res.status(409).json(formatResponse(false, 'Payment status conflict: payment was already verified or modified concurrently.'));
+      }
 
       await connection.commit();
 
@@ -3381,7 +3428,7 @@ const verifyOfflinePayment = async (req, res, next) => {
         ? `${payment.reference_note} | Rejected: ${rejectionReason}`
         : `Rejected: ${rejectionReason}`;
 
-      await connection.query(
+      const [rejectPaymentResult] = await connection.query(
         `UPDATE payments 
          SET status = 'rejected', 
              verification_status = 'rejected', 
@@ -3389,9 +3436,14 @@ const verifyOfflinePayment = async (req, res, next) => {
              verified_at = NOW(),
              error_message = ?,
              reference_note = ?
-         WHERE id = ?`,
+         WHERE id = ? AND status = 'pending_verification'`,
         [adminId, rejectionReason, updatedNote, payment.id]
       );
+
+      if (rejectPaymentResult.affectedRows !== 1) {
+        await connection.rollback();
+        return res.status(409).json(formatResponse(false, 'Payment status conflict: payment was already rejected or modified concurrently.'));
+      }
 
       // Update ticket payment status to 'rejected'
       if (resolvedTicketId) {

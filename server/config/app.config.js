@@ -35,11 +35,21 @@ if (runningUnderPassenger && nodeEnv !== 'production') {
 
 
 const env = process.env.NODE_ENV || 'development';
+const serverPort = parseInt(process.env.PORT, 10) || 5000;
 const corsOriginValue = process.env.CORS_ORIGIN;
 const corsOrigins = (corsOriginValue || 'http://localhost:5173,http://localhost:3000,http://localhost:3001')
   .split(',')
   .map(origin => origin.trim())
   .filter(Boolean);
+
+if (env !== 'production') {
+  if (!corsOrigins.includes(`http://localhost:${serverPort}`)) {
+    corsOrigins.push(`http://localhost:${serverPort}`);
+  }
+  if (!corsOrigins.includes(`http://127.0.0.1:${serverPort}`)) {
+    corsOrigins.push(`http://127.0.0.1:${serverPort}`);
+  }
+}
 const jwtSecret = process.env.JWT_SECRET;
 const insecureJwtSecret = !jwtSecret
   || jwtSecret.length < 32
@@ -58,8 +68,19 @@ if (env === 'production' && corsOrigins.includes('*')) {
   throw new Error('CORS_ORIGIN cannot use "*" in production. List trusted origins explicitly.');
 }
 
-if (env === 'production' && (!process.env.DB_USER || !process.env.DB_NAME)) {
-  throw new Error('DB_USER and DB_NAME must be set in production. Check the server .env file.');
+if (env === 'production' && (!process.env.DB_HOST || !process.env.DB_USER || !process.env.DB_NAME)) {
+  throw new Error('DB_HOST, DB_USER, and DB_NAME must be set in production. Check the server .env file.');
+}
+
+if (env === 'production' && !process.env.DB_PASSWORD) {
+  throw new Error('DB_PASSWORD must be configured in production. Blank database passwords are not allowed.');
+}
+
+if (env === 'production') {
+  const encKey = process.env.SETTINGS_ENCRYPTION_KEY;
+  if (!encKey || !/^[0-9a-fA-F]{64}$/.test(encKey.trim())) {
+    throw new Error('SETTINGS_ENCRYPTION_KEY must be a valid 64-character hex string (32 bytes) in production.');
+  }
 }
 
 const rawBuildPath = process.env.FRONTEND_BUILD_PATH || '../client/dist';

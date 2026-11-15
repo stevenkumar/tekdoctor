@@ -1,4 +1,5 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const config = require('../config/app.config');
 const { pool } = require('../config/db.config');
@@ -12,6 +13,9 @@ const {
     hashOtp,
     verifyOtpHash,
     generatePendingChangePasswordToken,
+    storePendingPasswordHash,
+    getPendingPasswordHash,
+    clearPendingPasswordHash,
     maskEmail,
     generateToken
 } = require('../utils/auth.helpers');
@@ -1713,16 +1717,17 @@ const changePassword = async (req, res, next) => {
             expiresInMinutes: 5
         });
 
-        if (config.env === 'development' || config.env === 'test') {
-            logger.info(`[DEV ADMIN PASSWORD CHANGE OTP] User: ${user.email} | OTP: ${otp}`);
-        }
+        logger.info(`[Admin Password Change OTP Dispatched] User: ${user.email}`);
 
         await logActivity(connection, user.id, 'admin_change_password_otp_dispatched', 'users', user.id, { email: user.email }, req.ip);
 
         const salt = await bcrypt.genSalt(12);
         const newPasswordHash = await bcrypt.hash(newPassword, salt);
 
-        const pendingToken = generatePendingChangePasswordToken(user, newPasswordHash);
+        const sessionId = crypto.randomBytes(32).toString('hex');
+        storePendingPasswordHash(sessionId, newPasswordHash, user.id);
+
+        const pendingToken = generatePendingChangePasswordToken(user, sessionId);
 
         return res.status(200).json(formatResponse(true, 'A 6-digit verification code has been sent to your registered Admin email.', {
             requiresOtp: true,
@@ -1750,13 +1755,18 @@ const verifyChangePasswordOtp = async (req, res, next) => {
 
         let decoded;
         try {
-            decoded = jwt.verify(pendingToken, config.jwt.secret);
+            decoded = jwt.verify(pendingToken, config.jwt.secret, { algorithms: ['HS256'] });
         } catch (err) {
             return res.status(400).json(formatResponse(false, 'Invalid or expired password change session. Please try again.'));
         }
 
-        if (decoded.type !== 'admin_change_password_pending' || decoded.role !== 'admin' || decoded.id !== req.user.id) {
+        if (decoded.type !== 'admin_change_password_pending' || decoded.role !== 'admin' || decoded.id !== req.user.id || !decoded.sessionId) {
             return res.status(400).json(formatResponse(false, 'Invalid password change session token.'));
+        }
+
+        const newPasswordHash = getPendingPasswordHash(decoded.sessionId, decoded.id);
+        if (!newPasswordHash) {
+            return res.status(400).json(formatResponse(false, 'Password change session has expired or is invalid. Please start over.'));
         }
 
         connection = await pool.getConnection();
@@ -1802,8 +1812,11 @@ const verifyChangePasswordOtp = async (req, res, next) => {
         // Update password and bump token_version in database
         await connection.query(
             'UPDATE users SET password = ?, token_version = token_version + 1 WHERE id = ?',
-            [decoded.newPasswordHash, decoded.id]
+            [newPasswordHash, decoded.id]
         );
+
+        // Clear server-side pending password store
+        clearPendingPasswordHash(decoded.sessionId);
 
         const [userRows] = await connection.query('SELECT id, name, email, role, token_version FROM users WHERE id = ? LIMIT 1', [decoded.id]);
         const updatedUser = userRows[0];
@@ -1892,9 +1905,7 @@ const resendChangePasswordOtp = async (req, res, next) => {
             });
         }
 
-        if (config.env === 'development' || config.env === 'test') {
-            logger.info(`[DEV ADMIN RESEND CHANGE PASSWORD OTP] User: ${userEmail} | OTP: ${newOtp}`);
-        }
+        logger.info(`[Admin Password Change OTP Resent] User: ${userEmail}`);
 
         await logActivity(connection, decoded.id, 'admin_change_password_otp_resent', 'users', decoded.id, { email: userEmail }, req.ip);
 
@@ -1927,6 +1938,11 @@ const resetUserPassword = async (req, res, next) => {
         }
 
         const targetUser = rows[0];
+
+        // Security check: Admins cannot have their password reset via this endpoint to prevent MFA bypass
+        if (targetUser.role === 'admin') {
+            return res.status(403).json(formatResponse(false, 'Admins must use the OTP-verified change-password flow.'));
+        }
 
         const salt = await bcrypt.genSalt(12);
         const hashedPassword = await bcrypt.hash(newPassword, salt);

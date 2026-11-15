@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   KeyRound,
   ShieldCheck,
@@ -54,7 +54,7 @@ import { downloadPaymentBillPdf, printPaymentBill, type PaymentReceiptData } fro
 
 const getFileUrl = (path: string | null) => {
   if (!path) return null;
-  const base = (appConfig.apiUrl || window.location.origin).replace(/\/$/, '');
+  const base = (appConfig.apiUrl.startsWith('http') ? appConfig.apiUrl : window.location.origin).replace(/\/$/, '');
   const cleanPath = path.replace(/^\//, '');
   return `${base}/${cleanPath}`;
 };
@@ -97,6 +97,7 @@ export default function ProfilePage() {
   const { user, token, isAuthenticated, updateToken, logout } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const shouldReduceMotion = useReducedMotion();
 
   // Tab State
   const initialTab = (searchParams.get('tab') as DashboardTab) || 'current_repairs';
@@ -220,9 +221,11 @@ export default function ProfilePage() {
     setLoadingHistory(true);
     repairApi.getMyHistory(token, pageIndex, 50).then((res) => {
       if (res.ok && res.data) {
-        setHistory(res.data.data.data);
-        setHistoryTotal(res.data.data.pagination.total);
-        setHistoryTotalPages(res.data.data.pagination.totalPages);
+        const raw = (res.data as any)?.data;
+        const list = Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []);
+        setHistory(list);
+        setHistoryTotal(raw?.pagination?.total || list.length);
+        setHistoryTotalPages(raw?.pagination?.totalPages || 1);
         setHistoryPage(pageIndex);
       }
     }).finally(() => setLoadingHistory(false));
@@ -690,10 +693,10 @@ export default function ProfilePage() {
 
               {/* Drawer Content */}
               <motion.div
-                initial={{ x: '100%' }}
-                animate={{ x: 0 }}
-                exit={{ x: '100%' }}
-                transition={{ type: 'spring', damping: 25, stiffness: 250 }}
+                initial={shouldReduceMotion ? { opacity: 0 } : { x: '100%' }}
+                animate={shouldReduceMotion ? { opacity: 1 } : { x: 0 }}
+                exit={shouldReduceMotion ? { opacity: 0 } : { x: '100%' }}
+                transition={shouldReduceMotion ? { duration: 0.1 } : { type: 'spring', damping: 25, stiffness: 250 }}
                 className="relative w-[85%] max-w-sm h-full bg-[#0a0a0c] border-l border-zinc-800 p-5 flex flex-col justify-between overflow-y-auto shadow-2xl z-10"
               >
                 <div className="space-y-6">
@@ -852,8 +855,15 @@ export default function ProfilePage() {
           </motion.div>
         )}
 
-        {/* ── TAB 1: Current Repairs ────────────────────────────────────────── */}
-        {activeTab === 'current_repairs' && (
+        {/* ── TAB WORKSPACE (Keyed for smooth tab transitions) ───────────── */}
+        <motion.div
+          key={activeTab}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: shouldReduceMotion ? 0.01 : 0.15 }}
+        >
+          {/* ── TAB 1: Current Repairs ────────────────────────────────────────── */}
+          {activeTab === 'current_repairs' && (
           <div className="space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
@@ -1781,6 +1791,7 @@ export default function ProfilePage() {
             </div>
           </div>
         )}
+        </motion.div>
       </div>
 
       {/* Reject Estimate Reason Modal */}
@@ -1795,9 +1806,10 @@ export default function ProfilePage() {
               className="fixed inset-0 bg-black/80 backdrop-blur-sm"
             />
             <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
+              initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.95 }}
+              animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1 }}
+              exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.95 }}
+              transition={{ duration: shouldReduceMotion ? 0.01 : 0.2 }}
               className="relative w-full max-w-md bg-zinc-950 border border-zinc-800 rounded-2xl p-6 shadow-2xl z-10 space-y-4"
             >
               <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
@@ -1866,9 +1878,10 @@ export default function ProfilePage() {
       {feedbackTicketId && (
         <CustomerFeedbackModal
           isOpen={feedbackOpen}
-          onClose={() => {
-            setFeedbackOpen(false);
+          onClose={() => setFeedbackOpen(false)}
+          onExitComplete={() => {
             setFeedbackTicketId(null);
+            setFeedbackTicketNumber('');
           }}
           ticketId={feedbackTicketId}
           ticketNumber={feedbackTicketNumber}

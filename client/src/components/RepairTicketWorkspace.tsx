@@ -26,7 +26,7 @@ import { appConfig } from '@/config/appConfig';
 
 const getFileUrl = (path: string | null) => {
     if (!path) return null;
-    const base = (appConfig.apiUrl || window.location.origin).replace(/\/$/, '');
+    const base = (appConfig.apiUrl.startsWith('http') ? appConfig.apiUrl : window.location.origin).replace(/\/$/, '');
     const cleanPath = path.replace(/^\//, '');
     return `${base}/${cleanPath}`;
 };

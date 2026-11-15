@@ -46,7 +46,9 @@ export default function DashboardOverview() {
                 }
 
                 if (notifsRes.ok && notifsRes.data) {
-                    setNotifications(notifsRes.data.data);
+                    const rawNotifs = (notifsRes.data as any)?.data;
+                    const notifList = Array.isArray(rawNotifs) ? rawNotifs : (Array.isArray(notifsRes.data) ? notifsRes.data : []);
+                    setNotifications(notifList);
                     if (typeof notifsRes.data.unreadCount === 'number') {
                         setServerUnreadCount(notifsRes.data.unreadCount);
                     }
@@ -100,7 +102,9 @@ export default function DashboardOverview() {
         try {
             const res = await repairApi.getRequests(token, statusVal, 1, 50);
             if (res.ok && res.data) {
-                setFilteredTickets((res.data.data as any).data || []);
+                const raw = (res.data as any)?.data;
+                const list = Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []);
+                setFilteredTickets(list);
             }
         } finally {
             setIsFiltering(false);

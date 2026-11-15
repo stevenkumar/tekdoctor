@@ -1540,32 +1540,28 @@ const MIGRATIONS = [
   },
   {
     version: '2026_10_admin_email_transition',
-    name: 'Transition Default Admin Email to vkvseri@gmail.com',
+    name: 'Transition Default Admin Email to configured initial admin',
     isSatisfied: async (connection) => {
+      // Satisfied if an administrator account already exists in the database
       const [rows] = await connection.query(
-        'SELECT id FROM users WHERE email = "vkvseri@gmail.com" AND role = "admin" LIMIT 1'
+        'SELECT id FROM users WHERE role = "admin" LIMIT 1'
       );
       return rows.length > 0;
     },
     apply: async (connection) => {
-      const targetEmail = 'vkvseri@gmail.com';
-      const initialPassword = config.initialAdmin?.password || 'VIVEKvKUMAR';
-      const salt = await bcrypt.genSalt(12);
-      const hashedPassword = await bcrypt.hash(initialPassword, salt);
-
-      // Check if an existing admin account exists with another email
+      // Check if an existing admin account already exists
       const [existingAdmins] = await connection.query(
         'SELECT id, email FROM users WHERE role = "admin" LIMIT 1'
       );
 
       if (existingAdmins.length > 0) {
-        const oldAdmin = existingAdmins[0];
-        await connection.query(
-          'UPDATE users SET email = ?, password = ?, token_version = token_version + 1 WHERE id = ?',
-          [targetEmail, hashedPassword, oldAdmin.id]
-        );
-        console.log(`[Migration:2026_10] Safely updated existing admin (ID: ${oldAdmin.id}, old email: ${oldAdmin.email}) to ${targetEmail}`);
+        // Never overwrite existing administrator email or password!
+        console.log(`[Migration:2026_10] Preserved existing admin credentials (ID: ${existingAdmins[0].id}, email: ${existingAdmins[0].email}).`);
       } else {
+        const targetEmail = config.initialAdmin?.email || 'admin@tekdoctor.in';
+        const initialPassword = config.initialAdmin?.password || 'Admin@123';
+        const salt = await bcrypt.genSalt(12);
+        const hashedPassword = await bcrypt.hash(initialPassword, salt);
         await connection.query(
           'INSERT INTO users (name, email, password, role, is_active, token_version) VALUES (?, ?, ?, "admin", 1, 1)',
           ['TekDoctor Admin', targetEmail, hashedPassword]
@@ -1897,6 +1893,24 @@ const MIGRATIONS = [
       `);
 
       console.log('[Migration:2026_15] Applied AMC Phase 3 final hardening schema enhancements.');
+    }
+  },
+  {
+    version: '2026_16_performance_indexes',
+    name: 'Add idempotent performance indexes for service_requests (mobile, email, status+created_at) and messages (repair_request_id+created_at)',
+    isSatisfied: async (connection) => {
+      const idxSrMobile = await checkIndexExists(connection, 'service_requests', 'idx_sr_mobile');
+      const idxSrEmail = await checkIndexExists(connection, 'service_requests', 'idx_sr_email');
+      const idxSrStatusCreated = await checkIndexExists(connection, 'service_requests', 'idx_sr_status_created');
+      const idxMsgRepairCreated = await checkIndexExists(connection, 'messages', 'idx_msg_repair_created');
+      return idxSrMobile && idxSrEmail && idxSrStatusCreated && idxMsgRepairCreated;
+    },
+    apply: async (connection) => {
+      await addIndexSafe(connection, 'service_requests', 'idx_sr_mobile', 'mobile');
+      await addIndexSafe(connection, 'service_requests', 'idx_sr_email', 'email');
+      await addIndexSafe(connection, 'service_requests', 'idx_sr_status_created', 'status, created_at');
+      await addIndexSafe(connection, 'messages', 'idx_msg_repair_created', 'repair_request_id, created_at');
+      console.log('[Migration:2026_16] Created performance indexes for service_requests and messages.');
     }
   }
 ];

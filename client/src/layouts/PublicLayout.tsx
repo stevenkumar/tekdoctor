@@ -21,8 +21,14 @@ export default function PublicLayout() {
   const { flattenedSettings } = useSiteContext();
   const location = useLocation();
 
-  // Admin and Technician should never see the public website while logged in
-  if (isAuthenticated) {
+  // Admin and Technician should never see the public website while logged in,
+  // except for public verification, invoice payment, and receipt views.
+  const isExemptStaffRoute =
+    location.pathname.startsWith('/verify-certificate') ||
+    location.pathname.startsWith('/billing/pay') ||
+    location.pathname.startsWith('/receipt');
+
+  if (isAuthenticated && !isExemptStaffRoute) {
     const searchParams = new URLSearchParams(location.search);
     const ticketParam = searchParams.get('id') || searchParams.get('ticket') || searchParams.get('ticketId');
 
@@ -61,12 +67,12 @@ export default function PublicLayout() {
             {flattenedSettings.company_name || 'TekDoctor'} is currently undergoing scheduled maintenance to improve our services. We will be back online shortly. Thank you for your patience!
           </p>
 
-          {/* <div className="text-[11px] text-zinc-600 font-mono tracking-wide uppercase border-t border-zinc-900 pt-4">
-            System Administrators?{" "}
+          <div className="text-[11px] text-zinc-500 font-mono tracking-wide uppercase border-t border-zinc-900 pt-4">
+            System Administrators?{' '}
             <Link to={ROUTES.SIGN_IN} className="text-neon-cyan hover:underline transition-all hover:text-white">
               Log In Here
             </Link>
-          </div> */}
+          </div>
         </div>
       </div>
     );

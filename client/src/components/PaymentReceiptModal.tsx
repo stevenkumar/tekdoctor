@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import DOMPurify from 'dompurify';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   Receipt,
   X,
@@ -50,6 +51,7 @@ export function PaymentReceiptModal({
 }: PaymentReceiptModalProps) {
   const propReceiptData = propReceiptDataExplicit ?? propReceiptAlias;
   const { token } = useAuth();
+  const shouldReduceMotion = useReducedMotion();
   const [data, setData] = useState<PaymentReceiptData | null>(propReceiptData || null);
   const [loading, setLoading] = useState<boolean>(propLoading ?? false);
   const [error, setError] = useState<string | null>(propError ?? null);
@@ -180,15 +182,19 @@ export function PaymentReceiptModal({
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm">
-          {/* Backdrop click dismiss */}
-          <div className="absolute inset-0" onClick={onClose} />
-
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: shouldReduceMotion ? 0.1 : 0.2 }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm"
+          onClick={onClose}
+        >
           <motion.div
-            initial={{ opacity: 0, scale: 0.96, y: 16 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.96, y: 16 }}
-            transition={{ duration: 0.2 }}
+            initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: 16 }}
+            animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+            exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: 16 }}
+            transition={{ duration: shouldReduceMotion ? 0.1 : 0.2 }}
             className="relative w-full max-w-3xl max-h-[92vh] flex flex-col rounded-3xl bg-zinc-950/95 border border-zinc-800 shadow-2xl overflow-hidden z-10 font-sans"
             onClick={(e) => e.stopPropagation()}
           >
@@ -262,7 +268,7 @@ export function PaymentReceiptModal({
               ) : data ? (
                 <div className="max-w-[780px] w-full mx-auto bg-white rounded-lg shadow-2xl border border-zinc-200 overflow-hidden text-slate-900">
                   {billHtml ? (
-                    <div dangerouslySetInnerHTML={{ __html: billHtml }} />
+                    <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(billHtml) }} />
                   ) : (
                     <div className="py-20 text-center text-zinc-500">
                       <Loader2 size={28} className="animate-spin text-neon-cyan mx-auto mb-2" />
@@ -316,7 +322,7 @@ export function PaymentReceiptModal({
               </div>
             </div>
           </motion.div>
-        </div>
+        </motion.div>
       )}
     </AnimatePresence>
   );

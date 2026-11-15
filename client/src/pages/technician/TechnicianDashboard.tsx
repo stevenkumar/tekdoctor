@@ -941,7 +941,7 @@ export default function TechnicianDashboard() {
 
     const getFileUrl = (filePath: string | null) => {
         if (!filePath) return null;
-        const base = appConfig.apiUrl || window.location.origin;
+        const base = appConfig.apiUrl.startsWith('http') ? appConfig.apiUrl : window.location.origin;
         const cleanBase = base.endsWith('/') ? base.slice(0, -1) : base;
         const cleanPath = filePath.replace(/^\//, '');
         return `${cleanBase}/${cleanPath}`;

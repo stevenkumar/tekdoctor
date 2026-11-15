@@ -4,6 +4,18 @@
  * Fully compliant with Indian GST (CGST/SGST/IGST), SAC codes, and corporate billing standards.
  */
 
+import DOMPurify from 'dompurify';
+
+export function escapeHtml(str: any): string {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export interface PaymentReceiptLineItem {
   id?: number | string;
   description: string;
@@ -192,7 +204,11 @@ export async function downloadPaymentBillPdf(bill: PaymentReceiptData): Promise<
   container.style.left = '-9999px';
   container.style.width = '820px';
 
-  container.innerHTML = generatePaymentBillHtmlContent(bill, logoSrc, curSym, totalAmount, totalPaid, balanceDue, taxRate, taxableAmount, totalTax, isInterstate, cgstRate, cgstAmount, sgstRate, sgstAmount, igstRate, igstAmount, formatDate);
+  const rawHtml = generatePaymentBillHtmlContent(bill, logoSrc, curSym, totalAmount, totalPaid, balanceDue, taxRate, taxableAmount, totalTax, isInterstate, cgstRate, cgstAmount, sgstRate, sgstAmount, igstRate, igstAmount, formatDate);
+  container.innerHTML = DOMPurify.sanitize(rawHtml, {
+    ADD_ATTR: ['crossorigin'],
+    ADD_TAGS: ['style']
+  });
 
   document.body.appendChild(container);
 
@@ -262,6 +278,36 @@ export function generatePaymentBillHtmlContent(
   igstAmount: string,
   formatDate: (d: string | Date) => string
 ): string {
+  const safeBusinessName = escapeHtml(bill.business?.name || 'TekDoctor');
+  const safeTagline = escapeHtml(bill.business?.tagline || "Your Computer's Personal Care Specialist");
+  const safeAddress = escapeHtml(bill.business?.address || 'Silicon Valley Hub, Mumbai, Maharashtra, India');
+  const safeEmail = escapeHtml(bill.business?.email || 'support@tekdoctor.in');
+  const safePhone = escapeHtml(bill.business?.phone || '+91 98765 43210');
+  const safeGstin = escapeHtml(bill.business?.gstin || '27AAAAA0000A1Z5');
+  const safeInvoiceNo = escapeHtml(bill.invoiceId || bill.receiptNumber || 'Receipt');
+
+  const safeCustomerName = escapeHtml(bill.customer.companyName || bill.customer.name);
+  const safeContactPerson = escapeHtml(bill.customer.contactPerson);
+  const safeCustomerEmail = escapeHtml(bill.customer.email);
+  const safeCustomerMobile = escapeHtml(bill.customer.mobile);
+  const safeCustomerAddress = escapeHtml(bill.customer.address);
+  const safeCustomerCity = escapeHtml(bill.customer.city);
+  const safeCustomerState = escapeHtml(bill.customer.state);
+  const safeCustomerZip = escapeHtml(bill.customer.zipCode);
+  const safeCompanyTaxId = escapeHtml(bill.customer.companyTaxId);
+
+  const safeTicketNumber = escapeHtml(bill.ticketNumber);
+  const safeDeviceBrand = escapeHtml(bill.device?.brand);
+  const safeDeviceModel = escapeHtml(bill.device?.modelNumber);
+  const safeDeviceCategory = escapeHtml(bill.device?.category);
+  const safeDeviceSerial = escapeHtml(bill.device?.serialNumber);
+  const safeDeviceAsset = escapeHtml(bill.device?.assetId);
+  const safeDeviceScope = escapeHtml(bill.device?.serviceType || 'Diagnostics & Repair');
+
+  const safePaymentMode = escapeHtml(bill.paymentMethod || 'Online Transfer');
+  const safePaymentId = escapeHtml(bill.paymentId);
+  const safeReferenceNote = escapeHtml(bill.referenceNote || bill.orderId);
+
   return `
     <div style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #ffffff; color: #0f172a; padding: 36px 40px; border: 1px solid #e2e8f0; border-radius: 6px; box-sizing: border-box; line-height: 1.45; max-width: 780px; width: 100%; margin: 0 auto;">
       
@@ -271,19 +317,19 @@ export function generatePaymentBillHtmlContent(
           <div style="display: flex; align-items: center; margin-bottom: 6px;">
             <img
               src="${logoSrc}"
-              alt="${bill.business?.name || 'TekDoctor'}"
+              alt="${safeBusinessName}"
               style="height: 48px; max-height: 48px; max-width: 250px; object-fit: contain; display: block;"
               crossorigin="anonymous"
             />
           </div>
           <p style="margin: 4px 0 0 0; font-size: 11px; font-weight: 700; color: #475569; letter-spacing: 0.5px; text-transform: uppercase;">
-            ${bill.business?.tagline || "Your Computer's Personal Care Specialist"}
+            ${safeTagline}
           </p>
           <div style="font-size: 10.5px; color: #334155; margin-top: 8px; line-height: 1.45;">
-            <p style="margin: 0; font-weight: 500;">${bill.business?.address || 'Silicon Valley Hub, Mumbai, Maharashtra, India'}</p>
-            <p style="margin: 2px 0 0 0;">Email: <span style="color: #0284c7;">${bill.business?.email || 'support@tekdoctor.in'}</span> | Phone: ${bill.business?.phone || '+91 98765 43210'}</p>
+            <p style="margin: 0; font-weight: 500;">${safeAddress}</p>
+            <p style="margin: 2px 0 0 0;">Email: <span style="color: #0284c7;">${safeEmail}</span> | Phone: ${safePhone}</p>
             <p style="margin: 4px 0 0 0; font-size: 11px; font-weight: 800; color: #0f172a;">
-              TEKDOCTOR GSTIN: <span style="font-family: monospace; color: #0369a1; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; border: 1px solid #bae6fd;">${bill.business?.gstin || '27AAAAA0000A1Z5'}</span>
+              TEKDOCTOR GSTIN: <span style="font-family: monospace; color: #0369a1; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; border: 1px solid #bae6fd;">${safeGstin}</span>
             </p>
           </div>
         </div>
@@ -304,7 +350,7 @@ export function generatePaymentBillHtmlContent(
             ${(bill.invoiceStatus === 'Draft' || bill.paymentStatus === 'draft') ? 'DRAFT INVOICE' : 'TAX INVOICE'}
           </h1>
           <p style="margin: 4px 0 0 0; font-size: 11px; font-family: monospace; font-weight: 700; color: #0284c7;">
-            Invoice No: ${bill.invoiceId || bill.receiptNumber}
+            Invoice No: ${safeInvoiceNo}
           </p>
           <p style="margin: 2px 0 0 0; font-size: 10.5px; color: #64748b; font-weight: 500;">
             Date of Issue: ${formatDate(bill.billDate)}
@@ -321,18 +367,18 @@ export function generatePaymentBillHtmlContent(
             BILLED TO (${bill.clientType === 'company' ? 'CORPORATE CLIENT' : 'INDIVIDUAL CUSTOMER'})
           </div>
           <div style="font-size: 14px; font-weight: 800; color: #0f172a; line-height: 1.3;">
-            ${bill.customer.companyName || bill.customer.name}
+            ${safeCustomerName}
           </div>
-          ${bill.customer.contactPerson ? `<div style="font-size: 11px; color: #334155; margin-top: 2px;">Attn: <strong>${bill.customer.contactPerson}</strong></div>` : ''}
-          <div style="font-size: 11px; color: #475569; margin-top: 3px;">Email: ${bill.customer.email}</div>
-          ${bill.customer.mobile && bill.customer.mobile !== 'N/A' ? `<div style="font-size: 11px; color: #475569;">Contact: ${bill.customer.mobile}</div>` : ''}
-          ${bill.customer.address ? `<div style="font-size: 10.5px; color: #475569; margin-top: 4px; line-height: 1.4;">${bill.customer.address}${bill.customer.city ? `, ${bill.customer.city}` : ''}${bill.customer.state ? `, ${bill.customer.state}` : ''} ${bill.customer.zipCode || ''}</div>` : ''}
+          ${safeContactPerson ? `<div style="font-size: 11px; color: #334155; margin-top: 2px;">Attn: <strong>${safeContactPerson}</strong></div>` : ''}
+          <div style="font-size: 11px; color: #475569; margin-top: 3px;">Email: ${safeCustomerEmail}</div>
+          ${safeCustomerMobile && safeCustomerMobile !== 'N/A' ? `<div style="font-size: 11px; color: #475569;">Contact: ${safeCustomerMobile}</div>` : ''}
+          ${safeCustomerAddress ? `<div style="font-size: 10.5px; color: #475569; margin-top: 4px; line-height: 1.4;">${safeCustomerAddress}${safeCustomerCity ? `, ${safeCustomerCity}` : ''}${safeCustomerState ? `, ${safeCustomerState}` : ''} ${safeCustomerZip || ''}</div>` : ''}
           
           <div style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed #cbd5e1; font-size: 11px;">
-            ${bill.customer.companyTaxId ? `
+            ${safeCompanyTaxId ? `
               <span style="font-weight: 700; color: #0f172a;">CLIENT GSTIN:</span>
               <span style="font-family: monospace; font-weight: 800; color: #0284c7; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; border: 1px solid #bae6fd; margin-left: 4px;">
-                ${bill.customer.companyTaxId}
+                ${safeCompanyTaxId}
               </span>
             ` : `
               <span style="font-weight: 600; color: #64748b; font-style: italic;">GSTIN: Unregistered / Consumer Business</span>
@@ -345,27 +391,27 @@ export function generatePaymentBillHtmlContent(
           <div style="font-size: 9.5px; font-weight: 800; color: #0284c7; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px;">
             DEVICE & SERVICE DETAILS
           </div>
-          ${bill.ticketNumber ? `
+          ${safeTicketNumber ? `
             <div style="font-size: 12.5px; font-weight: 800; color: #0f172a; margin-bottom: 3px;">
-              Repair Ticket: <span style="font-family: monospace; color: #0284c7;">${bill.ticketNumber}</span>
+              Repair Ticket: <span style="font-family: monospace; color: #0284c7;">${safeTicketNumber}</span>
             </div>
           ` : ''}
           ${bill.device ? `
             <div style="font-size: 11.5px; font-weight: 700; color: #1e293b;">
-              ${bill.device.brand} ${bill.device.modelNumber} (${bill.device.category})
+              ${safeDeviceBrand} ${safeDeviceModel} (${safeDeviceCategory})
             </div>
-            ${bill.device.serialNumber && bill.device.serialNumber !== 'N/A' ? `
+            ${safeDeviceSerial && safeDeviceSerial !== 'N/A' ? `
               <div style="font-size: 10.5px; color: #475569; margin-top: 2px;">
-                Serial No: <span style="font-family: monospace; font-weight: 600; color: #0f172a;">${bill.device.serialNumber}</span>
+                Serial No: <span style="font-family: monospace; font-weight: 600; color: #0f172a;">${safeDeviceSerial}</span>
               </div>
             ` : ''}
-            ${bill.device.assetId ? `
+            ${safeDeviceAsset ? `
               <div style="font-size: 10.5px; color: #475569;">
-                Asset ID: <span style="font-family: monospace; font-weight: 600; color: #0f172a;">${bill.device.assetId}</span>
+                Asset ID: <span style="font-family: monospace; font-weight: 600; color: #0f172a;">${safeDeviceAsset}</span>
               </div>
             ` : ''}
             <div style="font-size: 10.5px; color: #475569; margin-top: 2px;">
-              Service Scope: <strong>${bill.device.serviceType || 'Diagnostics & Repair'}</strong>
+              Service Scope: <strong>${safeDeviceScope}</strong>
             </div>
           ` : `
             <div style="font-size: 11px; color: #475569; margin-top: 4px;">
@@ -394,14 +440,16 @@ export function generatePaymentBillHtmlContent(
             const unitRate = item.unitRate !== undefined ? Number(item.unitRate) : Number(item.unitPrice || 0);
             const lineAmt = item.amount !== undefined ? Number(item.amount) : Number(item.total || (item.quantity * unitRate));
             const itemTaxRate = item.taxRate !== undefined ? Number(item.taxRate) : 18;
+            const safeDesc = escapeHtml(item.description);
+            const safeHsn = escapeHtml(item.hsnSac || item.sacCode || '9987');
             return `
               <tr style="border-bottom: 1px solid #e2e8f0; font-size: 11.5px; color: #334155; break-inside: avoid; page-break-inside: avoid;">
                 <td style="padding: 10px 10px; color: #94a3b8; font-weight: 600;">${idx + 1}</td>
                 <td style="padding: 10px 10px; font-weight: 600; color: #0f172a; word-break: break-word; overflow-wrap: anywhere;">
-                  ${item.description}
+                  ${safeDesc}
                 </td>
                 <td style="padding: 10px 8px; text-align: center; font-family: monospace; font-size: 10.5px; color: #64748b;">
-                  ${item.hsnSac || item.sacCode || '9987'}
+                  ${safeHsn}
                 </td>
                 <td style="padding: 10px 8px; text-align: center; font-weight: 600;">${item.quantity || 1}</td>
                 <td style="padding: 10px 10px; text-align: right; font-family: monospace;">${curSym}${unitRate.toFixed(2)}</td>
@@ -428,10 +476,10 @@ export function generatePaymentBillHtmlContent(
               if (isPaid) {
                 return `
                   <div>Payment Status: <strong style="color: #047857; text-transform: uppercase;">Paid & Settled</strong></div>
-                  <div>Payment Mode: <strong>${bill.paymentMethod || 'Online Transfer'}</strong></div>
-                  ${bill.paymentId ? `<div style="word-break: break-all;">Transaction Reference: <span style="font-family: monospace; font-weight: 700; color: #0f172a;">${bill.paymentId}</span></div>` : ''}
+                  <div>Payment Mode: <strong>${safePaymentMode}</strong></div>
+                  ${safePaymentId ? `<div style="word-break: break-all;">Transaction Reference: <span style="font-family: monospace; font-weight: 700; color: #0f172a;">${safePaymentId}</span></div>` : ''}
                   <div>Settlement Date: <strong>${formatDate(bill.paymentDate)}</strong></div>
-                  ${(bill.referenceNote || bill.orderId) ? `<div style="word-break: break-all;">Reference / UTR: <span style="font-family: monospace; color: #475569;">${bill.referenceNote || bill.orderId}</span></div>` : ''}
+                  ${safeReferenceNote ? `<div style="word-break: break-all;">Reference / UTR: <span style="font-family: monospace; color: #475569;">${safeReferenceNote}</span></div>` : ''}
                 `;
               }
               if (isDraft) {
@@ -571,11 +619,16 @@ export async function generatePaymentBillHtml(bill: PaymentReceiptData): Promise
     logoSrc = rawResolvedLogoUrl;
   }
 
-  return generatePaymentBillHtmlContent(
+  const rawHtml = generatePaymentBillHtmlContent(
     bill, logoSrc, curSym, totalAmount, totalPaid, balanceDue,
     taxRate, taxableAmount, totalTax, isInterstate,
     cgstRate, cgstAmount, sgstRate, sgstAmount, igstRate, igstAmount, formatDate
   );
+
+  return DOMPurify.sanitize(rawHtml, {
+    ADD_ATTR: ['crossorigin'],
+    ADD_TAGS: ['style']
+  });
 }
 
 /**
@@ -621,11 +674,15 @@ export async function printPaymentBill(bill: PaymentReceiptData): Promise<void> 
 
   const logoSrc = await getBlackLogoDataUri(rawResolvedLogoUrl);
 
-  const html = generatePaymentBillHtmlContent(
+  const rawContent = generatePaymentBillHtmlContent(
     bill, logoSrc, curSym, totalAmount, totalPaid, balanceDue,
     taxRate, taxableAmount, totalTax, isInterstate,
     cgstRate, cgstAmount, sgstRate, sgstAmount, igstRate, igstAmount, formatDate
   );
+  const html = DOMPurify.sanitize(rawContent, {
+    ADD_ATTR: ['crossorigin'],
+    ADD_TAGS: ['style']
+  });
 
   const iframe = document.createElement('iframe');
   iframe.style.position = 'fixed';

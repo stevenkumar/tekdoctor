@@ -29,21 +29,34 @@ export default function EmailSettings() {
 
     const handleSave = async () => {
         if (!token) return;
-        setSaving(true); setSaveMsg('');
-        const res = await adminApi.updateSettings(token, settings, 'email');
-        setSaveMsg(res.ok ? 'Email settings saved!' : 'Failed to save.');
-        setSaving(false);
-        if (res.ok) setTimeout(() => setSaveMsg(''), 3000);
+        setSaving(true);
+        setSaveMsg('');
+        try {
+            const res = await adminApi.updateSettings(token, settings, 'email');
+            setSaveMsg(res.ok ? 'Email settings saved!' : res.error || 'Failed to save.');
+            if (res.ok) setTimeout(() => setSaveMsg(''), 3000);
+        } catch {
+            setSaveMsg('Network error while saving email settings.');
+        } finally {
+            setSaving(false);
+        }
     };
 
     const handleTestEmail = async () => {
         if (!token) return;
-        setTesting(true); setTestMsg('');
-        const res = await adminApi.testEmailSettings(token, settings);
-        const msg = res.ok ? (res.data as any)?.message || 'Email sent!' : res.error || 'Test failed.';
-        setTestMsg(msg);
-        setTesting(false);
-        setTimeout(() => setTestMsg(''), 10000);
+        setTesting(true);
+        setTestMsg('');
+        try {
+            const res = await adminApi.testEmailSettings(token, settings);
+            const msg = res.ok ? (res.data as any)?.message || 'Email sent!' : res.error || 'Test failed.';
+            setTestMsg(msg);
+            setTimeout(() => setTestMsg(''), 10000);
+        } catch {
+            setTestMsg('Network error while sending test email.');
+            setTimeout(() => setTestMsg(''), 10000);
+        } finally {
+            setTesting(false);
+        }
     };
 
     const fields = [

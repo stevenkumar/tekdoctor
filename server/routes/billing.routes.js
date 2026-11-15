@@ -96,8 +96,8 @@ router.put('/invoices/:id/reactivate', authenticate, authorize('admin'), reactiv
 // Route: DELETE /api/billing/invoices/:id (Admin only - Voids/deactivates invoice)
 router.delete('/invoices/:id', authenticate, authorize('admin'), deleteInvoice);
 
-// Route: POST /api/billing/pay (Manual offline settlement — Admin & Technicians only)
-router.post('/pay', authenticate, authorize('admin', 'technician'), validatePayInvoice, payInvoice);
+// Route: POST /api/billing/pay (Manual offline settlement — Admin only for reconciliation)
+router.post('/pay', authenticate, authorize('admin'), validatePayInvoice, payInvoice);
 
 // ── Quotations Routes ──────────────────────────────────────────────────────────
 

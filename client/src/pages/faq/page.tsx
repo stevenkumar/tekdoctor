@@ -1,11 +1,12 @@
 'use client';
 
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ChevronDown } from 'lucide-react';
 
 export default function FAQPage() {
     const [expanded, setExpanded] = useState<number | null>(0);
+    const shouldReduceMotion = useReducedMotion();
 
     const faqs = [
         {
@@ -38,19 +39,21 @@ export default function FAQPage() {
         hidden: { opacity: 0 },
         visible: {
             opacity: 1,
-            transition: {
-                staggerChildren: 0.05,
-                delayChildren: 0.1,
-            },
+            transition: shouldReduceMotion
+                ? { duration: 0.01 }
+                : {
+                    staggerChildren: 0.05,
+                    delayChildren: 0.1,
+                },
         },
     };
 
     const itemVariants = {
-        hidden: { opacity: 0, y: 10 },
+        hidden: shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: 10 },
         visible: {
             opacity: 1,
             y: 0,
-            transition: { duration: 0.4 },
+            transition: { duration: shouldReduceMotion ? 0.01 : 0.4 },
         },
     };
 
@@ -62,9 +65,9 @@ export default function FAQPage() {
             <div className="container mx-auto px-6 relative z-10 max-w-5xl">
                 {/* Header */}
                 <motion.div
-                    initial={{ opacity: 0, y: 20 }}
+                    initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.6 }}
+                    transition={{ duration: shouldReduceMotion ? 0.01 : 0.6 }}
                     className="text-center mb-20"
                 >
                     <h2 className="text-xs font-bold text-neon-cyan uppercase tracking-[0.4em] mb-4">Questions?</h2>
@@ -88,28 +91,36 @@ export default function FAQPage() {
                             className="group"
                         >
                             <button
+                                id={`faq-question-${index}`}
+                                aria-expanded={expanded === index}
+                                aria-controls={`faq-answer-${index}`}
                                 onClick={() => setExpanded(expanded === index ? null : index)}
-                                className="w-full p-6 text-left border border-zinc-800 rounded-lg bg-zinc-900/30 hover:border-neon-cyan/50 hover:bg-zinc-900/60 transition-all duration-300 flex items-center justify-between group"
+                                className={`w-full p-6 text-left border border-zinc-800 ${
+                                    expanded === index ? 'rounded-t-lg rounded-b-none border-b-0' : 'rounded-lg'
+                                } bg-zinc-900/30 hover:border-neon-cyan/50 hover:bg-zinc-900/60 transition-all duration-300 flex items-center justify-between group`}
                             >
                                 <span className="text-lg font-bold text-white group-hover:text-neon-cyan transition-colors">
                                     {faq.question}
                                 </span>
                                 <motion.div
-                                    animate={{ rotate: expanded === index ? 180 : 0 }}
-                                    transition={{ duration: 0.3 }}
+                                    animate={shouldReduceMotion ? { rotate: 0 } : { rotate: expanded === index ? 180 : 0 }}
+                                    transition={{ duration: shouldReduceMotion ? 0.01 : 0.3 }}
                                     className="flex-shrink-0 ml-4"
                                 >
                                     <ChevronDown className="w-6 h-6 text-neon-cyan" />
                                 </motion.div>
                             </button>
 
-                            <AnimatePresence>
+                            <AnimatePresence initial={false}>
                                 {expanded === index && (
                                     <motion.div
-                                        initial={{ opacity: 0, height: 0 }}
-                                        animate={{ opacity: 1, height: 'auto' }}
-                                        exit={{ opacity: 0, height: 0 }}
-                                        transition={{ duration: 0.3 }}
+                                        id={`faq-answer-${index}`}
+                                        role="region"
+                                        aria-labelledby={`faq-question-${index}`}
+                                        initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, height: 0 }}
+                                        animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, height: 'auto' }}
+                                        exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, height: 0 }}
+                                        transition={{ duration: shouldReduceMotion ? 0.01 : 0.3 }}
                                         className="overflow-hidden"
                                     >
                                         <div className="p-6 bg-zinc-900/20 border border-t-0 border-zinc-800 rounded-b-lg text-zinc-300 leading-relaxed font-light">
@@ -124,9 +135,9 @@ export default function FAQPage() {
 
                 {/* Additional Help CTA */}
                 <motion.div
-                    initial={{ opacity: 0, y: 20 }}
+                    initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.6, delay: 0.3 }}
+                    transition={shouldReduceMotion ? { duration: 0.01 } : { duration: 0.6, delay: 0.3 }}
                     className="mt-16 text-center"
                 >
                     <p className="text-zinc-400 mb-6">Didn't find what you're looking for?</p>

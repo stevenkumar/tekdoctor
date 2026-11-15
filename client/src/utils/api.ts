@@ -105,6 +105,24 @@ export async function safeFetch<T = Record<string, unknown>>(
 
     const data = await response.json() as T;
 
+    if (response.status === 401) {
+      const isAuthEndpoint = url.includes('/api/auth/login') ||
+                             url.includes('/api/auth/signin') ||
+                             url.includes('/api/auth/admin-login') ||
+                             url.includes('/api/auth/forgot-password') ||
+                             url.includes('/api/auth/reset-password');
+      if (!isAuthEndpoint && typeof window !== 'undefined') {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        sessionStorage.clear();
+        window.dispatchEvent(new CustomEvent('auth:expired'));
+        const currentPath = window.location.pathname;
+        if (!currentPath.startsWith('/auth/signin')) {
+          window.location.href = '/auth/signin?expired=true';
+        }
+      }
+    }
+
     if (!response.ok) {
       // Extract message from the standard error shape { success, message, errors }
       let message =
@@ -235,7 +253,13 @@ export function getFileUrl(filePath: string | null | undefined): string | null {
   if (filePath.startsWith('http://') || filePath.startsWith('https://') || filePath.startsWith('data:')) {
     return filePath;
   }
-  const base = (appConfig.apiUrl || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/$/, '');
   const cleanPath = filePath.startsWith('/') ? filePath : `/${filePath}`;
+  if (appConfig.apiUrl.startsWith('http://') || appConfig.apiUrl.startsWith('https://')) {
+    try {
+      const origin = new URL(appConfig.apiUrl).origin;
+      return `${origin}${cleanPath}`;
+    } catch (_) {}
+  }
+  const base = typeof window !== 'undefined' ? window.location.origin : '';
   return `${base}${cleanPath}`;
 }

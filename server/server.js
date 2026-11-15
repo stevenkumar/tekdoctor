@@ -12,6 +12,18 @@ const { testConnection, pool } = require('./config/db.config');
 const initDatabase = require('./models/db.init');
 const logger = require('./utils/logger');
 
+// Process Crash Guards: Log full stack traces via Winston without crashing on minor rejections
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled Promise Rejection:', reason instanceof Error ? (reason.stack || reason.message) : reason);
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception:', error.stack || error.message);
+  setTimeout(() => {
+    process.exit(1);
+  }, 1000);
+});
+
 const { globalLimiter } = require('./middleware/rateLimiter.middleware');
 const { preventPrototypePollution, sanitizeRequestPayload } = require('./middleware/security.middleware');
 const errorHandler = require('./middleware/error.middleware');
@@ -86,31 +98,103 @@ app.use(helmet({
 app.use(compression());
 
 // Set up CORS
-app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps, curl, or postman)
-    if (!origin) return callback(null, true);
+// Determine trusted origins set
+const trustedOrigins = new Set();
+if (config.frontend && config.frontend.url) {
+  trustedOrigins.add(config.frontend.url.replace(/\/+$/, ''));
+}
+if (config.server && config.server.publicOrigin) {
+  trustedOrigins.add(config.server.publicOrigin.replace(/\/+$/, ''));
+}
+if (Array.isArray(config.server.corsOrigins)) {
+  config.server.corsOrigins.forEach(o => {
+    if (o && o !== '*') trustedOrigins.add(o.trim().replace(/\/+$/, ''));
+  });
+}
 
-    // Check if origin is allowed
-    const isAllowed = config.server.corsOrigins.some(allowedOrigin => {
-      // Direct match or wildcard match
-      if (allowedOrigin === '*') return true;
-      if (allowedOrigin.trim() === origin.trim()) return true;
-      return false;
-    });
+// In development, also trust standard dev hosts
+if (!config.isProduction) {
+  trustedOrigins.add(`http://localhost:${config.server.port}`);
+  trustedOrigins.add(`http://127.0.0.1:${config.server.port}`);
+  trustedOrigins.add('http://localhost:3000');
+  trustedOrigins.add('http://localhost:5173');
+}
 
-    if (isAllowed) {
-      return callback(null, true);
-    } else {
-      const denied = new Error(`CORS policy deviation: origin ${origin} is not allowed.`);
-      denied.statusCode = 403;
-      return callback(denied);
+const isOriginAllowed = (origin, req) => {
+  if (!origin) return true;
+  const cleanOrigin = origin.trim().replace(/\/+$/, '');
+
+  // Wildcard allowed
+  if (config.server.corsOrigins.includes('*')) return true;
+
+  // Direct match in trusted origins
+  if (trustedOrigins.has(cleanOrigin)) return true;
+
+  // Same-origin matching: check against server's incoming Host header
+  if (req && req.headers && req.headers.host) {
+    const host = req.headers.host;
+    if (cleanOrigin === `http://${host}` || cleanOrigin === `https://${host}`) {
+      return true;
     }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Company-ID']
-}));
+  }
+
+  // Development localhost/127.0.0.1 matching
+  if (!config.isProduction) {
+    try {
+      const parsed = new URL(cleanOrigin);
+      if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+        return true;
+      }
+    } catch (_) {}
+  }
+
+  return false;
+};
+
+// CORS options delegate with per-request awareness
+const corsOptionsDelegate = (req, callback) => {
+  const origin = req.header('Origin');
+
+  // Requests without origin header (direct navigation, curl, mobile apps, SSR)
+  if (!origin) {
+    return callback(null, {
+      origin: true,
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Company-ID']
+    });
+  }
+
+  // Static assets & non-API routes: never block static assets with 403 error
+  const isStaticOrPublicAsset = req.path.startsWith('/assets') ||
+    req.path.startsWith('/uploads') ||
+    !req.path.startsWith(config.server.apiPrefix);
+
+  if (isStaticOrPublicAsset) {
+    return callback(null, {
+      origin: true,
+      credentials: true,
+      methods: ['GET', 'HEAD', 'OPTIONS']
+    });
+  }
+
+  // For API endpoints, strictly validate origin
+  if (isOriginAllowed(origin, req)) {
+    return callback(null, {
+      origin: true,
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Company-ID']
+    });
+  }
+
+  // Origin is not allowed for API endpoint
+  const denied = new Error(`CORS policy deviation: origin ${origin} is not allowed.`);
+  denied.statusCode = 403;
+  return callback(denied);
+};
+
+app.use(cors(corsOptionsDelegate));
 
 // Mount the Razorpay webhook raw-body parser BEFORE the global JSON parser so
 // HMAC verification runs over the exact bytes Razorpay signed.
@@ -127,9 +211,6 @@ app.use(sanitizeRequestPayload);
 // Logging HTTP Requests using morgan stream with winston logger
 app.use(morgan(':remote-addr - :method :url :status :res[content-length] - :response-time ms', { stream: logger.stream }));
 
-// Apply global rate limiting to all requests
-app.use(globalLimiter);
-
 // Serve uploads folder statically (accessible at /uploads/*)
 app.use('/uploads/device-images', express.static(config.paths.deviceImages));
 app.use('/uploads/screenshots', express.static(config.paths.screenshots));
@@ -137,6 +218,20 @@ app.use('/uploads/repairs/images', express.static(config.paths.deviceImages));
 app.use('/uploads/repairs/screenshots', express.static(config.paths.screenshots));
 app.use('/uploads', express.static(config.paths.uploadsRoot));
 logger.debug(`Serving static upload files from: ${config.paths.uploadsRoot}`);
+
+// Health Check Endpoint (never rate-limited)
+app.get('/health', async (req, res) => {
+  const isDbHealthy = await testConnection();
+  res.status(isDbHealthy ? 200 : 500).json({
+    status: isDbHealthy ? 'UP' : 'DOWN',
+    env: config.env,
+    database: isDbHealthy ? 'connected' : 'disconnected',
+    timestamp: new Date()
+  });
+});
+
+// Apply global rate limiting strictly to API endpoints
+app.use(config.server.apiPrefix, globalLimiter);
 
 // Mount API routes
 app.use(`${config.server.apiPrefix}/auth`, authRoutes);
@@ -150,17 +245,6 @@ app.use(`${config.server.apiPrefix}/public`, publicRoutes);
 app.use(`${config.server.apiPrefix}/company`, companyRoutes);
 app.use(`${config.server.apiPrefix}/testimonials`, testimonialRoutes);
 app.use(`${config.server.apiPrefix}/amc`, amcRoutes);
-
-// Health Check Endpoint
-app.get('/health', async (req, res) => {
-  const isDbHealthy = await testConnection();
-  res.status(isDbHealthy ? 200 : 500).json({
-    status: isDbHealthy ? 'UP' : 'DOWN',
-    env: config.env,
-    database: isDbHealthy ? 'connected' : 'disconnected',
-    timestamp: new Date()
-  });
-});
 
 // ─── Frontend Static Files & SPA Fallback ───────────────────
 const getFrontendIndexHtml = () => {
@@ -190,31 +274,55 @@ const getFrontendIndexHtml = () => {
 };
 
 // ─── Block accidental exposure of backend source / secrets ─────
-// On the cPanel/Passenger layout the docroot IS the app root, so server.js,
-// config/, .env, node_modules/ etc. sit in the same folder as the SPA assets
-// and Apache may serve them as plain static files. The .htaccess template
-// blocks this at the Apache layer; this is the equivalent guard for any
-// request that reaches Express.
+// Strict static file extension whitelist to prevent serving .sql dumps, .log files, .md docs, etc.
+const ALLOWED_STATIC_EXTENSIONS = new Set([
+  '.js', '.css', '.html', '.png', '.jpg', '.jpeg', '.webp', '.svg', '.ico', '.woff', '.woff2', '.json', '.txt'
+]);
+
 const BLOCKED_TOP_LEVEL = new Set([
   'server.js', 'package.json', 'package-lock.json',
   'config', 'controllers', 'routes', 'middleware', 'models',
-  'utils', 'node_modules', 'logs', 'tests', 'scripts'
+  'utils', 'node_modules', 'logs', 'tests', 'scripts', 'database_backups'
 ]);
+
 app.use((req, res, next) => {
+  // Pass API, uploads, and health routes to their dedicated handlers
+  if (
+    req.path.startsWith(config.server.apiPrefix) ||
+    req.path.startsWith('/uploads') ||
+    req.path === '/health'
+  ) {
+    return next();
+  }
+
   let segment = '';
   try {
     segment = decodeURIComponent(req.path).split('/')[1] || '';
   } catch {
     segment = req.path.split('/')[1] || '';
   }
-  // Leading-dot names (.env, .git, .htaccess ...) are never valid app routes.
+
+  // Leading-dot names (.env, .git, .htaccess ...) and blocked backend folders are never valid app routes.
   if (segment.startsWith('.') || BLOCKED_TOP_LEVEL.has(segment)) {
-    return res.status(404).json({ success: false, message: 'Not found' });
+    return res.status(404).json({ success: false, message: 'Resource not found.' });
   }
+
+  // Check file extension: if requesting a file with an extension, it MUST be whitelisted
+  const ext = path.extname(req.path).toLowerCase();
+  if (ext) {
+    if (!ALLOWED_STATIC_EXTENSIONS.has(ext)) {
+      logger.warn(`Blocked request for non-whitelisted static file extension [${ext}]: ${req.path} from IP: ${req.ip}`);
+      return res.status(404).json({ success: false, message: 'Resource not found.' });
+    }
+  }
+
   next();
 });
 
-// Serve static assets from all candidate build folders
+// Serve static assets from all candidate build folders (EXCLUDING server/project root)
+const serverDir = path.resolve(__dirname);
+const projectRoot = path.resolve(__dirname, '..');
+
 const candidateStaticDirs = [
   config.paths.frontendBuild,
   path.resolve(__dirname, '../client/dist'),
@@ -225,7 +333,12 @@ const candidateStaticDirs = [
   path.resolve(process.cwd(), '../dist'),
   path.resolve(__dirname, '../public_html'),
   path.resolve(process.cwd(), 'public_html')
-];
+].filter(dir => {
+  if (!dir) return false;
+  const resolved = path.resolve(dir);
+  // Strictly prevent serving the project root or server directory as static directories
+  return resolved !== serverDir && resolved !== projectRoot;
+});
 
 const uniqueStaticDirs = [...new Set(candidateStaticDirs)].filter(dir => dir && fs.existsSync(dir));
 
@@ -233,7 +346,13 @@ uniqueStaticDirs.forEach(dir => {
   app.use(express.static(dir, {
     index: false, // Let SPA fallback handle index.html
     dotfiles: 'deny',
-    maxAge: config.isProduction ? '1d' : 0
+    maxAge: config.isProduction ? '1d' : 0,
+    setHeaders: (res, filePath) => {
+      // Hashed assets in Vite build (/assets/*) get immutable long-term caching
+      if (filePath.includes(`${path.sep}assets${path.sep}`) || filePath.includes('/assets/')) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    }
   }));
   logger.info(`Serving static assets from: ${dir}`);
 });
@@ -251,6 +370,9 @@ app.get('*', (req, res, next) => {
 
   const indexPath = getFrontendIndexHtml();
   if (indexPath) {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     return res.sendFile(indexPath, (err) => {
       if (err && !res.headersSent) {
         logger.error(`Error delivering SPA fallback from ${indexPath}:`, err);
@@ -333,11 +455,11 @@ const startServer = async () => {
 
     // Start background hold expiration scheduler
     const { startHoldScheduler } = require('./utils/hold.scheduler');
-    startHoldScheduler(pool);
+    const holdIntervalId = startHoldScheduler(pool);
 
     // Start background retention scheduler (auto-delete 3mo notifications & 6mo contact messages)
     const { startRetentionScheduler } = require('./utils/retention.scheduler');
-    startRetentionScheduler(pool);
+    const retentionIntervalId = startRetentionScheduler(pool);
 
     // Start background AMC lifecycle scheduler (automated expiry reminders & contract status sweeps)
     const { startAmcScheduler, stopAmcScheduler } = require('./schedulers/amc.scheduler');
@@ -365,6 +487,8 @@ const startServer = async () => {
     // Graceful Shutdown handling
     const gracefulShutdown = (signal) => {
       logger.info(`${signal} received. Initiating graceful shutdown...`);
+      if (holdIntervalId) clearInterval(holdIntervalId);
+      if (retentionIntervalId) clearInterval(retentionIntervalId);
       stopAmcScheduler();
       server.close(async () => {
         logger.info('HTTP server closed.');
