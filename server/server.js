@@ -73,14 +73,44 @@ const contentSecurityPolicy = config.isProduction
     directives: {
       defaultSrc: ["'self'"],
       baseUri: ["'self'"],
-      connectSrc: ["'self'", ...config.server.corsOrigins, 'https://accounts.google.com', 'https://oauth2.googleapis.com', 'https://api.razorpay.com', 'https://checkout.razorpay.com', 'https://www.google.com/recaptcha/', 'https://recaptchaenterprise.googleapis.com', 'https://www.recaptcha.net/'],
+      connectSrc: [
+        "'self'",
+        ...config.server.corsOrigins,
+        'https://accounts.google.com',
+        'https://oauth2.googleapis.com',
+        'https://*.razorpay.com',
+        'https://api.razorpay.com',
+        'https://checkout.razorpay.com',
+        'https://lumberjack.razorpay.com',
+        'https://www.google.com/recaptcha/',
+        'https://recaptchaenterprise.googleapis.com',
+        'https://www.recaptcha.net/'
+      ],
       fontSrc: ["'self'", 'data:', 'https:'],
       formAction: ["'self'"],
       frameAncestors: ["'self'"],
-      frameSrc: ["'self'", 'https://accounts.google.com', 'https://checkout.razorpay.com', 'https://www.google.com/recaptcha/', 'https://recaptcha.google.com/recaptcha/', 'https://www.recaptcha.net/'],
-      imgSrc: ["'self'", 'data:', 'https:', 'https://lh3.googleusercontent.com'],
+      frameSrc: [
+        "'self'",
+        'https://accounts.google.com',
+        'https://*.razorpay.com',
+        'https://checkout.razorpay.com',
+        'https://api.razorpay.com',
+        'https://www.google.com/recaptcha/',
+        'https://recaptcha.google.com/recaptcha/',
+        'https://www.recaptcha.net/'
+      ],
+      imgSrc: ["'self'", 'data:', 'https:', 'https://*.razorpay.com', 'https://lh3.googleusercontent.com'],
       objectSrc: ["'none'"],
-      scriptSrc: ["'self'", 'https://accounts.google.com/gsi/client', 'https://apis.google.com', 'https://checkout.razorpay.com', 'https://www.google.com/recaptcha/', 'https://www.gstatic.com/recaptcha/', 'https://www.recaptcha.net/'],
+      scriptSrc: [
+        "'self'",
+        'https://accounts.google.com/gsi/client',
+        'https://apis.google.com',
+        'https://*.razorpay.com',
+        'https://checkout.razorpay.com',
+        'https://www.google.com/recaptcha/',
+        'https://www.gstatic.com/recaptcha/',
+        'https://www.recaptcha.net/'
+      ],
       styleSrc: ["'self'", "'unsafe-inline'", 'https:'],
       workerSrc: ["'self'", 'blob:'],
     }

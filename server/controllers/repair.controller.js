@@ -188,6 +188,17 @@ const createRepairRequest = async (req, res, next) => {
       }
     }
 
+    // If authenticated user provided mobile and user has no phone on record, backfill it
+    if (userId && mobile) {
+      const cleanMobile = mobile.trim();
+      if (cleanMobile) {
+        await connection.query(
+          'UPDATE users SET phone = ? WHERE id = ? AND (phone IS NULL OR TRIM(phone) = "")',
+          [cleanMobile, userId]
+        );
+      }
+    }
+
     // Guest flow: User is not authenticated but provided an email
     if (!userId && email) {
       const cleanEmail = email.trim().toLowerCase();
@@ -221,7 +232,7 @@ const createRepairRequest = async (req, res, next) => {
           // If customer has no phone on record yet, attach cleanMobile
           if (!matchedUser.phone && cleanMobile) {
             await connection.query(
-              'UPDATE users SET phone = ? WHERE id = ? AND (phone IS NULL OR phone = "")',
+              'UPDATE users SET phone = ? WHERE id = ? AND (phone IS NULL OR TRIM(phone) = "")',
               [cleanMobile, matchedUser.id]
             );
             matchedUser.phone = cleanMobile;
@@ -241,7 +252,8 @@ const createRepairRequest = async (req, res, next) => {
               id: matchedUser.id,
               name: matchedUser.name,
               email: matchedUser.email,
-              role: 'customer'
+              role: 'customer',
+              phone: matchedUser.phone || null
             },
             isExistingCustomer: true
           };
@@ -267,9 +279,12 @@ const createRepairRequest = async (req, res, next) => {
         } catch (insertErr) {
           // Concurrency safety against rapid double submit race conditions
           if (insertErr.code === 'ER_DUP_ENTRY') {
-            const [dupUsers] = await connection.query('SELECT id, name, email, role, token_version FROM users WHERE LOWER(email) = ? LIMIT 1', [cleanEmail]);
+            const [dupUsers] = await connection.query('SELECT id, name, email, phone, role, token_version FROM users WHERE LOWER(email) = ? LIMIT 1', [cleanEmail]);
             if (dupUsers.length > 0) {
               newUserId = dupUsers[0].id;
+              if (!dupUsers[0].phone && cleanMobile) {
+                await connection.query('UPDATE users SET phone = ? WHERE id = ? AND (phone IS NULL OR TRIM(phone) = "")', [cleanMobile, newUserId]);
+              }
             } else {
               throw insertErr;
             }
@@ -279,7 +294,7 @@ const createRepairRequest = async (req, res, next) => {
         }
 
         userId = newUserId;
-        const newUser = { id: userId, name: customerName, email: cleanEmail, role: 'customer', token_version: 1 };
+        const newUser = { id: userId, name: customerName, email: cleanEmail, role: 'customer', phone: cleanMobile || null, token_version: 1 };
         const sessionToken = generateToken(newUser);
 
         // Generate secure, short-lived (24h) set-password token bound to user and token_version
@@ -296,7 +311,13 @@ const createRepairRequest = async (req, res, next) => {
 
         autoLoginData = {
           token: sessionToken,
-          user: newUser,
+          user: {
+            id: userId,
+            name: customerName,
+            email: cleanEmail,
+            role: 'customer',
+            phone: cleanMobile || null
+          },
           setPasswordToken,
           isNewCustomer: true
         };
@@ -2231,9 +2252,9 @@ const trackRequest = async (req, res, next) => {
       SELECT sr.*, tu.name as technician_name
       FROM service_requests sr
       LEFT JOIN users tu ON sr.assigned_technician_id = tu.id
-      WHERE sr.ticket_number = ?
+      WHERE sr.ticket_number = ? OR sr.id = ?
       LIMIT 1
-    `, [id]);
+    `, [id, id]);
 
     if (rows.length === 0) {
       return res.status(404).json(formatResponse(false, 'Repair request not found with that ID.'));
@@ -2242,11 +2263,37 @@ const trackRequest = async (req, res, next) => {
     const row = rows[0];
 
     // Secondary verification factor: Role, Ownership, Signed Token, or Customer Mobile match
-    const isAuthorizedStaff = req.user && (req.user.role === 'admin' || req.user.role === 'technician');
-    const isOwner = req.user && (
-      (row.user_id && req.user.id === row.user_id) || 
-      (row.company_id && req.user.id === row.company_id)
-    );
+    const isAuthorizedStaff = Boolean(req.user && (req.user.role === 'admin' || req.user.role === 'technician'));
+    
+    // Check ownership: match ticket user_id, company_id, email, or mobile
+    let isOwner = false;
+    if (req.user) {
+      const authUserId = req.user.id != null ? String(req.user.id).trim() : '';
+      const ticketUserId = row.user_id != null ? String(row.user_id).trim() : '';
+      const ticketCompanyId = row.company_id != null ? String(row.company_id).trim() : '';
+      const authCompanyId = req.user.company_id != null ? String(req.user.company_id).trim() : '';
+
+      // 1. Direct user_id match (loose / string normalized)
+      if (authUserId && ticketUserId && authUserId === ticketUserId) {
+        isOwner = true;
+      }
+      // 2. Company ID match
+      if (ticketCompanyId && (authCompanyId === ticketCompanyId || authUserId === ticketCompanyId)) {
+        isOwner = true;
+      }
+      // 3. Email match (case-insensitive)
+      const authEmail = (req.user.email || '').trim().toLowerCase();
+      const ticketEmail = (row.email || '').trim().toLowerCase();
+      if (authEmail && ticketEmail && authEmail === ticketEmail) {
+        isOwner = true;
+      }
+      // 4. Mobile / Phone match (normalized digits)
+      const authPhone = String(req.user.phone || req.user.mobile || '').replace(/\D/g, '');
+      const ticketPhone = String(row.mobile || '').replace(/\D/g, '');
+      if (authPhone && ticketPhone && (authPhone === ticketPhone || ticketPhone.endsWith(authPhone) || authPhone.endsWith(ticketPhone))) {
+        isOwner = true;
+      }
+    }
 
     let isVerified = Boolean(isAuthorizedStaff || isOwner);
 
@@ -2260,7 +2307,7 @@ const trackRequest = async (req, res, next) => {
       } else if (trackingToken) {
         try {
           const decoded = jwt.verify(trackingToken, config.jwt.secret);
-          if (decoded && (decoded.ticketId === row.id || decoded.ticketNumber === row.ticket_number || decoded.id === row.user_id)) {
+          if (decoded && (String(decoded.ticketId) === String(row.id) || decoded.ticketNumber === row.ticket_number || String(decoded.id) === String(row.user_id))) {
             isVerified = true;
           }
         } catch (jwtErr) { }

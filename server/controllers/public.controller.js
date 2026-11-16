@@ -41,7 +41,6 @@ const PUBLIC_SAFE_SETTINGS = {
     ]),
     integrations: new Set([
         'google_maps_link',
-        'google_sheet_url',
         'google_login_enabled',
         'google_client_id'
     ]),

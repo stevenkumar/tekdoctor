@@ -57,37 +57,51 @@ const authenticate = async (req, res, next) => {
  * Matches the security checks of `authenticate` — verifies is_active and token_version.
  */
 const optionalAuth = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
+  const authHeader = req.headers.authorization || req.headers.Authorization;
 
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.split(' ')[1];
-    try {
-      const decoded = jwt.verify(token, config.jwt.secret);
+  if (authHeader) {
+    const match = String(authHeader).match(/^Bearer\s+(.+)$/i);
+    if (match) {
+      const token = match[1].trim();
+      try {
+        const decoded = jwt.verify(token, config.jwt.secret);
 
-      // Verify user is still active and token version matches (same as authenticate)
-      const { pool } = require('../config/db.config');
-      const [rows] = await pool.query('SELECT is_active, token_version FROM users WHERE id = ? LIMIT 1', [decoded.id]);
+        // Verify user is still active and token version matches (same as authenticate)
+        const { pool } = require('../config/db.config');
+        const [rows] = await pool.query(
+          'SELECT id, name, email, phone, role, company_id, is_active, token_version FROM users WHERE id = ? LIMIT 1',
+          [decoded.id]
+        );
 
-      if (rows.length > 0 && rows[0].is_active) {
-        const dbTokenVersion = (rows[0].token_version != null && rows[0].token_version !== '')
-          ? Number(rows[0].token_version)
-          : 1;
-        const rawJwtVersion = decoded.token_version ?? decoded.tokenVersion;
-        const jwtTokenVersion = (rawJwtVersion != null && rawJwtVersion !== '')
-          ? Number(rawJwtVersion)
-          : 1;
+        if (rows.length > 0 && rows[0].is_active) {
+          const dbTokenVersion = (rows[0].token_version != null && rows[0].token_version !== '')
+            ? Number(rows[0].token_version)
+            : 1;
+          const rawJwtVersion = decoded.token_version ?? decoded.tokenVersion;
+          const jwtTokenVersion = (rawJwtVersion != null && rawJwtVersion !== '')
+            ? Number(rawJwtVersion)
+            : 1;
 
-        if (dbTokenVersion !== jwtTokenVersion) {
-          logger.debug(`Optional auth: token version mismatch for user ${decoded.id}`);
+          if (dbTokenVersion !== jwtTokenVersion) {
+            logger.debug(`Optional auth: token version mismatch for user ${decoded.id}`);
+          } else {
+            req.user = {
+              ...decoded,
+              id: rows[0].id,
+              name: rows[0].name || decoded.name,
+              email: rows[0].email || decoded.email,
+              phone: rows[0].phone || decoded.phone || null,
+              role: rows[0].role || decoded.role,
+              company_id: rows[0].company_id || decoded.company_id || null
+            };
+          }
         } else {
-          req.user = decoded;
+          logger.debug(`Optional auth: user ${decoded.id} not found or deactivated`);
         }
-      } else {
-        logger.debug(`Optional auth: user ${decoded.id} not found or deactivated`);
+      } catch (error) {
+        // Just log and continue as guest without blocking
+        logger.debug(`Optional auth failed verification: ${error.message}`);
       }
-    } catch (error) {
-      // Just log and continue as guest
-      logger.debug(`Optional auth failed verification: ${error.message}`);
     }
   }
   next();

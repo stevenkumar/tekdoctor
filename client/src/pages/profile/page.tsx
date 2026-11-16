@@ -94,7 +94,7 @@ type DashboardTab =
   | 'settings';
 
 export default function ProfilePage() {
-  const { user, token, isAuthenticated, updateToken, logout } = useAuth();
+  const { user, token, isAuthenticated, updateToken, logout, fetchUser } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const shouldReduceMotion = useReducedMotion();
@@ -148,7 +148,7 @@ export default function ProfilePage() {
   // Edit Profile State
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [profileName, setProfileName] = useState(user?.name || '');
-  const [profilePhone, setProfilePhone] = useState(user?.phone || '');
+  const [profilePhone, setProfilePhone] = useState(user?.phone || (user as any)?.mobile || '');
   const [profileErrors, setProfileErrors] = useState<{ name?: string; phone?: string }>({});
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [profileStatus, setProfileStatus] = useState<{ type: 'success' | 'error' | ''; message: string }>({
@@ -247,6 +247,7 @@ export default function ProfilePage() {
     if (!isAuthenticated) {
       navigate(ROUTES.SIGN_IN);
     } else if (token) {
+      fetchUser(token);
       fetchHistory(1);
       fetchInvoices();
     }
@@ -255,7 +256,7 @@ export default function ProfilePage() {
   useEffect(() => {
     if (user) {
       setProfileName(user.name || '');
-      setProfilePhone(user.phone || '');
+      setProfilePhone(user.phone || (user as any)?.mobile || '');
     }
   }, [user]);
 
@@ -636,6 +637,19 @@ export default function ProfilePage() {
               Customer Dashboard
             </h1>
             <p className="text-xs text-zinc-400 mt-1">Manage your device repairs, approvals, estimates, and account settings</p>
+            <div className="flex items-center gap-3 mt-2.5 flex-wrap text-xs text-zinc-400">
+              <div className="flex items-center gap-1.5 font-mono">
+                <Mail size={13} className="text-zinc-500 shrink-0" />
+                <span className="text-zinc-300">{user.email}</span>
+              </div>
+              <span className="text-zinc-700 hidden sm:inline">•</span>
+              <div className="flex items-center gap-1.5 font-mono">
+                <Phone size={13} className="text-neon-cyan shrink-0" />
+                <span className={user.phone || (user as any).mobile ? "text-zinc-200" : "text-zinc-500 italic"}>
+                  {user.phone || (user as any).mobile || 'Not provided'}
+                </span>
+              </div>
+            </div>
           </div>
 
           {/* Profile / Customer Account Section (Dropdown disabled on desktop, drawer enabled on mobile) */}
@@ -659,12 +673,14 @@ export default function ProfilePage() {
                 )}
               </div>
               <div className="min-w-0 pr-1">
-                <div className="text-xs font-bold text-white truncate max-w-[120px] sm:max-w-[160px] font-outfit">
+                <div className="text-xs font-bold text-white truncate max-w-[140px] sm:max-w-[180px] font-outfit">
                   {user.name}
                 </div>
-                <div className="text-[10px] font-mono text-neon-cyan tracking-wider flex items-center gap-1">
-                  <span className="md:hidden">Account Menu</span>
-                  <span className="hidden md:inline">Customer Account</span>
+                <div className="text-[10px] font-mono text-neon-cyan tracking-wider flex items-center gap-1.5 mt-0.5">
+                  <Phone size={10} className="shrink-0" />
+                  <span className="truncate max-w-[110px] sm:max-w-[140px]">
+                    {user.phone || (user as any).mobile || 'Not provided'}
+                  </span>
                   {pendingApprovals.length > 0 && (
                     <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping inline-block" />
                   )}
@@ -710,6 +726,10 @@ export default function ProfilePage() {
                         {user.name}
                       </div>
                       <div className="text-[11px] font-mono text-zinc-500">{user.email}</div>
+                      <div className="text-[11px] font-mono text-neon-cyan flex items-center gap-1.5 mt-1">
+                        <Phone size={12} className="shrink-0" />
+                        <span>{user.phone || (user as any).mobile || 'Not provided'}</span>
+                      </div>
                     </div>
                     <button
                       onClick={() => setDrawerOpen(false)}
@@ -1635,7 +1655,7 @@ export default function ProfilePage() {
                       onClick={() => {
                         setIsEditingProfile(false);
                         setProfileName(user.name || '');
-                        setProfilePhone(user.phone || '');
+                        setProfilePhone(user.phone || (user as any)?.mobile || '');
                         setProfileErrors({});
                       }}
                       className="px-4 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-xs font-semibold text-zinc-400 transition-all cursor-pointer min-h-[44px]"
@@ -1658,7 +1678,7 @@ export default function ProfilePage() {
                     <span className="block text-xs uppercase tracking-wider text-zinc-500 font-semibold">Mobile Phone</span>
                     <div className="flex items-center gap-2.5 text-white bg-black/30 border border-zinc-800/60 rounded-xl p-3 font-mono text-xs">
                       <Phone size={14} className="text-zinc-500 shrink-0" />
-                      <span className="truncate">{user.phone || 'Not configured'}</span>
+                      <span className="truncate">{user.phone || (user as any)?.mobile || 'Not provided'}</span>
                     </div>
                   </div>
 

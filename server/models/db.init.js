@@ -805,6 +805,7 @@ const createBaseTables = async (connection) => {
       INDEX idx_amc_rem_company (company_id),
       INDEX idx_amc_rem_milestone (milestone_days),
       INDEX idx_amc_rem_sent_at (sent_at),
+      INDEX idx_amc_rem_status_attempt (delivery_status, last_attempted_at),
       INDEX idx_amc_rem_next_retry (delivery_status, next_retry_at, retry_count)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
@@ -889,7 +890,9 @@ const seedDefaultDataIfEmpty = async (connection) => {
     ['invoice_gst_enabled', 'true', 'billing'],
     ['gstin', '27AAAAA0000A1Z5', 'company'],
     ['invoice_default_items', defaultCatalogItems, 'billing'],
-    ['amc_reminder_milestones_days', '30,15,7,1', 'amc']
+    ['amc_reminder_milestones_days', '30,15,7,1', 'amc'],
+    ['amc_reminder_retry_base_minutes', '15', 'amc'],
+    ['amc_business_timezone', 'Asia/Kolkata', 'amc']
   ];
 
   const [settingsCount] = await connection.query('SELECT COUNT(*) as cnt FROM site_settings');
@@ -1630,6 +1633,7 @@ const MIGRATIONS = [
           request_number VARCHAR(50) UNIQUE NOT NULL,
           company_id INT NOT NULL,
           plan_id INT NULL,
+          previous_contract_id INT NULL,
           requested_device_count INT NOT NULL DEFAULT 1,
           notes TEXT NULL,
           status ENUM('pending', 'under_review', 'offered', 'rejected', 'cancelled') DEFAULT 'pending',
@@ -1642,7 +1646,8 @@ const MIGRATIONS = [
           FOREIGN KEY (plan_id) REFERENCES amc_plans(id) ON DELETE SET NULL,
           FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
           INDEX idx_amc_req_company (company_id),
-          INDEX idx_amc_req_status (status)
+          INDEX idx_amc_req_status (status),
+          INDEX idx_amc_req_prev_contract (previous_contract_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
       `);
 
@@ -1761,6 +1766,69 @@ const MIGRATIONS = [
           INDEX idx_amc_hist_action (action)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
       `);
+
+      // Seed default AMC plans if empty
+      const [plansCount] = await connection.query('SELECT COUNT(*) as cnt FROM amc_plans');
+      if (plansCount[0].cnt === 0) {
+        const defaultPlans = [
+          [
+            'AMC-STD-10',
+            'Standard Business Fleet AMC',
+            'Comprehensive diagnostic, scheduled quarterly servicing, and standard hardware maintenance for up to 10 fleet devices.',
+            14999.00,
+            12,
+            10,
+            JSON.stringify({
+              quarterly_audit: true,
+              priority_level: 'Standard',
+              labor_discount_pct: 100,
+              parts_discount_pct: 10,
+              sla_turnaround_hours: 48
+            })
+          ],
+          [
+            'AMC-CORP-25',
+            'Corporate Premium Fleet AMC',
+            'Priority business repairs, free loaner hardware during extended service, and on-site inspection for up to 25 fleet devices.',
+            34999.00,
+            12,
+            25,
+            JSON.stringify({
+              quarterly_audit: true,
+              priority_level: 'High',
+              labor_discount_pct: 100,
+              parts_discount_pct: 15,
+              loaner_device: true,
+              sla_turnaround_hours: 24
+            })
+          ],
+          [
+            'AMC-ENT-50',
+            'Enterprise Dedicated Fleet AMC',
+            'Dedicated lead technician, monthly preventive checks, same-day dispatch, and full lifecycle tracking for up to 50 fleet devices.',
+            64999.00,
+            12,
+            50,
+            JSON.stringify({
+              quarterly_audit: true,
+              priority_level: 'Urgent',
+              labor_discount_pct: 100,
+              parts_discount_pct: 20,
+              loaner_device: true,
+              dedicated_technician: true,
+              sla_turnaround_hours: 12
+            })
+          ]
+        ];
+
+        for (const [code, name, desc, price, dur, cap, terms] of defaultPlans) {
+          await connection.query(
+            `INSERT INTO amc_plans (plan_code, name, description, base_price, duration_months, default_device_capacity, coverage_terms)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [code, name, desc, price, dur, cap, terms]
+          );
+        }
+      }
 
       console.log('[Migration:2026_12] Created AMC plans, contracts, covered devices, replacements and history tables.');
     }

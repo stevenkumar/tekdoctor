@@ -76,6 +76,8 @@ const signup = async (req, res, next) => {
       name,
       email,
       role: userRole,
+      phone: cleanPhone || null,
+      company_id: null,
       token
     }));
 
@@ -195,6 +197,7 @@ const signin = async (req, res, next) => {
       name: displayName,
       email: user.email,
       role: user.role,
+      phone: user.phone || null,
       company_id: companyId,
       permanent_company_id: companyId,
       avatar_url: avatarUrl,
@@ -288,6 +291,8 @@ const verifyLoginOtp = async (req, res, next) => {
       name: user.name,
       email: user.email,
       role: user.role,
+      phone: user.phone || null,
+      company_id: user.company_id || null,
       avatar_url: user.avatar_url,
       token
     }));
@@ -833,7 +838,7 @@ const updateProfile = async (req, res, next) => {
     }
 
     const [updatedRows] = await connection.query(
-      'SELECT id, name, email, phone, role, token_version FROM users WHERE id = ? LIMIT 1',
+      'SELECT id, name, email, phone, role, company_id FROM users WHERE id = ? LIMIT 1',
       [userId]
     );
 
@@ -841,7 +846,14 @@ const updateProfile = async (req, res, next) => {
     logger.info(`Profile updated for user: ${updatedUser.email} (ID: ${userId})`);
     await logActivity(userId, 'user', 'profile_update', 'users', userId, { name: updatedUser.name, phone: updatedUser.phone }, req.ip);
 
-    return res.status(200).json(formatResponse(true, 'Profile updated successfully.', updatedUser));
+    return res.status(200).json(formatResponse(true, 'Profile updated successfully.', {
+      id: updatedUser.id,
+      name: updatedUser.name,
+      email: updatedUser.email,
+      phone: updatedUser.phone || null,
+      role: updatedUser.role,
+      company_id: updatedUser.company_id || null
+    }));
   } catch (error) {
     next(error);
   } finally {
@@ -951,6 +963,8 @@ const googleSignIn = async (req, res, next) => {
         name: user.name,
         email: user.email,
         role: user.role,
+        phone: user.phone || null,
+        company_id: user.company_id || null,
         avatar_url: user.avatar_url || avatarUrl,
         token
       }));
@@ -1034,6 +1048,8 @@ const googleSignIn = async (req, res, next) => {
         name: user.name,
         email: user.email,
         role: user.role,
+        phone: user.phone || null,
+        company_id: user.company_id || null,
         avatar_url: user.avatar_url || avatarUrl,
         token
       }));
@@ -1080,6 +1096,8 @@ const googleSignIn = async (req, res, next) => {
       name,
       email,
       role: userRole,
+      phone: null,
+      company_id: null,
       avatar_url: avatarUrl,
       token
     }));
@@ -1100,7 +1118,7 @@ const getMe = async (req, res, next) => {
   try {
     connection = await pool.getConnection();
     const [rows] = await connection.query(
-      'SELECT id, name, email, role, phone, avatar_url, token_version, is_active FROM users WHERE id = ? LIMIT 1',
+      'SELECT id, name, email, role, phone, avatar_url, is_active FROM users WHERE id = ? LIMIT 1',
       [req.user.id]
     );
 
@@ -1109,6 +1127,26 @@ const getMe = async (req, res, next) => {
     }
 
     const user = rows[0];
+
+    // Fall back to most recent mobile from service_requests if users.phone is NULL or empty
+    let userPhone = user.phone ? String(user.phone).trim() : null;
+    if (!userPhone) {
+      const [srRows] = await connection.query(
+        `SELECT mobile FROM service_requests 
+         WHERE (user_id = ? OR LOWER(email) = LOWER(?)) 
+           AND mobile IS NOT NULL AND TRIM(mobile) != '' 
+         ORDER BY id DESC LIMIT 1`,
+        [user.id, user.email]
+      );
+      if (srRows.length > 0 && srRows[0].mobile) {
+        userPhone = String(srRows[0].mobile).trim();
+        // Backfill users.phone in the database so it is permanently populated
+        await connection.query(
+          'UPDATE users SET phone = ? WHERE id = ? AND (phone IS NULL OR TRIM(phone) = "")',
+          [userPhone, user.id]
+        );
+      }
+    }
 
     // If company role, fetch company profile details
     let companyProfile = null;
@@ -1127,9 +1165,8 @@ const getMe = async (req, res, next) => {
       name: companyProfile?.company_name || user.name,
       email: user.email,
       role: user.role,
-      phone: user.phone,
+      phone: userPhone || null,
       avatar_url: companyProfile?.company_logo || user.avatar_url,
-      token_version: user.token_version,
       company_id: companyProfile?.company_id || null
     }));
   } catch (error) {

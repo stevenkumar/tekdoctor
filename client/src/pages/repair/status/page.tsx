@@ -87,6 +87,9 @@ export default function ServiceTracker() {
       setIsSearching(true);
     }
     setSearchError('');
+    if (isAuthenticated) {
+      setRequiresMobile(false);
+    }
 
     const activeMobile = (mobileOverride !== undefined ? mobileOverride : customerMobile).trim();
     const queryToken = searchParams.get('token') || searchParams.get('approvalToken') || searchParams.get('actionToken') || searchParams.get('invoiceToken') || '';
@@ -94,7 +97,8 @@ export default function ServiceTracker() {
     try {
       const res = await repairApi.trackRequest(idToSearch.trim(), {
         mobile: activeMobile || undefined,
-        token: queryToken || undefined
+        token: queryToken || undefined,
+        authToken: token || undefined
       });
       if (res.ok && res.data) {
         setTrackingData(res.data.data);
@@ -115,7 +119,7 @@ export default function ServiceTracker() {
       setIsSearching(false);
       setIsRefreshing(false);
     }
-  }, [customerMobile, searchParams]);
+  }, [customerMobile, searchParams, token, isAuthenticated]);
 
   const queryToken = searchParams.get('token') || searchParams.get('approvalToken') || searchParams.get('actionToken') || searchParams.get('invoiceToken');
   const effectiveToken = token || guestInvoiceToken || queryToken || null;
@@ -1355,11 +1359,10 @@ export default function ServiceTracker() {
                           <div className="text-[10px] font-mono text-zinc-500 sm:mb-2">{new Date(req.createdAt).toLocaleDateString()}</div>
                           <button
                             onClick={() => {
-                              setTicketId(req.ticketNumber || req.id.toString());
+                              const targetId = req.ticketNumber || req.id.toString();
+                              setTicketId(targetId);
                               setShowHistoryModal(false);
-                              setTimeout(() => {
-                                handleSearch({ preventDefault: () => { } } as any);
-                              }, 100);
+                              fetchTicketStatus(targetId);
                             }}
                             className="text-[10px] font-mono uppercase tracking-widest text-neon-cyan hover:text-white transition-colors flex items-center justify-end gap-1 cursor-pointer"
                           >

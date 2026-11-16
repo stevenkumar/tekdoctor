@@ -12,7 +12,8 @@ export interface AuthUser {
   name: string;
   email: string;
   role: UserRole;
-  phone?: string;
+  phone?: string | null;
+  mobile?: string | null;
   token_version?: number;
   avatar_url?: string;
   company_id?: string;
@@ -72,6 +73,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (savedToken && savedUser) {
         JSON.parse(savedUser); // dry parse test
+        fetchUser(savedToken);
       }
     } catch {
       // Corrupted localStorage — clear and start fresh
@@ -152,9 +154,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchUser = async (tokenVal: string) => {
     try {
-      const savedUser = localStorage.getItem(STORAGE_KEYS.USER);
-      if (savedUser) {
-        setUser(JSON.parse(savedUser) as AuthUser);
+      const res = await authApi.getMe(tokenVal);
+      if (res.ok && res.data?.data) {
+        const fresh = res.data.data;
+        setUser((prev) => {
+          const merged: AuthUser = {
+            ...(prev || {}),
+            ...fresh,
+            phone: fresh.phone || fresh.mobile || prev?.phone || prev?.mobile || null,
+          } as AuthUser;
+          try {
+            localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(merged));
+          } catch {
+            // Ignore storage quota errors
+          }
+          return merged;
+        });
+      } else {
+        const savedUser = localStorage.getItem(STORAGE_KEYS.USER);
+        if (savedUser) {
+          setUser(JSON.parse(savedUser) as AuthUser);
+        }
       }
     } catch {
       // Ignored

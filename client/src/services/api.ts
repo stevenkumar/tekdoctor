@@ -163,7 +163,10 @@ export interface UserResponseData {
   name: string;
   email: string;
   role: 'customer' | 'technician' | 'admin' | 'company';
+  phone?: string | null;
+  mobile?: string | null;
   avatar_url?: string;
+  company_id?: string | null;
 }
 
 export interface NotificationItem {
@@ -428,6 +431,8 @@ export interface RepairApiResponse {
       name: string;
       email: string;
       role: 'customer' | 'technician' | 'admin' | 'company';
+      phone?: string | null;
+      mobile?: string | null;
     };
   } | null;
 }
@@ -804,14 +809,33 @@ export const repairApi = {
     });
   },
 
-  trackRequest: async (id: string, options?: { mobile?: string; token?: string }): Promise<SafeResponse<{ data: any }>> => {
+  trackRequest: async (
+    id: string,
+    options?: { mobile?: string; token?: string; authToken?: string }
+  ): Promise<SafeResponse<{ data: any }>> => {
     let url = `/api/repair-request/track/${encodeURIComponent(id)}`;
     const params = new URLSearchParams();
     if (options?.mobile) params.append('mobile', options.mobile.trim());
     if (options?.token) params.append('token', options.token.trim());
     const qs = params.toString();
     if (qs) url += `?${qs}`;
-    return safeFetch<{ data: any }>(getUrl(url), { method: 'GET' });
+
+    const headers: Record<string, string> = {};
+    const bearer =
+      options?.authToken ||
+      (typeof window !== 'undefined'
+        ? localStorage.getItem('token') || sessionStorage.getItem('token')
+        : null) ||
+      options?.token;
+
+    if (bearer) {
+      headers['Authorization'] = `Bearer ${bearer.trim()}`;
+    }
+
+    return safeFetch<{ data: any }>(getUrl(url), {
+      method: 'GET',
+      headers,
+    });
   },
 
   notifyCustomer: async (token: string, id: number): Promise<SafeResponse<{ message: string }>> => {
