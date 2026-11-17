@@ -345,6 +345,12 @@ const createBaseTables = async (connection) => {
       igst_amount DECIMAL(12,2) NULL DEFAULT 0.00,
       original_estimate DECIMAL(12,2) NULL DEFAULT 0.00,
       is_interstate BOOLEAN DEFAULT FALSE,
+      gst_type ENUM('intra', 'inter') DEFAULT 'intra',
+      cgst_rate DECIMAL(5,2) DEFAULT 9.00,
+      sgst_rate DECIMAL(5,2) DEFAULT 9.00,
+      igst_rate DECIMAL(5,2) DEFAULT 0.00,
+      discount_amount DECIMAL(12,2) DEFAULT 0.00,
+      taxable_amount DECIMAL(12,2) NULL DEFAULT 0.00,
       finalized_at TIMESTAMP NULL,
       finalized_by INT NULL,
       currency VARCHAR(10) DEFAULT 'INR',
@@ -1979,6 +1985,27 @@ const MIGRATIONS = [
       await addIndexSafe(connection, 'service_requests', 'idx_sr_status_created', 'status, created_at');
       await addIndexSafe(connection, 'messages', 'idx_msg_repair_created', 'repair_request_id, created_at');
       console.log('[Migration:2026_16] Created performance indexes for service_requests and messages.');
+    }
+  },
+  {
+    version: '2026_17_invoice_explicit_gst_rates',
+    name: 'Add explicit GST type, slab rates (cgst_rate, sgst_rate, igst_rate), discount_amount, and taxable_amount to invoices',
+    isSatisfied: async (connection) => {
+      const [cols] = await connection.query(`
+        SELECT COLUMN_NAME FROM information_schema.COLUMNS 
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'invoices' 
+          AND COLUMN_NAME IN ('gst_type', 'cgst_rate', 'sgst_rate', 'igst_rate', 'discount_amount', 'taxable_amount')
+      `);
+      return cols.length === 6;
+    },
+    apply: async (connection) => {
+      await addColumnSafe(connection, 'invoices', "gst_type ENUM('intra', 'inter') DEFAULT 'intra'", 'gst_type');
+      await addColumnSafe(connection, 'invoices', "cgst_rate DECIMAL(5,2) DEFAULT 9.00", 'cgst_rate');
+      await addColumnSafe(connection, 'invoices', "sgst_rate DECIMAL(5,2) DEFAULT 9.00", 'sgst_rate');
+      await addColumnSafe(connection, 'invoices', "igst_rate DECIMAL(5,2) DEFAULT 0.00", 'igst_rate');
+      await addColumnSafe(connection, 'invoices', "discount_amount DECIMAL(12,2) DEFAULT 0.00", 'discount_amount');
+      await addColumnSafe(connection, 'invoices', "taxable_amount DECIMAL(12,2) NULL DEFAULT 0.00", 'taxable_amount');
+      console.log('[Migration:2026_17] Added explicit GST columns, slab rates, and discount/taxable amounts to invoices.');
     }
   }
 ];

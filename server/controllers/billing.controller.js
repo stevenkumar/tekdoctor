@@ -367,6 +367,12 @@ const getInvoices = async (req, res, next) => {
       igstAmount: parseFloat(inv.igst_amount || 0),
       originalEstimate: inv.original_estimate !== null && inv.original_estimate !== undefined ? parseFloat(inv.original_estimate) : null,
       isInterstate: Boolean(inv.is_interstate),
+      gstType: inv.gst_type || (inv.is_interstate ? 'inter' : 'intra'),
+      cgstRate: inv.cgst_rate !== null && inv.cgst_rate !== undefined ? parseFloat(inv.cgst_rate) : (inv.is_interstate ? 0.0 : 9.0),
+      sgstRate: inv.sgst_rate !== null && inv.sgst_rate !== undefined ? parseFloat(inv.sgst_rate) : (inv.is_interstate ? 0.0 : 9.0),
+      igstRate: inv.igst_rate !== null && inv.igst_rate !== undefined ? parseFloat(inv.igst_rate) : (inv.is_interstate ? 18.0 : 0.0),
+      discountAmount: parseFloat(inv.discount_amount || 0),
+      taxableAmount: parseFloat(inv.taxable_amount !== null && inv.taxable_amount !== undefined ? inv.taxable_amount : Math.max(0, (inv.subtotal !== null && inv.subtotal !== undefined ? inv.subtotal : inv.amount) - (inv.discount_amount || 0))),
       currency: inv.currency,
       invoiceDate: inv.invoice_date,
       dueDate: inv.due_date,
@@ -472,6 +478,12 @@ const getInvoiceById = async (req, res, next) => {
       igstAmount: parseFloat(inv.igst_amount || 0),
       originalEstimate: inv.original_estimate !== null && inv.original_estimate !== undefined ? parseFloat(inv.original_estimate) : null,
       isInterstate: Boolean(inv.is_interstate),
+      gstType: inv.gst_type || (inv.is_interstate ? 'inter' : 'intra'),
+      cgstRate: inv.cgst_rate !== null && inv.cgst_rate !== undefined ? parseFloat(inv.cgst_rate) : (inv.is_interstate ? 0.0 : 9.0),
+      sgstRate: inv.sgst_rate !== null && inv.sgst_rate !== undefined ? parseFloat(inv.sgst_rate) : (inv.is_interstate ? 0.0 : 9.0),
+      igstRate: inv.igst_rate !== null && inv.igst_rate !== undefined ? parseFloat(inv.igst_rate) : (inv.is_interstate ? 18.0 : 0.0),
+      discountAmount: parseFloat(inv.discount_amount || 0),
+      taxableAmount: parseFloat(inv.taxable_amount !== null && inv.taxable_amount !== undefined ? inv.taxable_amount : Math.max(0, (inv.subtotal !== null && inv.subtotal !== undefined ? inv.subtotal : inv.amount) - (inv.discount_amount || 0))),
       currency: inv.currency,
       invoiceDate: inv.invoice_date,
       dueDate: inv.due_date,
@@ -509,18 +521,29 @@ const getInvoiceById = async (req, res, next) => {
  * Subtotal = Sum(Line Amount)
  * Total GST = Sum(Line Tax)
  * Grand Total = Subtotal + Total GST
- * Intra-state: CGST = Total GST / 2, SGST = Total GST / 2, IGST = 0
- * Inter-state: IGST = Total GST, CGST = 0, SGST = 0
+ * Statutory Indian GST Math:
+ * - Gross Subtotal = Sum(qty * unit_price)
+ * - Taxable Subtotal = Max(0, Gross Subtotal - Discount Amount)
+ * - Proportional Taxable Base per line item = Round(itemTotal * (Taxable Subtotal / Gross Subtotal))
+ * - Line Item Tax = Round(itemTaxableBase * (taxRate / 100))
+ * - Total GST = Sum(Line Taxes)
+ * - Grand Total = Taxable Subtotal + Total GST
+ * - Intra-State: CGST Rate = Slab/2, SGST Rate = Slab/2, IGST Rate = 0
+ *                CGST Amount = Round(Total GST / 2), SGST Amount = Total GST - CGST, IGST Amount = 0
+ * - Inter-State: IGST Rate = Slab, CGST Rate = 0, SGST Rate = 0
+ *                IGST Amount = Total GST, CGST Amount = 0, SGST Amount = 0
  */
-const calculateInvoiceTotals = (lineItems = [], isInterstate = false, defaultTaxRate = 18.0) => {
-  let subtotal = 0;
-  let totalTax = 0;
+const calculateInvoiceTotals = (lineItems = [], isInterstate = false, defaultTaxRate = 18.0, discountAmount = 0.0, gstTypeOverride = null) => {
+  const isInter = (gstTypeOverride === 'inter') ? true : ((gstTypeOverride === 'intra') ? false : Boolean(isInterstate));
+  const gstType = isInter ? 'inter' : 'intra';
 
   const fallbackRate = defaultTaxRate !== undefined && defaultTaxRate !== null && !isNaN(Number(defaultTaxRate))
     ? Math.max(0, parseFloat(defaultTaxRate))
     : 18.0;
 
-  const processedItems = (lineItems || []).map((item) => {
+  // 1. Calculate Gross Subtotal from line items
+  let grossSubtotal = 0;
+  const initialItems = (lineItems || []).map((item) => {
     const qty = Math.max(1, parseInt(item.quantity !== undefined ? item.quantity : (item.qty || 1), 10) || 1);
     const unitPrice = Math.max(0, parseFloat(
       item.unitPrice !== undefined ? item.unitPrice :
@@ -530,17 +553,18 @@ const calculateInvoiceTotals = (lineItems = [], isInterstate = false, defaultTax
               item.price !== undefined ? item.price : 0
     ) || 0);
     const lineTotal = Math.round(qty * unitPrice * 100) / 100;
+
+    // Item-level GST rate inherits invoice slab unless explicitly specified
     const taxRate = item.taxRate !== undefined && item.taxRate !== null && !isNaN(Number(item.taxRate))
       ? Math.max(0, parseFloat(item.taxRate))
       : (item.tax_rate !== undefined && item.tax_rate !== null && !isNaN(Number(item.tax_rate))
         ? Math.max(0, parseFloat(item.tax_rate))
         : fallbackRate);
-    const itemTax = Math.round(lineTotal * (taxRate / 100) * 100) / 100;
+
     const hsnSac = String(item.hsnSac || item.hsn_sac || item.sacCode || '9987').trim();
     const description = String(item.description || 'Service item').trim();
 
-    subtotal += lineTotal;
-    totalTax += itemTax;
+    grossSubtotal += lineTotal;
 
     return {
       id: item.id,
@@ -549,29 +573,71 @@ const calculateInvoiceTotals = (lineItems = [], isInterstate = false, defaultTax
       quantity: qty,
       unit_price: unitPrice,
       total: lineTotal,
-      tax_rate: taxRate,
+      tax_rate: taxRate
+    };
+  });
+
+  grossSubtotal = Math.round(grossSubtotal * 100) / 100;
+
+  // 2. Compute Taxable Base cleanly after discount
+  const discount = Math.max(0, parseFloat(discountAmount || 0) || 0);
+  const effectiveDiscount = Math.min(grossSubtotal, Math.round(discount * 100) / 100);
+  const taxableSubtotal = Math.round((grossSubtotal - effectiveDiscount) * 100) / 100;
+  const discountRatio = grossSubtotal > 0 ? (taxableSubtotal / grossSubtotal) : 1;
+
+  // 3. Compute item-level taxable amount and statutory taxes
+  let totalTax = 0;
+  const processedItems = initialItems.map((item) => {
+    const itemTaxable = Math.round(item.total * discountRatio * 100) / 100;
+    const itemTax = Math.round((itemTaxable * (item.tax_rate / 100)) * 100) / 100;
+    totalTax += itemTax;
+
+    return {
+      ...item,
+      taxable_amount: itemTaxable,
       tax_amount: itemTax
     };
   });
 
-  subtotal = Math.round(subtotal * 100) / 100;
   totalTax = Math.round(totalTax * 100) / 100;
-  const grandTotal = Math.round((subtotal + totalTax) * 100) / 100;
+  const grandTotal = Math.round((taxableSubtotal + totalTax) * 100) / 100;
 
-  let cgstAmount = 0;
-  let sgstAmount = 0;
-  let igstAmount = 0;
+  // 4. Exact Statutory Slab Rates & Zero-Rate Cleanliness
+  let cgstRate = 0.0;
+  let sgstRate = 0.0;
+  let igstRate = 0.0;
+  let cgstAmount = 0.0;
+  let sgstAmount = 0.0;
+  let igstAmount = 0.0;
 
-  if (Boolean(isInterstate)) {
+  if (isInter) {
+    igstRate = fallbackRate;
     igstAmount = totalTax;
+    cgstRate = 0.0;
+    sgstRate = 0.0;
+    cgstAmount = 0.0;
+    sgstAmount = 0.0;
   } else {
+    cgstRate = Math.round((fallbackRate / 2) * 100) / 100;
+    sgstRate = Math.round((fallbackRate / 2) * 100) / 100;
     cgstAmount = Math.round((totalTax / 2) * 100) / 100;
     sgstAmount = Math.round((totalTax - cgstAmount) * 100) / 100;
+    igstRate = 0.0;
+    igstAmount = 0.0;
   }
 
   return {
-    subtotal,
+    subtotal: grossSubtotal,
+    discountAmount: effectiveDiscount,
+    taxableAmount: taxableSubtotal,
     taxAmount: totalTax,
+    totalGst: totalTax,
+    gstType,
+    isInterstate: isInter,
+    taxRate: fallbackRate,
+    cgstRate,
+    sgstRate,
+    igstRate,
     cgstAmount,
     sgstAmount,
     igstAmount,
@@ -588,7 +654,11 @@ const createInvoice = async (req, res, next) => {
     return res.status(403).json(formatResponse(false, 'Forbidden. Only administrators can create commercial invoices.'));
   }
 
-  const { clientName, userId, ticketId, currency, invoiceDate, dueDate, status, notes, lineItems, isInterstate, originalEstimate } = req.body;
+  const {
+    clientName, userId, ticketId, currency, invoiceDate, dueDate, status, notes, lineItems,
+    isInterstate, gstType, gst_type, originalEstimate, taxRate, gstRate, gstPercentage,
+    discountAmount, discount_amount, discount
+  } = req.body;
   const resolvedTicketId = ticketId !== undefined ? ticketId : (req.body.ticket_id !== undefined ? req.body.ticket_id : null);
   let connection;
 
@@ -597,9 +667,12 @@ const createInvoice = async (req, res, next) => {
     await connection.beginTransaction();
 
     // 1. Calculate authoritative totals
-    const isInter = Boolean(isInterstate);
+    const resolvedGstType = gstType || gst_type || (isInterstate ? 'inter' : 'intra');
+    const isInter = resolvedGstType === 'inter' ? true : (resolvedGstType === 'intra' ? false : Boolean(isInterstate));
     const rawItems = lineItems || req.body.items || [];
-    const calculated = calculateInvoiceTotals(rawItems, isInter);
+    const defaultRate = taxRate !== undefined ? taxRate : (gstRate !== undefined ? gstRate : (gstPercentage !== undefined ? gstPercentage : 18.0));
+    const effectiveDiscount = discountAmount !== undefined ? discountAmount : (discount_amount !== undefined ? discount_amount : (discount || 0));
+    const calculated = calculateInvoiceTotals(rawItems, isInter, defaultRate, effectiveDiscount, resolvedGstType);
 
     // If linked to a ticket, ensure ticket exists and no active invoice already exists (concurrency-safe)
     if (resolvedTicketId) {
@@ -633,8 +706,9 @@ const createInvoice = async (req, res, next) => {
       INSERT INTO invoices (
         id, user_id, ticket_id, client_name, amount, subtotal, tax_amount,
         cgst_amount, sgst_amount, igst_amount, is_interstate, original_estimate,
-        currency, invoice_date, due_date, status, notes, finalized_at, finalized_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        currency, invoice_date, due_date, status, notes, finalized_at, finalized_by,
+        gst_type, cgst_rate, sgst_rate, igst_rate, discount_amount, taxable_amount
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       invoiceId,
       userId,
@@ -646,7 +720,7 @@ const createInvoice = async (req, res, next) => {
       calculated.cgstAmount,
       calculated.sgstAmount,
       calculated.igstAmount,
-      isInter,
+      calculated.isInterstate,
       originalEstimate !== undefined && originalEstimate !== null ? parseFloat(originalEstimate) : null,
       currency || 'INR',
       new Date(invoiceDate),
@@ -654,7 +728,13 @@ const createInvoice = async (req, res, next) => {
       status || 'Draft',
       notes || null,
       status === 'Final' ? new Date() : null,
-      status === 'Final' ? req.user.id : null
+      status === 'Final' ? req.user.id : null,
+      calculated.gstType,
+      calculated.cgstRate,
+      calculated.sgstRate,
+      calculated.igstRate,
+      calculated.discountAmount,
+      calculated.taxableAmount
     ]);
 
     // 4. Insert each line item with item-level tax
@@ -690,7 +770,11 @@ const updateInvoice = async (req, res, next) => {
   }
 
   const { id } = req.params;
-  const { clientName, userId, ticketId, currency, invoiceDate, dueDate, status, notes, lineItems, newInvoiceId, isInterstate, originalEstimate, taxRate, gstRate, gstPercentage } = req.body;
+  const {
+    clientName, userId, ticketId, currency, invoiceDate, dueDate, status, notes, lineItems, newInvoiceId,
+    isInterstate, gstType, gst_type, originalEstimate, taxRate, gstRate, gstPercentage,
+    discountAmount, discount_amount, discount
+  } = req.body;
   let connection;
 
   try {
@@ -757,7 +841,8 @@ const updateInvoice = async (req, res, next) => {
     }
 
     // Authoritative total recalculation
-    const isInter = isInterstate !== undefined ? Boolean(isInterstate) : Boolean(currentInv.is_interstate);
+    const resolvedGstType = gstType || gst_type || (isInterstate !== undefined ? (isInterstate ? 'inter' : 'intra') : currentInv.gst_type);
+    const isInter = resolvedGstType === 'inter' ? true : (resolvedGstType === 'intra' ? false : (isInterstate !== undefined ? Boolean(isInterstate) : Boolean(currentInv.is_interstate)));
     let rawItems = lineItems || req.body.items;
     let shouldUpdateLineItems = true;
 
@@ -767,8 +852,9 @@ const updateInvoice = async (req, res, next) => {
       shouldUpdateLineItems = false;
     }
 
-    const defaultTaxRate = taxRate !== undefined ? taxRate : (gstRate !== undefined ? gstRate : gstPercentage);
-    const calculated = calculateInvoiceTotals(rawItems || [], isInter, defaultTaxRate);
+    const defaultTaxRate = taxRate !== undefined ? taxRate : (gstRate !== undefined ? gstRate : (gstPercentage !== undefined ? gstPercentage : (currentInv.cgst_rate ? (parseFloat(currentInv.cgst_rate) * 2) : 18.0)));
+    const resolvedDiscount = discountAmount !== undefined ? discountAmount : (discount_amount !== undefined ? discount_amount : (discount !== undefined ? discount : (currentInv.discount_amount || 0)));
+    const calculated = calculateInvoiceTotals(rawItems || [], isInter, defaultTaxRate, resolvedDiscount, resolvedGstType);
 
     const newStatus = status || currentInv.status;
 
@@ -780,7 +866,8 @@ const updateInvoice = async (req, res, next) => {
       SET user_id = ?, ticket_id = ?, client_name = ?, amount = ?, subtotal = ?, tax_amount = ?,
           cgst_amount = ?, sgst_amount = ?, igst_amount = ?, is_interstate = ?,
           original_estimate = ?, currency = ?, invoice_date = ?, due_date = ?,
-          status = ?, notes = ?
+          status = ?, notes = ?,
+          gst_type = ?, cgst_rate = ?, sgst_rate = ?, igst_rate = ?, discount_amount = ?, taxable_amount = ?
       WHERE id = ?
     `, [
       userId || currentInv.user_id,
@@ -792,13 +879,19 @@ const updateInvoice = async (req, res, next) => {
       calculated.cgstAmount,
       calculated.sgstAmount,
       calculated.igstAmount,
-      isInter,
+      calculated.isInterstate,
       originalEstimate !== undefined && originalEstimate !== null ? parseFloat(originalEstimate) : currentInv.original_estimate,
       currency || currentInv.currency || 'INR',
       invoiceDate ? new Date(invoiceDate) : currentInv.invoice_date,
       dueDate ? new Date(dueDate) : currentInv.due_date,
       newStatus,
       notes !== undefined ? notes : currentInv.notes,
+      calculated.gstType,
+      calculated.cgstRate,
+      calculated.sgstRate,
+      calculated.igstRate,
+      calculated.discountAmount,
+      calculated.taxableAmount,
       effectiveId
     ]);
 
@@ -898,7 +991,13 @@ const finalizeInvoice = async (req, res, next) => {
     }
 
     // Recalculate totals server-side
-    const calculated = calculateInvoiceTotals(lineItems, Boolean(inv.is_interstate));
+    const calculated = calculateInvoiceTotals(
+      lineItems,
+      Boolean(inv.is_interstate),
+      Number(inv.tax_rate !== null && inv.tax_rate !== undefined ? inv.tax_rate : 18.0),
+      Number(inv.discount_amount !== null && inv.discount_amount !== undefined ? inv.discount_amount : 0.0),
+      inv.gst_type || (inv.is_interstate ? 'inter' : 'intra')
+    );
 
     // Update invoice to Final
     await connection.query(`
@@ -910,6 +1009,13 @@ const finalizeInvoice = async (req, res, next) => {
           cgst_amount = ?,
           sgst_amount = ?,
           igst_amount = ?,
+          is_interstate = ?,
+          gst_type = ?,
+          cgst_rate = ?,
+          sgst_rate = ?,
+          igst_rate = ?,
+          discount_amount = ?,
+          taxable_amount = ?,
           finalized_at = NOW(),
           finalized_by = ?,
           updated_at = NOW()
@@ -921,6 +1027,13 @@ const finalizeInvoice = async (req, res, next) => {
       calculated.cgstAmount,
       calculated.sgstAmount,
       calculated.igstAmount,
+      calculated.isInterstate ? 1 : 0,
+      calculated.gstType,
+      calculated.cgstRate,
+      calculated.sgstRate,
+      calculated.igstRate,
+      calculated.discountAmount,
+      calculated.taxableAmount,
       req.user.id,
       id
     ]);
@@ -4266,25 +4379,56 @@ const getPaymentReceipt = async (req, res, next) => {
         serviceType: ticket.service_type || 'Service Center Repair'
       } : null,
       financials: (() => {
-        const effectiveTaxRate = resolvedSubtotal > 0
-          ? Math.round((resolvedTaxAmount / resolvedSubtotal) * 10000) / 100
-          : (formattedLineItems.length > 0 && formattedLineItems[0].taxRate !== undefined ? formattedLineItems[0].taxRate : 18.0);
-        const halfRate = Math.round((effectiveTaxRate / 2) * 100) / 100;
+        const discountAmount = invoice && invoice.discount_amount !== null && invoice.discount_amount !== undefined
+          ? parseFloat(invoice.discount_amount || 0)
+          : 0.0;
+        const taxableSubtotal = invoice && invoice.taxable_amount !== null && invoice.taxable_amount !== undefined
+          ? parseFloat(invoice.taxable_amount)
+          : Math.max(0, resolvedSubtotal - discountAmount);
+
+        // Determine statutory GST rates
+        let cgstRate = 0.0;
+        let sgstRate = 0.0;
+        let igstRate = 0.0;
+
+        if (invoice && invoice.gst_type) {
+          if (invoice.gst_type === 'inter') {
+            igstRate = invoice.igst_rate !== null && invoice.igst_rate !== undefined ? parseFloat(invoice.igst_rate) : 18.0;
+            cgstRate = 0.0;
+            sgstRate = 0.0;
+          } else {
+            cgstRate = invoice.cgst_rate !== null && invoice.cgst_rate !== undefined ? parseFloat(invoice.cgst_rate) : 9.0;
+            sgstRate = invoice.sgst_rate !== null && invoice.sgst_rate !== undefined ? parseFloat(invoice.sgst_rate) : 9.0;
+            igstRate = 0.0;
+          }
+        } else if (resolvedIsInterstate) {
+          igstRate = (invoice && invoice.igst_rate !== null && invoice.igst_rate !== undefined) ? parseFloat(invoice.igst_rate) : 18.0;
+          cgstRate = 0.0;
+          sgstRate = 0.0;
+        } else {
+          cgstRate = (invoice && invoice.cgst_rate !== null && invoice.cgst_rate !== undefined) ? parseFloat(invoice.cgst_rate) : 9.0;
+          sgstRate = (invoice && invoice.sgst_rate !== null && invoice.sgst_rate !== undefined) ? parseFloat(invoice.sgst_rate) : 9.0;
+          igstRate = 0.0;
+        }
+
+        const totalTaxRate = resolvedIsInterstate ? igstRate : (cgstRate + sgstRate);
 
         return {
           currency: 'INR',
           currencySymbol: '₹',
           subtotal: resolvedSubtotal,
-          taxableAmount: resolvedSubtotal,
-          taxRate: effectiveTaxRate,
+          discountAmount: discountAmount,
+          taxableAmount: taxableSubtotal,
+          taxRate: totalTaxRate,
           taxAmount: resolvedTaxAmount,
           totalGst: resolvedTaxAmount,
           isInterstate: resolvedIsInterstate,
-          cgstRate: resolvedIsInterstate ? 0 : halfRate,
+          gstType: resolvedIsInterstate ? 'inter' : 'intra',
+          cgstRate: cgstRate,
           cgstAmount: resolvedCgstAmount,
-          sgstRate: resolvedIsInterstate ? 0 : halfRate,
+          sgstRate: sgstRate,
           sgstAmount: resolvedSgstAmount,
-          igstRate: resolvedIsInterstate ? effectiveTaxRate : 0,
+          igstRate: igstRate,
           igstAmount: resolvedIgstAmount,
           totalAmount: resolvedGrandTotal,
           grandTotal: resolvedGrandTotal,

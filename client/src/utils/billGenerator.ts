@@ -75,11 +75,13 @@ export interface PaymentReceiptData {
     currency: string;
     currencySymbol: string;
     subtotal: number;
+    discountAmount?: number;
     taxableAmount?: number;
     taxRate?: number;
     taxAmount?: number;
     totalGst?: number;
     isInterstate?: boolean;
+    gstType?: 'intra' | 'inter';
     cgstRate?: number;
     cgstAmount?: number;
     sgstRate?: number;
@@ -176,19 +178,20 @@ export async function downloadPaymentBillPdf(bill: PaymentReceiptData): Promise<
   const balanceDue = Number(bill.financials.balanceDue || 0).toFixed(2);
 
   // Centralized GST amounts
-  const taxRate = bill.financials.taxRate !== undefined ? Number(bill.financials.taxRate) : 18;
-  const taxableAmount = Number(bill.financials.taxableAmount || bill.financials.subtotal || (totalAmount / (1 + taxRate / 100))).toFixed(2);
-  const totalTax = Number(bill.financials.taxAmount !== undefined ? bill.financials.taxAmount : (totalAmount - Number(taxableAmount))).toFixed(2);
-  const isInterstate = Boolean(bill.financials.isInterstate);
+  const isInterstate = Boolean(bill.financials?.isInterstate || bill.financials?.gstType === 'inter');
+  const discountAmount = Number(bill.financials?.discountAmount || 0);
+  const subtotalGross = Number(bill.financials?.subtotal !== undefined ? bill.financials.subtotal : totalAmount);
+  const taxableAmount = Number(bill.financials?.taxableAmount !== undefined ? bill.financials.taxableAmount : Math.max(0, subtotalGross - discountAmount)).toFixed(2);
+  const totalTax = Number(bill.financials?.taxAmount !== undefined ? bill.financials.taxAmount : (totalAmount - Number(taxableAmount))).toFixed(2);
 
-  const cgstRate = bill.financials.cgstRate !== undefined ? bill.financials.cgstRate : (isInterstate ? 0 : taxRate / 2);
-  const cgstAmount = Number(bill.financials.cgstAmount !== undefined ? bill.financials.cgstAmount : (isInterstate ? 0 : Number(totalTax) / 2)).toFixed(2);
+  const cgstRate = bill.financials?.cgstRate !== undefined ? Number(bill.financials.cgstRate) : (isInterstate ? 0 : 9);
+  const sgstRate = bill.financials?.sgstRate !== undefined ? Number(bill.financials.sgstRate) : (isInterstate ? 0 : 9);
+  const igstRate = bill.financials?.igstRate !== undefined ? Number(bill.financials.igstRate) : (isInterstate ? 18 : 0);
+  const taxRate = bill.financials?.taxRate !== undefined ? Number(bill.financials.taxRate) : (isInterstate ? igstRate : (cgstRate + sgstRate));
 
-  const sgstRate = bill.financials.sgstRate !== undefined ? bill.financials.sgstRate : (isInterstate ? 0 : taxRate / 2);
-  const sgstAmount = Number(bill.financials.sgstAmount !== undefined ? bill.financials.sgstAmount : (isInterstate ? 0 : Number(totalTax) - Number(cgstAmount))).toFixed(2);
-
-  const igstRate = bill.financials.igstRate !== undefined ? bill.financials.igstRate : (isInterstate ? taxRate : 0);
-  const igstAmount = Number(bill.financials.igstAmount !== undefined ? bill.financials.igstAmount : (isInterstate ? totalTax : 0)).toFixed(2);
+  const cgstAmount = Number(bill.financials?.cgstAmount !== undefined ? bill.financials.cgstAmount : (isInterstate ? 0 : Number(totalTax) / 2)).toFixed(2);
+  const sgstAmount = Number(bill.financials?.sgstAmount !== undefined ? bill.financials.sgstAmount : (isInterstate ? 0 : Number(totalTax) - Number(cgstAmount))).toFixed(2);
+  const igstAmount = Number(bill.financials?.igstAmount !== undefined ? bill.financials.igstAmount : (isInterstate ? totalTax : 0)).toFixed(2);
 
   const rawResolvedLogoUrl = bill.business?.logoBase64 || (bill.business?.logoUrl
     ? (bill.business.logoUrl.startsWith('http') || bill.business.logoUrl.startsWith('data:')
@@ -501,10 +504,32 @@ export function generatePaymentBillHtmlContent(
         <!-- GST Summary Box -->
         <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 16px; font-size: 11px;">
           
-          <div style="display: flex; justify-content: space-between; margin-bottom: 6px; color: #475569;">
-            <span>Subtotal:</span>
-            <span style="font-family: monospace; font-weight: 700; color: #0f172a;">${curSym}${taxableAmount}</span>
-          </div>
+          ${(() => {
+            const subGross = Number(bill.financials?.subtotal !== undefined ? bill.financials.subtotal : totalAmount);
+            const discount = Number(bill.financials?.discountAmount || 0);
+            if (discount > 0) {
+              return `
+                <div style="display: flex; justify-content: space-between; margin-bottom: 5px; color: #475569;">
+                  <span>Subtotal (Gross):</span>
+                  <span style="font-family: monospace; font-weight: 700; color: #0f172a;">${curSym}${subGross.toFixed(2)}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 5px; color: #16a34a;">
+                  <span>Discount:</span>
+                  <span style="font-family: monospace; font-weight: 600;">-${curSym}${discount.toFixed(2)}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 6px; color: #475569;">
+                  <span>Taxable Subtotal:</span>
+                  <span style="font-family: monospace; font-weight: 700; color: #0f172a;">${curSym}${taxableAmount}</span>
+                </div>
+              `;
+            }
+            return `
+              <div style="display: flex; justify-content: space-between; margin-bottom: 6px; color: #475569;">
+                <span>Subtotal:</span>
+                <span style="font-family: monospace; font-weight: 700; color: #0f172a;">${curSym}${taxableAmount}</span>
+              </div>
+            `;
+          })()}
 
           ${isInterstate ? `
             <div style="display: flex; justify-content: space-between; margin-bottom: 5px; color: #475569;">
@@ -592,18 +617,19 @@ export async function generatePaymentBillHtml(bill: PaymentReceiptData): Promise
   const totalPaid = Number(bill.financials?.amountPaid || totalAmount).toFixed(2);
   const balanceDue = Number(bill.financials?.balanceDue || 0).toFixed(2);
 
-  const taxRate = bill.financials?.taxRate !== undefined ? Number(bill.financials.taxRate) : 18;
-  const taxableAmount = Number(bill.financials?.taxableAmount || bill.financials?.subtotal || (totalAmount / (1 + taxRate / 100))).toFixed(2);
+  const isInterstate = Boolean(bill.financials?.isInterstate || bill.financials?.gstType === 'inter');
+  const discountAmount = Number(bill.financials?.discountAmount || 0);
+  const subtotalGross = Number(bill.financials?.subtotal !== undefined ? bill.financials.subtotal : totalAmount);
+  const taxableAmount = Number(bill.financials?.taxableAmount !== undefined ? bill.financials.taxableAmount : Math.max(0, subtotalGross - discountAmount)).toFixed(2);
   const totalTax = Number(bill.financials?.taxAmount !== undefined ? bill.financials.taxAmount : (totalAmount - Number(taxableAmount))).toFixed(2);
-  const isInterstate = Boolean(bill.financials?.isInterstate);
 
-  const cgstRate = bill.financials?.cgstRate !== undefined ? bill.financials.cgstRate : (isInterstate ? 0 : taxRate / 2);
+  const cgstRate = bill.financials?.cgstRate !== undefined ? Number(bill.financials.cgstRate) : (isInterstate ? 0 : 9);
+  const sgstRate = bill.financials?.sgstRate !== undefined ? Number(bill.financials.sgstRate) : (isInterstate ? 0 : 9);
+  const igstRate = bill.financials?.igstRate !== undefined ? Number(bill.financials.igstRate) : (isInterstate ? 18 : 0);
+  const taxRate = bill.financials?.taxRate !== undefined ? Number(bill.financials.taxRate) : (isInterstate ? igstRate : (cgstRate + sgstRate));
+
   const cgstAmount = Number(bill.financials?.cgstAmount !== undefined ? bill.financials.cgstAmount : (isInterstate ? 0 : Number(totalTax) / 2)).toFixed(2);
-
-  const sgstRate = bill.financials?.sgstRate !== undefined ? bill.financials.sgstRate : (isInterstate ? 0 : taxRate / 2);
   const sgstAmount = Number(bill.financials?.sgstAmount !== undefined ? bill.financials.sgstAmount : (isInterstate ? 0 : Number(totalTax) - Number(cgstAmount))).toFixed(2);
-
-  const igstRate = bill.financials?.igstRate !== undefined ? bill.financials.igstRate : (isInterstate ? taxRate : 0);
   const igstAmount = Number(bill.financials?.igstAmount !== undefined ? bill.financials.igstAmount : (isInterstate ? totalTax : 0)).toFixed(2);
 
   const rawResolvedLogoUrl = bill.business?.logoBase64 || (bill.business?.logoUrl
@@ -652,18 +678,19 @@ export async function printPaymentBill(bill: PaymentReceiptData): Promise<void> 
   const totalPaid = Number(bill.financials?.amountPaid || totalAmount).toFixed(2);
   const balanceDue = Number(bill.financials?.balanceDue || 0).toFixed(2);
 
-  const taxRate = bill.financials?.taxRate !== undefined ? Number(bill.financials.taxRate) : 18;
-  const taxableAmount = Number(bill.financials?.taxableAmount || bill.financials?.subtotal || (totalAmount / (1 + taxRate / 100))).toFixed(2);
+  const isInterstate = Boolean(bill.financials?.isInterstate || bill.financials?.gstType === 'inter');
+  const discountAmount = Number(bill.financials?.discountAmount || 0);
+  const subtotalGross = Number(bill.financials?.subtotal !== undefined ? bill.financials.subtotal : totalAmount);
+  const taxableAmount = Number(bill.financials?.taxableAmount !== undefined ? bill.financials.taxableAmount : Math.max(0, subtotalGross - discountAmount)).toFixed(2);
   const totalTax = Number(bill.financials?.taxAmount !== undefined ? bill.financials.taxAmount : (totalAmount - Number(taxableAmount))).toFixed(2);
-  const isInterstate = Boolean(bill.financials?.isInterstate);
 
-  const cgstRate = bill.financials?.cgstRate !== undefined ? bill.financials.cgstRate : (isInterstate ? 0 : taxRate / 2);
+  const cgstRate = bill.financials?.cgstRate !== undefined ? Number(bill.financials.cgstRate) : (isInterstate ? 0 : 9);
+  const sgstRate = bill.financials?.sgstRate !== undefined ? Number(bill.financials.sgstRate) : (isInterstate ? 0 : 9);
+  const igstRate = bill.financials?.igstRate !== undefined ? Number(bill.financials.igstRate) : (isInterstate ? 18 : 0);
+  const taxRate = bill.financials?.taxRate !== undefined ? Number(bill.financials.taxRate) : (isInterstate ? igstRate : (cgstRate + sgstRate));
+
   const cgstAmount = Number(bill.financials?.cgstAmount !== undefined ? bill.financials.cgstAmount : (isInterstate ? 0 : Number(totalTax) / 2)).toFixed(2);
-
-  const sgstRate = bill.financials?.sgstRate !== undefined ? bill.financials.sgstRate : (isInterstate ? 0 : taxRate / 2);
   const sgstAmount = Number(bill.financials?.sgstAmount !== undefined ? bill.financials.sgstAmount : (isInterstate ? 0 : Number(totalTax) - Number(cgstAmount))).toFixed(2);
-
-  const igstRate = bill.financials?.igstRate !== undefined ? bill.financials.igstRate : (isInterstate ? taxRate : 0);
   const igstAmount = Number(bill.financials?.igstAmount !== undefined ? bill.financials.igstAmount : (isInterstate ? totalTax : 0)).toFixed(2);
 
   const rawResolvedLogoUrl = bill.business?.logoBase64 || (bill.business?.logoUrl

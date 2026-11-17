@@ -108,11 +108,14 @@ export function CreateInvoiceModal({
 
   const roundedSubtotal = Math.round(subtotal * 100) / 100;
   const roundedTotalGst = Math.round(totalGst * 100) / 100;
+  const defaultSlabRate = lineItems.length > 0 && lineItems[0].taxRate !== undefined ? Number(lineItems[0].taxRate) : 18;
+  const cgstRate = isInterstate ? 0 : (defaultSlabRate / 2);
+  const sgstRate = isInterstate ? 0 : (defaultSlabRate / 2);
+  const igstRate = isInterstate ? defaultSlabRate : 0;
   const cgstAmount = isInterstate ? 0 : Math.round((roundedTotalGst / 2) * 100) / 100;
   const sgstAmount = isInterstate ? 0 : Math.round((roundedTotalGst - cgstAmount) * 100) / 100;
   const igstAmount = isInterstate ? roundedTotalGst : 0;
   const grandTotal = Math.round((roundedSubtotal + roundedTotalGst) * 100) / 100;
-  const effectiveGstRate = roundedSubtotal > 0 ? Math.round((roundedTotalGst / roundedSubtotal) * 10000) / 100 : 18;
 
   const handleSubmit = async (submitStatus: 'Draft' | 'Sent' | 'Final') => {
     if (!clientName.trim()) {
@@ -167,6 +170,10 @@ export function CreateInvoiceModal({
         status: submitStatus,
         notes: notes.trim(),
         isInterstate: Boolean(isInterstate),
+        gstType: isInterstate ? 'inter' : 'intra',
+        cgstRate,
+        sgstRate,
+        igstRate,
         amount: grandTotal,
         subtotal: roundedSubtotal,
         taxAmount: roundedTotalGst,
@@ -518,7 +525,7 @@ export function CreateInvoiceModal({
 
             {isInterstate ? (
               <div className="bg-amber-950/30 p-2.5 rounded-xl border border-amber-500/30">
-                <span className="text-amber-400 block text-[10px] uppercase">IGST ({effectiveGstRate.toFixed(1)}%)</span>
+                <span className="text-amber-400 block text-[10px] uppercase">IGST ({igstRate}%)</span>
                 <span className="text-amber-300 font-bold text-sm">
                   ₹{igstAmount.toFixed(2)}
                 </span>
@@ -526,13 +533,13 @@ export function CreateInvoiceModal({
             ) : (
               <>
                 <div className="bg-cyan-950/30 p-2.5 rounded-xl border border-cyan-500/30">
-                  <span className="text-cyan-400 block text-[10px] uppercase">CGST ({(effectiveGstRate / 2).toFixed(1)}%)</span>
+                  <span className="text-cyan-400 block text-[10px] uppercase">CGST ({cgstRate}%)</span>
                   <span className="text-neon-cyan font-bold text-sm">
                     ₹{cgstAmount.toFixed(2)}
                   </span>
                 </div>
                 <div className="bg-cyan-950/30 p-2.5 rounded-xl border border-cyan-500/30">
-                  <span className="text-cyan-400 block text-[10px] uppercase">SGST ({(effectiveGstRate / 2).toFixed(1)}%)</span>
+                  <span className="text-cyan-400 block text-[10px] uppercase">SGST ({sgstRate}%)</span>
                   <span className="text-neon-cyan font-bold text-sm">
                     ₹{sgstAmount.toFixed(2)}
                   </span>

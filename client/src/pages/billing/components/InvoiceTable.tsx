@@ -52,6 +52,12 @@ interface Invoice {
   cgstAmount?: number;
   sgstAmount?: number;
   igstAmount?: number;
+  gstType?: 'intra' | 'inter';
+  cgstRate?: number;
+  sgstRate?: number;
+  igstRate?: number;
+  discountAmount?: number;
+  taxableAmount?: number;
   originalEstimate?: number | null;
   isInterstate?: boolean;
   currency: string;
@@ -314,6 +320,10 @@ export default function InvoiceTable({
         taxRate: effectiveRate,
         gstRate: effectiveRate,
         gstPercentage: effectiveRate,
+        gstType: editIsInterstate ? 'inter' : 'intra',
+        cgstRate: editIsInterstate ? 0 : Math.round((effectiveRate / 2) * 100) / 100,
+        sgstRate: editIsInterstate ? 0 : Math.round((effectiveRate / 2) * 100) / 100,
+        igstRate: editIsInterstate ? effectiveRate : 0,
         cgstAmount: editIsInterstate ? 0 : Math.round((totalGst / 2) * 100) / 100,
         sgstAmount: editIsInterstate ? 0 : Math.round((totalGst - Math.round((totalGst / 2) * 100) / 100) * 100) / 100,
         igstAmount: editIsInterstate ? Math.round(totalGst * 100) / 100 : 0,
@@ -650,38 +660,44 @@ export default function InvoiceTable({
                             {(() => {
                               const subtotal = Number(invoice.subtotal !== null && invoice.subtotal !== undefined ? invoice.subtotal : invoice.amount);
                               const totalTax = Number(invoice.taxAmount !== undefined && invoice.taxAmount !== null ? invoice.taxAmount : (invoice.amount - subtotal));
-                              const isInter = Boolean(invoice.isInterstate);
+                              const isInter = Boolean(invoice.isInterstate || invoice.gstType === 'inter');
+                              const cgstRate = invoice.cgstRate !== undefined ? Number(invoice.cgstRate) : (isInter ? 0 : 9);
+                              const sgstRate = invoice.sgstRate !== undefined ? Number(invoice.sgstRate) : (isInter ? 0 : 9);
+                              const igstRate = invoice.igstRate !== undefined ? Number(invoice.igstRate) : (isInter ? 18 : 0);
                               const cgst = isInter ? 0 : Number(invoice.cgstAmount !== undefined && invoice.cgstAmount !== null ? invoice.cgstAmount : Math.round((totalTax / 2) * 100) / 100);
                               const sgst = isInter ? 0 : Number(invoice.sgstAmount !== undefined && invoice.sgstAmount !== null ? invoice.sgstAmount : Math.round((totalTax - cgst) * 100) / 100);
                               const igst = isInter ? Number(invoice.igstAmount !== undefined && invoice.igstAmount !== null ? invoice.igstAmount : totalTax) : 0;
+                              const discount = Number(invoice.discountAmount || 0);
 
                               return (
                                 <div className="mt-3 p-4 bg-zinc-950 border border-zinc-800 rounded-xl">
                                   <div className="text-xs font-mono uppercase text-zinc-400 font-bold mb-3 flex items-center justify-between">
                                     <span>Financial & GST Breakdown</span>
                                     <span className="text-[10px] text-cyan-400 font-mono">
-                                      {isInter ? '● Inter-State (IGST 18%)' : '● Intra-State Split (CGST 9% + SGST 9%)'}
+                                      {isInter ? `● Inter-State (IGST ${igstRate}%)` : `● Intra-State Split (CGST ${cgstRate}% + SGST ${sgstRate}%)`}
                                     </span>
                                   </div>
                                   <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs font-mono">
                                     <div className="bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800">
-                                      <span className="text-zinc-500 block text-[10px] uppercase">Taxable Subtotal</span>
+                                      <span className="text-zinc-500 block text-[10px] uppercase">
+                                        {discount > 0 ? 'Taxable Subtotal' : 'Subtotal'}
+                                      </span>
                                       <span className="text-white font-bold text-sm">₹{subtotal.toFixed(2)}</span>
                                     </div>
 
                                     {isInter ? (
                                       <div className="bg-amber-950/30 p-2.5 rounded-lg border border-amber-500/30">
-                                        <span className="text-amber-400 block text-[10px] uppercase">IGST (18%)</span>
+                                        <span className="text-amber-400 block text-[10px] uppercase">IGST ({igstRate}%)</span>
                                         <span className="text-amber-300 font-bold text-sm">₹{igst.toFixed(2)}</span>
                                       </div>
                                     ) : (
                                       <>
                                         <div className="bg-cyan-950/30 p-2.5 rounded-lg border border-cyan-500/30">
-                                          <span className="text-cyan-400 block text-[10px] uppercase">CGST (9.0%)</span>
+                                          <span className="text-cyan-400 block text-[10px] uppercase">CGST ({cgstRate}%)</span>
                                           <span className="text-cyan-300 font-bold text-sm">₹{cgst.toFixed(2)}</span>
                                         </div>
                                         <div className="bg-cyan-950/30 p-2.5 rounded-lg border border-cyan-500/30">
-                                          <span className="text-cyan-400 block text-[10px] uppercase">SGST (9.0%)</span>
+                                          <span className="text-cyan-400 block text-[10px] uppercase">SGST ({sgstRate}%)</span>
                                           <span className="text-cyan-300 font-bold text-sm">₹{sgst.toFixed(2)}</span>
                                         </div>
                                       </>
@@ -1042,11 +1058,14 @@ export default function InvoiceTable({
                             {(() => {
                               const subtotal = editLineItems.reduce((sum, item) => sum + item.total, 0);
                               const totalGst = editLineItems.reduce((sum, item) => sum + (item.taxAmount || (item.total * (item.taxRate !== undefined ? item.taxRate : 18) / 100)), 0);
+                              const defaultSlabRate = editLineItems.length > 0 && editLineItems[0].taxRate !== undefined ? Number(editLineItems[0].taxRate) : 18;
+                              const cgstRate = editIsInterstate ? 0 : (defaultSlabRate / 2);
+                              const sgstRate = editIsInterstate ? 0 : (defaultSlabRate / 2);
+                              const igstRate = editIsInterstate ? defaultSlabRate : 0;
                               const cgstTotal = editIsInterstate ? 0 : Math.round((totalGst / 2) * 100) / 100;
                               const sgstTotal = editIsInterstate ? 0 : Math.round((totalGst - cgstTotal) * 100) / 100;
                               const igstTotal = editIsInterstate ? totalGst : 0;
                               const grandTotal = Math.round((subtotal + totalGst) * 100) / 100;
-                              const effectiveRate = subtotal > 0 ? Math.round((totalGst / subtotal) * 10000) / 100 : 18;
 
                               return (
                                 <div className="p-4 bg-zinc-900/90 border border-zinc-800 rounded-2xl grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs font-mono items-center">
@@ -1059,7 +1078,7 @@ export default function InvoiceTable({
 
                                   {editIsInterstate ? (
                                     <div className="bg-amber-950/30 p-2.5 rounded-xl border border-amber-500/30">
-                                      <span className="text-amber-400 block text-[10px] uppercase">IGST ({effectiveRate.toFixed(1)}%)</span>
+                                      <span className="text-amber-400 block text-[10px] uppercase">IGST ({igstRate}%)</span>
                                       <span className="text-amber-300 font-bold text-sm">
                                         ₹{igstTotal.toFixed(2)}
                                       </span>
@@ -1067,13 +1086,13 @@ export default function InvoiceTable({
                                   ) : (
                                     <>
                                       <div className="bg-cyan-950/30 p-2.5 rounded-xl border border-cyan-500/30">
-                                        <span className="text-cyan-400 block text-[10px] uppercase">CGST ({(effectiveRate / 2).toFixed(1)}%)</span>
+                                        <span className="text-cyan-400 block text-[10px] uppercase">CGST ({cgstRate}%)</span>
                                         <span className="text-neon-cyan font-bold text-sm">
                                           ₹{cgstTotal.toFixed(2)}
                                         </span>
                                       </div>
                                       <div className="bg-cyan-950/30 p-2.5 rounded-xl border border-cyan-500/30">
-                                        <span className="text-cyan-400 block text-[10px] uppercase">SGST ({(effectiveRate / 2).toFixed(1)}%)</span>
+                                        <span className="text-cyan-400 block text-[10px] uppercase">SGST ({sgstRate}%)</span>
                                         <span className="text-neon-cyan font-bold text-sm">
                                           ₹{sgstTotal.toFixed(2)}
                                         </span>

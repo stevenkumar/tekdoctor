@@ -514,31 +514,35 @@ export default function PaymentPage() {
               {(() => {
                 const subtotal = Number(invoice.subtotal || (invoice.lineItems || []).reduce((s: number, it: any) => s + (Number(it.total) || 0), 0));
                 const totalTax = Number(invoice.taxAmount !== undefined && invoice.taxAmount !== null ? invoice.taxAmount : (Number(invoice.amount || 0) - subtotal));
-                const isInterstate = Boolean(invoice.isInterstate || (invoice as any).is_interstate);
+                const isInterstate = Boolean(invoice.isInterstate || (invoice as any).is_interstate || invoice.gstType === 'inter');
+                const cgstRate = invoice.cgstRate !== undefined && invoice.cgstRate !== null ? Number(invoice.cgstRate) : (isInterstate ? 0 : 9);
+                const sgstRate = invoice.sgstRate !== undefined && invoice.sgstRate !== null ? Number(invoice.sgstRate) : (isInterstate ? 0 : 9);
+                const igstRate = invoice.igstRate !== undefined && invoice.igstRate !== null ? Number(invoice.igstRate) : (isInterstate ? 18 : 0);
                 const cgst = isInterstate ? 0 : Number(invoice.cgstAmount !== undefined && invoice.cgstAmount !== null ? invoice.cgstAmount : Math.round((totalTax / 2) * 100) / 100);
                 const sgst = isInterstate ? 0 : Number(invoice.sgstAmount !== undefined && invoice.sgstAmount !== null ? invoice.sgstAmount : Math.round((totalTax - cgst) * 100) / 100);
                 const igst = isInterstate ? Number(invoice.igstAmount !== undefined && invoice.igstAmount !== null ? invoice.igstAmount : totalTax) : 0;
+                const discount = Number(invoice.discountAmount || 0);
 
                 return (
                   <div className="py-4 border-t border-zinc-800/80 space-y-2 text-xs font-mono">
                     <div className="flex justify-between text-zinc-400">
-                      <span>Taxable Subtotal:</span>
+                      <span>{discount > 0 ? 'Taxable Subtotal:' : 'Subtotal:'}</span>
                       <span className="text-white font-bold">₹{subtotal.toFixed(2)}</span>
                     </div>
 
                     {isInterstate ? (
                       <div className="flex justify-between text-zinc-400">
-                        <span>IGST (18%):</span>
+                        <span>IGST ({igstRate}%):</span>
                         <span className="text-amber-400 font-bold">₹{igst.toFixed(2)}</span>
                       </div>
                     ) : (
                       <>
                         <div className="flex justify-between text-zinc-400">
-                          <span>CGST (9.0%):</span>
+                          <span>CGST ({cgstRate}%):</span>
                           <span className="text-neon-cyan font-bold">₹{cgst.toFixed(2)}</span>
                         </div>
                         <div className="flex justify-between text-zinc-400">
-                          <span>SGST (9.0%):</span>
+                          <span>SGST ({sgstRate}%):</span>
                           <span className="text-neon-cyan font-bold">₹{sgst.toFixed(2)}</span>
                         </div>
                       </>

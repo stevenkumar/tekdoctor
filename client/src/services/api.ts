@@ -1253,6 +1253,12 @@ export interface Invoice {
   igstAmount?: number;
   isInterstate?: boolean;
   is_interstate?: boolean;
+  gstType?: 'intra' | 'inter';
+  cgstRate?: number;
+  sgstRate?: number;
+  igstRate?: number;
+  discountAmount?: number;
+  taxableAmount?: number;
   originalEstimate?: number | null;
   currency: string;
   invoiceDate: string;

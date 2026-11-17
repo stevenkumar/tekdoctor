@@ -1668,8 +1668,9 @@ const updateRequestStatus = async (req, res, next) => {
             INSERT INTO invoices (
               id, user_id, ticket_id, client_name, amount, subtotal, tax_amount,
               cgst_amount, sgst_amount, igst_amount, is_interstate, original_estimate,
-              currency, invoice_date, due_date, status, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.00, FALSE, ?, 'INR', NOW(), DATE_ADD(NOW(), INTERVAL 7 DAY), 'Draft', ?)
+              currency, invoice_date, due_date, status, notes,
+              gst_type, cgst_rate, sgst_rate, igst_rate, discount_amount, taxable_amount
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.00, FALSE, ?, 'INR', NOW(), DATE_ADD(NOW(), INTERVAL 7 DAY), 'Draft', ?, 'intra', ?, ?, 0.00, 0.00, ?)
           `, [
             draftInvId,
             request.user_id || request.company_id || null,
@@ -1681,7 +1682,10 @@ const updateRequestStatus = async (req, res, next) => {
             defaultCgst,
             defaultSgst,
             (rawEstCost > 0 ? rawEstCost : (rawRepairCost > 0 ? rawRepairCost : defaultSubtotal)),
-            `Draft invoice auto-created upon repair completion for ticket ${request.ticket_number || id}.`
+            `Draft invoice auto-created upon repair completion for ticket ${request.ticket_number || id}.`,
+            Math.round((effectiveTaxRate / 2) * 100) / 100,
+            Math.round((effectiveTaxRate / 2) * 100) / 100,
+            defaultSubtotal
           ]);
 
           const desc = `Device Repair Service - ${request.brand || ''} ${request.model_number || ''}`.trim() || 'Device Repair Service';
