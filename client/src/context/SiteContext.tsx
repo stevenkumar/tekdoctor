@@ -3,9 +3,27 @@ import type { ReactNode } from 'react';
 import { publicApi } from '@/services/api';
 import { setRecaptchaRuntimeConfig } from '@/utils/recaptcha';
 
+export interface SiteMetricItem {
+    label: string;
+    value: string;
+}
+
+export interface SiteStats {
+    devicesRevived?: string;
+    successMetric?: string;
+    responseTime?: string;
+    completedCount?: number;
+    cancelledCount?: number;
+    totalCount?: number;
+    resolvedCount?: number;
+    metrics?: SiteMetricItem[];
+    [key: string]: any;
+}
+
 interface SiteContextType {
     settings: Record<string, Record<string, string>>;
     homepage: Record<string, any>;
+    stats: SiteStats | null;
     loading: boolean;
     flattenedSettings: Record<string, string>;
     refreshSiteData: () => Promise<void>;
@@ -14,6 +32,7 @@ interface SiteContextType {
 const SiteContext = createContext<SiteContextType>({
     settings: {},
     homepage: {},
+    stats: null,
     loading: true,
     flattenedSettings: {},
     refreshSiteData: async () => { },
@@ -69,6 +88,7 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
     const [settings, setSettings] = useState({});
     const [flattenedSettings, setFlattenedSettings] = useState<Record<string, string>>({});
     const [homepage, setHomepage] = useState({});
+    const [stats, setStats] = useState<SiteStats | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -76,9 +96,10 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
             try {
                 const res = await publicApi.getSiteData();
                 if (res.ok && res.data) {
-                    const { settings: sData, homepage: hData } = (res.data as any).data;
+                    const { settings: sData, homepage: hData, stats: stData } = (res.data as any).data;
                     setSettings(sData || {});
                     setHomepage(hData || {});
+                    setStats(stData || (hData?.hero?.metrics ? { metrics: hData.hero.metrics } : null));
 
                     const flat: Record<string, string> = {};
                     if (sData) {
@@ -106,9 +127,10 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
         try {
             const res = await publicApi.getSiteData();
             if (res.ok && res.data) {
-                const { settings: sData, homepage: hData } = (res.data as any).data;
+                const { settings: sData, homepage: hData, stats: stData } = (res.data as any).data;
                 setSettings(sData || {});
                 setHomepage(hData || {});
+                setStats(stData || (hData?.hero?.metrics ? { metrics: hData.hero.metrics } : null));
 
                 const flat: Record<string, string> = {};
                 if (sData) {
@@ -129,7 +151,7 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
     };
 
     return (
-        <SiteContext.Provider value={{ settings, homepage, loading, flattenedSettings, refreshSiteData }}>
+        <SiteContext.Provider value={{ settings, homepage, stats, loading, flattenedSettings, refreshSiteData }}>
             {children}
         </SiteContext.Provider>
     );

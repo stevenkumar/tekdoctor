@@ -64,6 +64,13 @@ const PUBLIC_SAFE_SETTINGS = {
     ])
 };
 
+// Lightweight in-memory cache for dynamic homepage stats (30 seconds TTL)
+let statsCache = {
+    timestamp: 0,
+    data: null
+};
+const STATS_CACHE_TTL_MS = 30 * 1000;
+
 /**
  * Get all active public site settings and homepage content
  * GET /api/public/site-data
@@ -110,42 +117,90 @@ const getPublicSiteData = async (req, res, next) => {
             homepage[row.section] = typeof row.content === 'string' ? JSON.parse(row.content) : row.content;
         });
 
-        // Compute dynamic metrics if hero section is present
-        try {
-            const [[metricsResult]] = await connection.query(`
-                SELECT 
-                    COUNT(CASE WHEN status IN ('completed', 'delivered') THEN 1 END) as completed_count,
-                    COUNT(CASE WHEN status IN ('completed', 'delivered', 'cancelled') THEN 1 END) as total_finished
-                FROM service_requests
-            `);
-            const completedCount = metricsResult ? metricsResult.completed_count : 0;
-            const totalFinished = metricsResult ? metricsResult.total_finished : 0;
+        // Compute dynamic metrics from service_requests (cached for 30s)
+        let stats = null;
+        const now = Date.now();
+        if (statsCache.data && (now - statsCache.timestamp < STATS_CACHE_TTL_MS)) {
+            stats = statsCache.data;
+        } else {
+            try {
+                // Leveraging idx_sr_status_created / idx_sr_status index for rapid aggregate resolution
+                const [[metricsResult]] = await connection.query(`
+                    SELECT 
+                        COUNT(CASE WHEN status IN ('completed', 'delivered', 'closed') THEN 1 END) as completed_count,
+                        COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled_count,
+                        COUNT(*) as total_count
+                    FROM service_requests
+                `);
 
-            if (homepage.hero) {
-                if (!Array.isArray(homepage.hero.metrics)) {
-                    homepage.hero.metrics = [
+                const completedCount = Number(metricsResult?.completed_count || 0);
+                const cancelledCount = Number(metricsResult?.cancelled_count || 0);
+                const totalCount = Number(metricsResult?.total_count || 0);
+
+                // Devices Revived: Minimum display floor of '10+', otherwise `${completedCount}+`
+                const devicesRevived = completedCount < 10 ? '10+' : `${completedCount}+`;
+
+                // Success Metric: Real completion rate (completed / (completed + cancelled)) * 100,
+                // defaulting to '99.9%' when total resolved tickets < 10 to prevent distortion.
+                // Note: Only finished tickets (completed + cancelled) determine completion percentage
+                // so active (pending, in_progress) tickets are not treated as failures.
+                const resolvedCount = completedCount + cancelledCount;
+                let successMetric = '99.9%';
+                if (resolvedCount >= 10 && completedCount > 0) {
+                    const rate = Math.min(100, Math.max(0, (completedCount / resolvedCount) * 100));
+                    successMetric = `${rate.toFixed(1)}%`;
+                }
+
+                const responseTime = '24/7';
+
+                stats = {
+                    devicesRevived,
+                    successMetric,
+                    responseTime,
+                    completedCount,
+                    cancelledCount,
+                    totalCount,
+                    resolvedCount,
+                    metrics: [
+                        { label: 'Devices Revived', value: devicesRevived },
+                        { label: 'Success Metric', value: successMetric },
+                        { label: 'Response Time', value: responseTime }
+                    ]
+                };
+
+                statsCache = {
+                    timestamp: now,
+                    data: stats
+                };
+            } catch (metricsErr) {
+                console.error('Failed to compute dynamic hero metrics:', metricsErr);
+                stats = statsCache.data || {
+                    devicesRevived: '10+',
+                    successMetric: '99.9%',
+                    responseTime: '24/7',
+                    completedCount: 0,
+                    cancelledCount: 0,
+                    totalCount: 0,
+                    resolvedCount: 0,
+                    metrics: [
                         { label: 'Devices Revived', value: '10+' },
                         { label: 'Success Metric', value: '99.9%' },
                         { label: 'Response Time', value: '24/7' }
-                    ];
-                }
-                if (homepage.hero.metrics[0]) {
-                    homepage.hero.metrics[0].value = String(completedCount);
-                }
-                if (homepage.hero.metrics[1]) {
-                    const percentage = totalFinished > 0
-                        ? ((completedCount / totalFinished) * 100).toFixed(1) + '%'
-                        : '100.0%';
-                    homepage.hero.metrics[1].value = percentage;
-                }
+                    ]
+                };
             }
-        } catch (metricsErr) {
-            console.error('Failed to compute dynamic hero metrics:', metricsErr);
         }
+
+        // Ensure homepage.hero binds directly to dynamic stats with zero manual admin intervention
+        if (!homepage.hero) {
+            homepage.hero = {};
+        }
+        homepage.hero.metrics = stats.metrics;
 
         return res.status(200).json(formatResponse(true, 'Public data fetched successfully', {
             settings,
-            homepage
+            homepage,
+            stats
         }));
 
     } catch (error) {

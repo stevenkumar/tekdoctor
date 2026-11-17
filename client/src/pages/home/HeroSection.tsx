@@ -7,8 +7,28 @@ import { ArrowRight, Sparkles, ChevronDown, Monitor, ShieldCheck, Zap } from 'lu
 import { useSiteContext } from '../../context/SiteContext';
 
 const HeroSection = () => {
-  const { homepage } = useSiteContext();
+  const siteData = useSiteContext();
+  const { homepage, stats } = siteData;
   const heroContent = homepage?.hero || {};
+
+  // Direct binding to siteData.stats with initial loading fallbacks
+  const defaultMetrics = [
+    { label: 'Devices Revived', value: '10+' },
+    { label: 'Success Metric', value: '99.9%' },
+    { label: 'Response Time', value: '24/7' },
+  ];
+
+  const metrics =
+    stats?.metrics ||
+    (stats?.devicesRevived
+      ? [
+          { label: 'Devices Revived', value: stats.devicesRevived },
+          { label: 'Success Metric', value: stats.successMetric || '99.9%' },
+          { label: 'Response Time', value: stats.responseTime || '24/7' },
+        ]
+      : null) ||
+    heroContent?.metrics ||
+    defaultMetrics;
 
   const containerVariants = {
     hidden: { opacity: 0 },
@@ -121,11 +141,7 @@ const HeroSection = () => {
             variants={itemVariants}
             className="w-full grid grid-cols-1 md:grid-cols-3 gap-0 border border-white/10 rounded-[2rem] overflow-hidden bg-white/5 backdrop-blur-sm mb-30"
           >
-            {(heroContent.metrics || [
-              { label: 'Devices Revived', value: '10+' },
-              { label: 'Success Metric', value: '99.9%' },
-              { label: 'Response Time', value: '24/7' },
-            ]).map((stat: any, i: number) => {
+            {metrics.map((stat: any, i: number) => {
               const icons = [
                 <Monitor className="w-4 h-4" key="1" />,
                 <ShieldCheck className="w-4 h-4" key="2" />,

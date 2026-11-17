@@ -1151,12 +1151,22 @@ const getHomepageContent = async (req, res, next) => {
         try {
             const [[metricsResult]] = await connection.query(`
                 SELECT 
-                    COUNT(CASE WHEN status IN ('completed', 'delivered') THEN 1 END) as completed_count,
-                    COUNT(CASE WHEN status IN ('completed', 'delivered', 'cancelled') THEN 1 END) as total_finished
+                    COUNT(CASE WHEN status IN ('completed', 'delivered', 'closed') THEN 1 END) as completed_count,
+                    COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled_count,
+                    COUNT(*) as total_count
                 FROM service_requests
             `);
-            const completedCount = metricsResult ? metricsResult.completed_count : 0;
-            const totalFinished = metricsResult ? metricsResult.total_finished : 0;
+            const completedCount = Number(metricsResult?.completed_count || 0);
+            const cancelledCount = Number(metricsResult?.cancelled_count || 0);
+            const totalCount = Number(metricsResult?.total_count || 0);
+
+            const devicesRevived = completedCount < 10 ? '10+' : `${completedCount}+`;
+            const resolvedCount = completedCount + cancelledCount;
+            let successMetric = '99.9%';
+            if (resolvedCount >= 10 && completedCount > 0) {
+                const rate = Math.min(100, Math.max(0, (completedCount / resolvedCount) * 100));
+                successMetric = `${rate.toFixed(1)}%`;
+            }
 
             const heroIndex = rows.findIndex(row => row.section === 'hero');
             if (heroIndex !== -1) {
@@ -1167,22 +1177,11 @@ const getHomepageContent = async (req, res, next) => {
                     } catch (e) { }
                 }
                 if (heroContent) {
-                    if (!Array.isArray(heroContent.metrics)) {
-                        heroContent.metrics = [
-                            { label: 'Devices Revived', value: '10+' },
-                            { label: 'Success Metric', value: '99.9%' },
-                            { label: 'Response Time', value: '24/7' }
-                        ];
-                    }
-                    if (heroContent.metrics[0]) {
-                        heroContent.metrics[0].value = String(completedCount);
-                    }
-                    if (heroContent.metrics[1]) {
-                        const percentage = totalFinished > 0
-                            ? ((completedCount / totalFinished) * 100).toFixed(1) + '%'
-                            : '100.0%';
-                        heroContent.metrics[1].value = percentage;
-                    }
+                    heroContent.metrics = [
+                        { label: 'Devices Revived', value: devicesRevived },
+                        { label: 'Success Metric', value: successMetric },
+                        { label: 'Response Time', value: '24/7' }
+                    ];
                     rows[heroIndex].content = typeof rows[heroIndex].content === 'string' ? JSON.stringify(heroContent) : heroContent;
                 }
             }
