@@ -90,7 +90,7 @@ export const CompanyProvider: React.FC<{ children: ReactNode }> = ({ children })
       email: user.email,
       phone: companyProfile?.phone || (companyProfile as any)?.phone_number || (user as any).phone || '',
       company_name: companyProfile?.company_name || user.name,
-      company_logo: companyProfile?.company_logo || user.avatar_url,
+      company_logo: companyProfile?.company_logo || user.avatar_url || undefined,
       contact_person: companyProfile?.contact_person,
       address: companyProfile?.address,
       gst_number: companyProfile?.gst_number,

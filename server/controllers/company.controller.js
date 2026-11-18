@@ -1932,12 +1932,12 @@ const importBulkDevices = async (req, res, next) => {
             const rowNumber = idx + 2;
             const device = parsed.data[idx];
 
-            const category = (device.category || device.device_category || 'Laptop').trim();
+            const category = (device.category || device.device_category || device.device_type || device.type || 'Laptop').trim();
             const brand = (device.brand || device.make || device.manufacturer || '').trim();
             const modelNumber = (device.model_number || device.model || device.device_model || '').trim();
             const serialNumber = (device.serial_number || device.serial || device.sn || device.device_serial || '').trim();
             let assetId = (device.asset_tag || device.asset_id || device.assetid || '').trim();
-            const branchRaw = (device.branch || device.branch_name || '').trim();
+            const branchRaw = (device.branch || device.branch_name || device.branch_id || '').trim();
             const empRaw = (device.assigned_employee_email || device.assigned_employee || device.employee_email || device.employee || '').trim();
             const rawPurchaseDate = device.purchase_date || device.purchased_on || '';
             const rawWarrantyExpiry = device.warranty_expiry || device.warranty_end || '';
@@ -2068,11 +2068,11 @@ const importBulkDevices = async (req, res, next) => {
                          status = ?
                      WHERE id = ? AND company_id = ?`,
                     [
-                        item.category, item.brand, item.modelNumber, finalAssetId,
-                        item.resolvedBranchId, item.resolvedEmployeeId,
-                        item.purchaseDate, item.warrantyExpiry,
-                        item.notes,
-                        item.isActive ? 1 : 0, item.statusVal,
+                        item.category || 'Laptop', item.brand, item.modelNumber, finalAssetId,
+                        item.resolvedBranchId ?? null, item.resolvedEmployeeId ?? null,
+                        item.purchaseDate ?? null, item.warrantyExpiry ?? null,
+                        item.notes ? item.notes : null,
+                        item.isActive ? 1 : 0, item.statusVal || 'active',
                         existingRec.id, targetCompanyId
                     ]
                 );
@@ -2086,10 +2086,10 @@ const importBulkDevices = async (req, res, next) => {
                      (company_id, branch_id, employee_id, device_category, brand, model_number, serial_number, asset_id, purchase_date, warranty_expiry, notes, is_amc, amc_tag, is_active, status) 
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)`,
                     [
-                        targetCompanyId, item.resolvedBranchId, item.resolvedEmployeeId,
-                        item.category, item.brand, item.modelNumber, item.serialNumber, finalAssetId,
-                        item.purchaseDate, item.warrantyExpiry, item.notes,
-                        item.isActive ? 1 : 0, item.statusVal
+                        targetCompanyId, item.resolvedBranchId ?? null, item.resolvedEmployeeId ?? null,
+                        item.category || 'Laptop', item.brand, item.modelNumber, item.serialNumber, finalAssetId,
+                        item.purchaseDate ?? null, item.warrantyExpiry ?? null, item.notes ? item.notes : null,
+                        item.isActive ? 1 : 0, item.statusVal || 'active'
                     ]
                 );
                 existingSerialMap.set(item.cleanSerialKey, { id: insertRes.insertId, serial_number: item.serialNumber, asset_id: finalAssetId });
@@ -2210,7 +2210,7 @@ const importBulkRequests = async (req, res, next) => {
             const priorityRaw = (rowData.priority || 'Standard').trim();
             const priority = priorityRaw.toLowerCase() === 'urgent' ? 'Urgent' : 'Standard';
             const serviceType = (rowData.service_type || rowData.service_preference || 'Bring to Service Center').trim();
-            const employeeEmail = (rowData.employee_email || rowData.email || rowData.employee || '').trim();
+            const employeeEmail = (rowData.employee_email || rowData.assigned_employee_email || rowData.email || rowData.employee || '').trim();
 
             if (!serialNumber) {
                 errors.push({ row: rowNumber, field: 'device_serial', error: 'Missing required Device Serial Number.', suggestion: 'Provide the device serial number.' });
@@ -2297,11 +2297,11 @@ const importBulkRequests = async (req, res, next) => {
                 brand: device.brand || 'Other',
                 model: device.model_number || 'Unknown',
                 serialNumber: device.serial_number,
-                employeeId,
-                problemType,
+                employeeId: employeeId ?? null,
+                problemType: problemType || 'Hardware',
                 problemDescription,
-                priority,
-                serviceType
+                priority: priority || 'Standard',
+                serviceType: serviceType || 'Bring to Service Center'
             });
         }
 
@@ -2353,21 +2353,21 @@ const importBulkRequests = async (req, res, next) => {
                 [
                     targetCompanyId,
                     targetCompanyId,
-                    item.employeeId,
-                    item.deviceId,
+                    item.employeeId ?? null,
+                    item.deviceId ?? null,
                     profile.company_name,
                     profile.phone_number || companyUser[0]?.phone || '9876543210',
                     companyUser[0]?.email || req.user.email,
                     'B2B Operations',
-                    item.category,
-                    item.brand,
-                    item.model,
+                    item.category || 'Laptop',
+                    item.brand || 'Other',
+                    item.model || 'Unknown',
                     item.serialNumber,
                     'pending',
-                    item.serviceType,
-                    item.priority,
+                    item.serviceType || 'Bring to Service Center',
+                    item.priority || 'Standard',
                     'WhatsApp',
-                    item.problemType,
+                    item.problemType || 'Hardware',
                     item.problemDescription,
                     ticketNumber,
                     slaDeadline,

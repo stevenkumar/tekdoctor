@@ -69,6 +69,7 @@ export default function CompanyEmployees() {
 
     // Bulk Import & Export state
     const [csvFile, setCsvFile] = useState<File | null>(null);
+    const [isDragging, setIsDragging] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [exporting, setExporting] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -238,7 +239,11 @@ export default function CompanyEmployees() {
 
     const handleBulkUpload = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!csvFile || !token) return;
+        if (!csvFile) {
+            setBulkError('Please select or drop a valid CSV or Excel file to upload.');
+            return;
+        }
+        if (!token) return;
 
         setUploading(true);
         setBulkError('');
@@ -246,18 +251,22 @@ export default function CompanyEmployees() {
 
         try {
             const res = await companyApi.importBulkEmployees(token, csvFile);
+            const errorList = res.data?.data?.errors || res.data?.errors || [];
+
             if (res.ok && res.data?.success) {
                 const imported = res.data.data?.imported || 0;
                 const updated = res.data.data?.updated || 0;
                 const failed = res.data.data?.failed || 0;
-                const errors = res.data.data?.errors || [];
 
-                if (failed > 0 && errors.length > 0) {
-                    setBulkErrors(errors);
+                if (imported === 0 && updated === 0 && (failed > 0 || errorList.length > 0)) {
+                    setBulkErrors(errorList);
+                    setBulkError(`Import failed: 0 records processed. All ${failed || errorList.length} rows failed validation. Please review the errors below.`);
+                } else if (failed > 0 && errorList.length > 0) {
+                    setBulkErrors(errorList);
                     setBulkError(`Import completed with ${failed} errors (${imported} created, ${updated} updated). Please review the errors below.`);
                     fetchData();
                 } else {
-                    setSuccess(`Bulk import complete! Successfully processed: ${imported} created, ${updated} updated.`);
+                    toast.success(`Bulk import complete! Successfully processed: ${imported} created, ${updated} updated.`);
                     setIsBulkOpen(false);
                     setCsvFile(null);
                     setBulkError('');
@@ -266,8 +275,8 @@ export default function CompanyEmployees() {
                 }
             } else {
                 setBulkError(res.error || res.data?.message || 'Failed to import employees.');
-                if (res.data?.data?.errors) {
-                    setBulkErrors(res.data.data.errors);
+                if (Array.isArray(errorList) && errorList.length > 0) {
+                    setBulkErrors(errorList);
                 }
             }
         } catch {
@@ -775,22 +784,87 @@ export default function CompanyEmployees() {
                                 </div>
                             </div>
 
+                            <p className="text-[11px] text-zinc-400">💡 Recommended import order: 1. Branches → 2. Employees → 3. Devices → 4. Repair Tickets</p>
+
                             <div
                                 onClick={() => fileInputRef.current?.click()}
-                                className="border-2 border-dashed border-zinc-800 hover:border-indigo-500/50 rounded-xl p-6 text-center cursor-pointer transition-colors bg-zinc-950/40"
+                                onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setIsDragging(true);
+                                }}
+                                onDragLeave={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setIsDragging(false);
+                                }}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setIsDragging(false);
+                                    const droppedFile = e.dataTransfer.files?.[0];
+                                    if (droppedFile) {
+                                        const ext = droppedFile.name.split('.').pop()?.toLowerCase();
+                                        if (ext === 'csv' || ext === 'xlsx' || ext === 'xls') {
+                                            setCsvFile(droppedFile);
+                                            setBulkError('');
+                                            setBulkErrors([]);
+                                        } else {
+                                            setBulkError('Invalid file type. Please upload a .csv or .xlsx file.');
+                                        }
+                                    }
+                                }}
+                                className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all bg-zinc-950/40 ${
+                                    isDragging
+                                        ? 'border-indigo-500 bg-indigo-500/10 scale-[1.01]'
+                                        : 'border-zinc-800 hover:border-indigo-500/50'
+                                }`}
                             >
                                 <input
                                     type="file"
                                     ref={fileInputRef}
-                                    onChange={e => setCsvFile(e.target.files?.[0] || null)}
+                                    onChange={e => {
+                                        const file = e.target.files?.[0] || null;
+                                        setCsvFile(file);
+                                        if (file) {
+                                            setBulkError('');
+                                            setBulkErrors([]);
+                                        }
+                                    }}
                                     accept=".csv, .xlsx, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/csv"
                                     className="hidden"
                                 />
-                                <Upload size={24} className="mx-auto text-zinc-600 mb-2" />
-                                <p className="text-sm font-medium text-zinc-300">
-                                    {csvFile ? csvFile.name : 'Click or drag Excel (.xlsx) or CSV file to upload'}
-                                </p>
-                                <p className="text-[11px] text-zinc-500 mt-1">Supports UTF-8 CSV and Excel (.xlsx) formats (max 500 rows)</p>
+                                {csvFile ? (
+                                    <div className="flex items-center justify-between bg-zinc-900 border border-zinc-700/60 rounded-lg p-3 text-left">
+                                        <div className="flex items-center gap-2.5 overflow-hidden">
+                                            <Upload size={18} className="text-indigo-400 shrink-0" />
+                                            <div className="truncate">
+                                                <p className="text-xs font-medium text-zinc-200 truncate">{csvFile.name}</p>
+                                                <p className="text-[11px] text-zinc-400">{(csvFile.size / 1024).toFixed(1)} KB</p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setCsvFile(null);
+                                                if (fileInputRef.current) fileInputRef.current.value = '';
+                                            }}
+                                            className="p-1 text-zinc-400 hover:text-red-400 hover:bg-zinc-800 rounded transition-colors"
+                                            title="Remove file"
+                                        >
+                                            <X size={15} />
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <Upload size={24} className={`mx-auto mb-2 transition-colors ${isDragging ? 'text-indigo-400' : 'text-zinc-600'}`} />
+                                        <p className="text-sm font-medium text-zinc-300">
+                                            {isDragging ? 'Drop spreadsheet here...' : 'Click or drag Excel (.xlsx) or CSV file to upload'}
+                                        </p>
+                                        <p className="text-[11px] text-zinc-500 mt-1">Supports UTF-8 CSV and Excel (.xlsx) formats (max 500 rows)</p>
+                                    </>
+                                )}
                             </div>
 
                             {bulkErrors.length > 0 && (

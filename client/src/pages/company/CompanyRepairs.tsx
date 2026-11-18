@@ -184,6 +184,7 @@ export default function CompanyRepairs() {
 
     // Bulk Upload state
     const [csvFile, setCsvFile] = useState<File | null>(null);
+    const [isDragging, setIsDragging] = useState(false);
     const [uploading, setUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -483,7 +484,11 @@ export default function CompanyRepairs() {
 
     const handleBulkUpload = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!csvFile || !token) return;
+        if (!csvFile) {
+            setBulkError('Please select or drop a valid CSV or Excel file to upload.');
+            return;
+        }
+        if (!token) return;
 
         setUploading(true);
         setBulkError('');
@@ -491,18 +496,31 @@ export default function CompanyRepairs() {
 
         try {
             const res = await companyApi.importBulkRequests(token, csvFile);
+            const errorList = res.data?.data?.errors || res.data?.errors || [];
+
             if (res.ok && res.data?.success) {
                 const imported = res.data.data?.imported || res.data.data?.count || 0;
-                toast.success(`Bulk tickets created! Registered ${imported} B2B repair tickets.`);
-                setIsBulkOpen(false);
-                setCsvFile(null);
-                setBulkError('');
-                setBulkErrors([]);
-                fetchData();
+                const failed = res.data.data?.failed || 0;
+
+                if (imported === 0 && (failed > 0 || errorList.length > 0)) {
+                    setBulkErrors(errorList);
+                    setBulkError(`Import failed: 0 repair tickets created. All ${failed || errorList.length} rows failed validation. Please review the errors below.`);
+                } else if (failed > 0 && errorList.length > 0) {
+                    setBulkErrors(errorList);
+                    setBulkError(`Bulk ticket import completed with ${failed} errors (${imported} created). Please review the errors below.`);
+                    fetchData();
+                } else {
+                    toast.success(`Bulk tickets created! Registered ${imported} B2B repair tickets.`);
+                    setIsBulkOpen(false);
+                    setCsvFile(null);
+                    setBulkError('');
+                    setBulkErrors([]);
+                    fetchData();
+                }
             } else {
                 setBulkError(res.error || res.data?.message || 'Failed to process bulk tickets file.');
-                if (Array.isArray(res.data?.errors)) {
-                    setBulkErrors(res.data.errors);
+                if (Array.isArray(errorList) && errorList.length > 0) {
+                    setBulkErrors(errorList);
                 }
             }
         } catch {
@@ -1411,10 +1429,11 @@ export default function CompanyRepairs() {
                             )}
 
                             <div className="text-xs text-zinc-500 leading-relaxed space-y-2">
-                                <p>Submit numerous repair tickets in a single batch. Devices must already be registered in fleet. Required headers: <code className="text-indigo-300 font-mono">device_serial</code>, <code className="text-indigo-300 font-mono">problem_description</code>.</p>
+                                <p>Submit numerous repair tickets in a single batch (max 100 rows). Devices must already be registered in fleet. Required headers: <code className="text-indigo-300 font-mono">device_serial</code>, <code className="text-indigo-300 font-mono">problem_description</code>.</p>
                                 <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-800/40 font-mono text-[10px] text-zinc-400 overflow-x-auto select-all">
-                                    device_serial, employee_email, problem_type, problem_description, priority, service_preference, preferred_contact
+                                    device_serial, problem_description, problem_type, priority, service_type, employee_email
                                 </div>
+                                <p className="text-[11px] text-zinc-400">💡 Recommended import order: 1. Branches → 2. Employees → 3. Devices → 4. Repair Tickets</p>
                                 <div className="flex items-center gap-4 pt-1">
                                     <button
                                         type="button"
@@ -1436,7 +1455,37 @@ export default function CompanyRepairs() {
                             {/* Drag/Drop Box */}
                             <div
                                 onClick={() => fileInputRef.current?.click()}
-                                className="border-2 border-dashed border-zinc-800/50 hover:border-indigo-500/50 hover:bg-zinc-900/10 rounded-2xl p-8 text-center cursor-pointer transition-colors space-y-2"
+                                onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setIsDragging(true);
+                                }}
+                                onDragLeave={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setIsDragging(false);
+                                }}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setIsDragging(false);
+                                    const droppedFile = e.dataTransfer.files?.[0];
+                                    if (droppedFile) {
+                                        const ext = droppedFile.name.split('.').pop()?.toLowerCase();
+                                        if (ext === 'csv' || ext === 'xlsx' || ext === 'xls') {
+                                            setCsvFile(droppedFile);
+                                            setBulkError('');
+                                            setBulkErrors([]);
+                                        } else {
+                                            setBulkError('Invalid file type. Please upload a .csv or .xlsx file.');
+                                        }
+                                    }
+                                }}
+                                className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-all space-y-2 bg-zinc-950/40 ${
+                                    isDragging
+                                        ? 'border-indigo-500 bg-indigo-500/10 scale-[1.01]'
+                                        : 'border-zinc-800/50 hover:border-indigo-500/50 hover:bg-zinc-900/10'
+                                }`}
                             >
                                 <input
                                     type="file"
@@ -1444,15 +1493,45 @@ export default function CompanyRepairs() {
                                     accept=".csv, .xlsx, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/csv"
                                     className="hidden"
                                     onChange={e => {
-                                        const files = e.target.files;
-                                        if (files && files[0]) setCsvFile(files[0]);
+                                        const file = e.target.files?.[0] || null;
+                                        setCsvFile(file);
+                                        if (file) {
+                                            setBulkError('');
+                                            setBulkErrors([]);
+                                        }
                                     }}
                                 />
-                                <Upload size={32} className="mx-auto text-zinc-500" />
-                                <div className="text-sm font-semibold text-zinc-300">
-                                    {csvFile ? csvFile.name : 'Select or drop Excel (.xlsx) or CSV file'}
-                                </div>
-                                <div className="text-xs text-zinc-600">Excel (.xlsx) or CSV up to 5MB allowed</div>
+                                {csvFile ? (
+                                    <div className="flex items-center justify-between bg-zinc-900 border border-zinc-700/60 rounded-lg p-3 text-left">
+                                        <div className="flex items-center gap-2.5 overflow-hidden">
+                                            <Upload size={18} className="text-indigo-400 shrink-0" />
+                                            <div className="truncate">
+                                                <p className="text-xs font-medium text-zinc-200 truncate">{csvFile.name}</p>
+                                                <p className="text-[11px] text-zinc-400">{(csvFile.size / 1024).toFixed(1)} KB</p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setCsvFile(null);
+                                                if (fileInputRef.current) fileInputRef.current.value = '';
+                                            }}
+                                            className="p-1 text-zinc-400 hover:text-red-400 hover:bg-zinc-800 rounded transition-colors"
+                                            title="Remove file"
+                                        >
+                                            <X size={15} />
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <Upload size={32} className={`mx-auto transition-colors ${isDragging ? 'text-indigo-400' : 'text-zinc-500'}`} />
+                                        <div className="text-sm font-semibold text-zinc-300">
+                                            {isDragging ? 'Drop spreadsheet here...' : 'Select or drop Excel (.xlsx) or CSV file'}
+                                        </div>
+                                        <div className="text-xs text-zinc-600">Supports UTF-8 CSV and Excel (.xlsx) formats (max 100 rows)</div>
+                                    </>
+                                )}
                             </div>
 
                             <div className="pt-4 border-t border-zinc-800/40 flex justify-end gap-3">
