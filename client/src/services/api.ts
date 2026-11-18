@@ -160,6 +160,7 @@ export const ENDPOINTS = {
 
 export interface UserResponseData {
   id: number;
+  customer_id?: string | null;
   name: string;
   email: string;
   role: 'customer' | 'technician' | 'admin' | 'company';
@@ -428,6 +429,7 @@ export interface RepairApiResponse {
     token: string;
     user: {
       id: number;
+      customer_id?: string | null;
       name: string;
       email: string;
       role: 'customer' | 'technician' | 'admin' | 'company';
@@ -1615,6 +1617,7 @@ export interface DashboardStats {
 
 export interface Customer {
   id: number;
+  customer_id?: string | null;
   permanent_customer_id?: string;
   technician_id?: string | null;
   company_id?: string | null;

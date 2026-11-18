@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { pool } = require('../config/db.config');
 const config = require('../config/app.config');
-const { formatResponse } = require('../utils/helpers');
+const { formatResponse, generateCustomerId } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const { logActivity } = require('../utils/activity.logger');
 const { generateToken, generateOtpCode, hashOtp, verifyOtpHash, generatePendingAuthToken, verifyPendingAuthToken, maskEmail } = require('../utils/auth.helpers');
@@ -55,24 +55,26 @@ const signup = async (req, res, next) => {
     // Public registration must never create privileged accounts.
     // Technicians are created by admins and companies use their dedicated registration flow.
     const userRole = 'customer';
+    const customerId = await generateCustomerId(connection);
 
     // Insert user
     const [result] = await connection.query(
-      'INSERT INTO users (name, email, password, role, phone) VALUES (?, ?, ?, ?, ?)',
-      [name.trim(), cleanEmail, hashedPassword, userRole, cleanPhone || null]
+      'INSERT INTO users (name, email, password, role, phone, customer_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [name.trim(), cleanEmail, hashedPassword, userRole, cleanPhone || null, customerId]
     );
 
     const userId = result.insertId;
-    const user = { id: userId, name, email, role: userRole };
+    const user = { id: userId, customer_id: customerId, name, email, role: userRole };
     const token = generateToken(user);
 
-    logger.info(`New user registered: ${email} with role ${userRole} (ID: ${userId})`);
+    logger.info(`New user registered: ${email} with role ${userRole} (ID: ${userId}, CustomerID: ${customerId})`);
 
     // Log Activity
-    await logActivity(userId, 'user', 'registration', 'users', userId, { name, email, role: userRole }, req.ip);
+    await logActivity(userId, 'user', 'registration', 'users', userId, { name, email, role: userRole, customer_id: customerId }, req.ip);
 
     return res.status(201).json(formatResponse(true, 'Registration successful.', {
       id: userId,
+      customer_id: customerId,
       name,
       email,
       role: userRole,
@@ -171,6 +173,23 @@ const signin = async (req, res, next) => {
     let displayName = user.name;
     let avatarUrl = user.avatar_url;
     let companyId = user.company_id || null;
+    let customerId = user.customer_id || null;
+
+    if (user.role === 'customer' && (!customerId || !customerId.trim())) {
+      try {
+        customerId = await generateCustomerId(connection);
+        await connection.query('UPDATE users SET customer_id = ? WHERE id = ?', [customerId, user.id]);
+        user.customer_id = customerId;
+      } catch (custErr) {
+        if (custErr.code === 'ER_DUP_ENTRY') {
+          const [recheck] = await connection.query('SELECT customer_id FROM users WHERE id = ? LIMIT 1', [user.id]);
+          if (recheck.length > 0 && recheck[0].customer_id) {
+            customerId = recheck[0].customer_id;
+            user.customer_id = customerId;
+          }
+        }
+      }
+    }
 
     if (user.role === 'company') {
       const [compProfile] = await connection.query(
@@ -194,6 +213,7 @@ const signin = async (req, res, next) => {
 
     return res.status(200).json(formatResponse(true, 'Login successful.', {
       id: user.id,
+      customer_id: customerId,
       name: displayName,
       email: user.email,
       role: user.role,
@@ -838,7 +858,7 @@ const updateProfile = async (req, res, next) => {
     }
 
     const [updatedRows] = await connection.query(
-      'SELECT id, name, email, phone, role, company_id FROM users WHERE id = ? LIMIT 1',
+      'SELECT id, name, email, phone, role, company_id, customer_id FROM users WHERE id = ? LIMIT 1',
       [userId]
     );
 
@@ -848,6 +868,7 @@ const updateProfile = async (req, res, next) => {
 
     return res.status(200).json(formatResponse(true, 'Profile updated successfully.', {
       id: updatedUser.id,
+      customer_id: updatedUser.customer_id || null,
       name: updatedUser.name,
       email: updatedUser.email,
       phone: updatedUser.phone || null,
@@ -954,12 +975,25 @@ const googleSignIn = async (req, res, next) => {
         }));
       }
 
+      if (user.role === 'customer' && (!user.customer_id || !user.customer_id.trim())) {
+        try {
+          user.customer_id = await generateCustomerId(connection);
+          await connection.query('UPDATE users SET customer_id = ? WHERE id = ?', [user.customer_id, user.id]);
+        } catch (custErr) {
+          if (custErr.code === 'ER_DUP_ENTRY') {
+            const [recheck] = await connection.query('SELECT customer_id FROM users WHERE id = ? LIMIT 1', [user.id]);
+            if (recheck.length > 0 && recheck[0].customer_id) user.customer_id = recheck[0].customer_id;
+          }
+        }
+      }
+
       const token = generateToken(user);
       logger.info(`Google Sign-In successful for linked user: ${email} (ID: ${user.id}, Role: ${user.role})`);
       await logActivity(user.id, 'security', 'google_login', 'users', user.id, { email, role: user.role }, req.ip);
 
       return res.status(200).json(formatResponse(true, 'Login successful.', {
         id: user.id,
+        customer_id: user.customer_id || null,
         name: user.name,
         email: user.email,
         role: user.role,
@@ -1039,12 +1073,25 @@ const googleSignIn = async (req, res, next) => {
         }));
       }
 
+      if (user.role === 'customer' && (!user.customer_id || !user.customer_id.trim())) {
+        try {
+          user.customer_id = await generateCustomerId(connection);
+          await connection.query('UPDATE users SET customer_id = ? WHERE id = ?', [user.customer_id, user.id]);
+        } catch (custErr) {
+          if (custErr.code === 'ER_DUP_ENTRY') {
+            const [recheck] = await connection.query('SELECT customer_id FROM users WHERE id = ? LIMIT 1', [user.id]);
+            if (recheck.length > 0 && recheck[0].customer_id) user.customer_id = recheck[0].customer_id;
+          }
+        }
+      }
+
       const token = generateToken(user);
       logger.info(`Existing account ${email} securely linked to Google ID ${googleId} (ID: ${user.id}, Role: ${user.role})`);
       await logActivity(user.id, 'security', 'google_account_link', 'users', user.id, { email, role: user.role }, req.ip);
 
       return res.status(200).json(formatResponse(true, 'Account linked and logged in successfully.', {
         id: user.id,
+        customer_id: user.customer_id || null,
         name: user.name,
         email: user.email,
         role: user.role,
@@ -1058,6 +1105,7 @@ const googleSignIn = async (req, res, next) => {
     // 4. Case C: New Google User Registration
     // Default role is strictly 'customer' (never privileged roles)
     const userRole = 'customer';
+    const customerId = await generateCustomerId(connection);
 
     // Generate random secure hash for password so legacy non-null constraint is met
     const randomPassword = crypto.randomBytes(32).toString('hex');
@@ -1065,14 +1113,15 @@ const googleSignIn = async (req, res, next) => {
     const hashedPassword = await bcrypt.hash(randomPassword, salt);
 
     const [insertResult] = await connection.query(
-      `INSERT INTO users (name, email, password, role, google_id, auth_provider, avatar_url, is_active, token_version)
-       VALUES (?, ?, ?, ?, ?, 'google', ?, 1, 1)`,
-      [name, email, hashedPassword, userRole, googleId, avatarUrl]
+      `INSERT INTO users (name, email, password, role, google_id, auth_provider, avatar_url, is_active, token_version, customer_id)
+       VALUES (?, ?, ?, ?, ?, 'google', ?, 1, 1, ?)`,
+      [name, email, hashedPassword, userRole, googleId, avatarUrl, customerId]
     );
 
     const userId = insertResult.insertId;
     const newUser = {
       id: userId,
+      customer_id: customerId,
       name,
       email,
       role: userRole,
@@ -1081,8 +1130,8 @@ const googleSignIn = async (req, res, next) => {
     };
 
     const token = generateToken(newUser);
-    logger.info(`New user registered via Google: ${email} (ID: ${userId}, Role: ${userRole})`);
-    await logActivity(userId, 'user', 'google_registration', 'users', userId, { name, email, role: userRole }, req.ip);
+    logger.info(`New user registered via Google: ${email} (ID: ${userId}, CustomerID: ${customerId}, Role: ${userRole})`);
+    await logActivity(userId, 'user', 'google_registration', 'users', userId, { name, email, role: userRole, customer_id: customerId }, req.ip);
 
     // Send welcome notification if email service is active
     try {
@@ -1093,6 +1142,7 @@ const googleSignIn = async (req, res, next) => {
 
     return res.status(201).json(formatResponse(true, 'Registration successful with Google.', {
       id: userId,
+      customer_id: customerId,
       name,
       email,
       role: userRole,
@@ -1118,7 +1168,7 @@ const getMe = async (req, res, next) => {
   try {
     connection = await pool.getConnection();
     const [rows] = await connection.query(
-      'SELECT id, name, email, role, phone, avatar_url, is_active FROM users WHERE id = ? LIMIT 1',
+      'SELECT id, name, email, role, phone, avatar_url, is_active, customer_id FROM users WHERE id = ? LIMIT 1',
       [req.user.id]
     );
 
@@ -1127,6 +1177,24 @@ const getMe = async (req, res, next) => {
     }
 
     const user = rows[0];
+
+    // Ensure customer accounts have a valid sequential customer_id (TD-001, ...)
+    let userCustomerId = user.customer_id || null;
+    if (user.role === 'customer' && (!userCustomerId || !userCustomerId.trim())) {
+      try {
+        userCustomerId = await generateCustomerId(connection);
+        await connection.query('UPDATE users SET customer_id = ? WHERE id = ?', [userCustomerId, user.id]);
+        user.customer_id = userCustomerId;
+      } catch (custErr) {
+        if (custErr.code === 'ER_DUP_ENTRY') {
+          const [recheck] = await connection.query('SELECT customer_id FROM users WHERE id = ? LIMIT 1', [user.id]);
+          if (recheck.length > 0 && recheck[0].customer_id) {
+            userCustomerId = recheck[0].customer_id;
+            user.customer_id = userCustomerId;
+          }
+        }
+      }
+    }
 
     // Fall back to most recent mobile from service_requests if users.phone is NULL or empty
     let userPhone = user.phone ? String(user.phone).trim() : null;
@@ -1162,6 +1230,7 @@ const getMe = async (req, res, next) => {
 
     return res.status(200).json(formatResponse(true, 'Session verified.', {
       id: user.id,
+      customer_id: userCustomerId,
       name: companyProfile?.company_name || user.name,
       email: user.email,
       role: user.role,

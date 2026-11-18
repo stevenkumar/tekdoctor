@@ -190,7 +190,7 @@ export default function CustomerManagement() {
         if (c.role === 'admin') {
             return 'ADMIN';
         }
-        return c.permanent_customer_id || (c.id ? `TD-${String(c.id).padStart(3, '0')}` : '—');
+        return c.customer_id || c.permanent_customer_id || (c.id ? `TD-${String(c.id).padStart(3, '0')}` : '—');
     };
 
     // Primary Data Fetcher

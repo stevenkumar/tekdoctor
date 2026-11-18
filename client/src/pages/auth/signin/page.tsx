@@ -134,15 +134,16 @@ export default function SignIn() {
       }
 
       // Normal session token login for Customer, Technician, Company
-      const { id, name, email, role, token } = result.data.data;
+      const { id, name, email, role, token, phone, customer_id, company_id, avatar_url } = result.data.data;
       if (!token || !id || !name || !email || !role) {
         throw new Error('Authentication token or user information missing from server response.');
       }
 
+      const userData = { id, customer_id, name, email, role: role as UserRole, phone, company_id, avatar_url };
       if (role === 'customer') {
-        login(token, { id, name, email, role: role as UserRole }, false, ROUTES.HOME);
+        login(token, userData, false, ROUTES.HOME);
       } else {
-        login(token, { id, name, email, role: role as UserRole });
+        login(token, userData);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Authentication failed.';

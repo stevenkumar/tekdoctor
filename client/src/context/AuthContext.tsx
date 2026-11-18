@@ -9,6 +9,7 @@ export type UserRole = 'customer' | 'technician' | 'admin' | 'company';
 
 export interface AuthUser {
   id: number;
+  customer_id?: string | null;
   name: string;
   email: string;
   role: UserRole;
@@ -16,9 +17,9 @@ export interface AuthUser {
   mobile?: string | null;
   token_version?: number;
   avatar_url?: string;
-  company_id?: string;
-  permanent_company_id?: string;
-  technician_id?: string;
+  company_id?: string | null;
+  permanent_company_id?: string | null;
+  technician_id?: string | null;
 }
 
 interface AuthContextType {

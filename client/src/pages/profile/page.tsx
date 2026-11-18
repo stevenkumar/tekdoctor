@@ -606,7 +606,7 @@ export default function ProfilePage() {
 
   const customerIdFormatted = user.role === 'company' 
     ? (user.company_id || `CMP-${String(user.id).padStart(3, '0')}`) 
-    : `TD-${String(user.id).padStart(3, '0')}`;
+    : (user.customer_id || `TD-${String(user.id).padStart(3, '0')}`);
 
   const navMenuItems = [
     { id: 'current_repairs', label: 'Current Repairs', icon: Smartphone, count: currentRepairs.length },

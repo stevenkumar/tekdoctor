@@ -138,16 +138,16 @@ export default function GoogleSignInButton({
                 }
               }
 
-              const { id, name, email, role, token, avatar_url } = result.data.data;
+              const { id, customer_id, name, email, role, phone, token, avatar_url } = result.data.data;
               if (!token || !id || !name || !email || !role) {
                 throw new Error('Authentication token or user information missing from response.');
               }
 
               toast.success(`Welcome back, ${name}!`);
               if (role === 'customer' && redirectPath) {
-                login(token, { id, name, email, role: role as UserRole, avatar_url }, false, redirectPath);
+                login(token, { id, customer_id, name, email, role: role as UserRole, phone, avatar_url }, false, redirectPath);
               } else {
-                login(token, { id, name, email, role: role as UserRole, avatar_url });
+                login(token, { id, customer_id, name, email, role: role as UserRole, phone, avatar_url });
               }
               onSuccess?.();
             } catch (backendError: any) {

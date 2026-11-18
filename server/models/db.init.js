@@ -83,6 +83,7 @@ const createBaseTables = async (connection) => {
       avatar_url VARCHAR(500) NULL,
       token_version INT DEFAULT 1,
       technician_id VARCHAR(50) UNIQUE NULL,
+      customer_id VARCHAR(50) UNIQUE NULL,
       is_active BOOLEAN DEFAULT TRUE,
       phone VARCHAR(30) NULL,
       company_id VARCHAR(50) UNIQUE NULL,
@@ -2006,6 +2007,67 @@ const MIGRATIONS = [
       await addColumnSafe(connection, 'invoices', "discount_amount DECIMAL(12,2) DEFAULT 0.00", 'discount_amount');
       await addColumnSafe(connection, 'invoices', "taxable_amount DECIMAL(12,2) NULL DEFAULT 0.00", 'taxable_amount');
       console.log('[Migration:2026_17] Added explicit GST columns, slab rates, and discount/taxable amounts to invoices.');
+    }
+  },
+  {
+    version: '2026_18_add_customer_id_to_users',
+    name: 'Add customer_id column to users, backfill existing customers, and initialize customer_id sequence',
+    isSatisfied: async (connection) => {
+      const [cols] = await connection.query(`
+        SELECT COLUMN_NAME FROM information_schema.COLUMNS 
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' 
+          AND COLUMN_NAME = 'customer_id'
+      `);
+      if (cols.length === 0) return false;
+      const [unfilled] = await connection.query(`
+        SELECT COUNT(*) as cnt FROM users WHERE role = 'customer' AND (customer_id IS NULL OR customer_id = '')
+      `);
+      return unfilled[0].cnt === 0;
+    },
+    apply: async (connection) => {
+      await addColumnSafe(connection, 'users', 'customer_id VARCHAR(50) UNIQUE NULL', 'customer_id');
+
+      // Ensure app_sequences table exists
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS app_sequences (
+          sequence_name VARCHAR(100) PRIMARY KEY,
+          current_val INT NOT NULL DEFAULT 0,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB
+      `);
+
+      // Determine current maximum assigned customer_id number
+      const [[maxRow]] = await connection.query(`
+        SELECT COALESCE(MAX(CAST(SUBSTRING(customer_id, 4) AS UNSIGNED)), 0) AS max_val 
+        FROM users 
+        WHERE customer_id REGEXP '^TD-[0-9]+$'
+      `);
+      let currentSeq = Number(maxRow?.max_val || 0);
+
+      // Backfill any existing customer rows without a customer_id
+      const [existingCustomers] = await connection.query(`
+        SELECT id FROM users 
+        WHERE role = 'customer' AND (customer_id IS NULL OR customer_id = '')
+        ORDER BY created_at ASC, id ASC
+      `);
+
+      for (const cust of existingCustomers) {
+        currentSeq++;
+        const generatedId = `TD-${String(currentSeq).padStart(3, '0')}`;
+        await connection.query(
+          'UPDATE users SET customer_id = ? WHERE id = ?',
+          [generatedId, cust.id]
+        );
+      }
+
+      // Initialize / update sequence in app_sequences
+      await connection.query(`
+        INSERT INTO app_sequences (sequence_name, current_val) 
+        VALUES ('customer_id', ?)
+        ON DUPLICATE KEY UPDATE current_val = GREATEST(current_val, VALUES(current_val))
+      `, [currentSeq]);
+
+      console.log(`[Migration:2026_18] Added customer_id column to users, backfilled ${existingCustomers.length} existing customers, sequence initialized at ${currentSeq}.`);
     }
   }
 ];

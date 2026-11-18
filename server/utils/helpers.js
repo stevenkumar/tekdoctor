@@ -248,6 +248,66 @@ const generateCompanyId = async (connection = pool) => {
 };
 
 /**
+ * Generates the next sequential Customer ID (e.g. TD-001, TD-002, ...)
+ * Concurrency-safe atomic generation backed by MySQL InnoDB app_sequences.
+ * Counts strictly customers, completely independent of raw users.id, admin, tech, or company rows.
+ * @param {Object} [connection] - MySQL database connection or pool (defaults to pool)
+ * @returns {Promise<string>} Next canonical customer ID
+ */
+const generateCustomerId = async (connection = pool) => {
+  const isPool = typeof connection?.getConnection === 'function';
+  const conn = isPool ? await connection.getConnection() : connection;
+
+  try {
+    await ensureSequenceTable();
+
+    // Reconcile sequence ceiling against existing customer_id values in users
+    const [[maxRow]] = await conn.query(
+      "SELECT COALESCE(MAX(CAST(SUBSTRING(customer_id, 4) AS UNSIGNED)), 0) AS max_val FROM users WHERE customer_id REGEXP '^TD-[0-9]+$'"
+    );
+    const maxExisting = Number(maxRow?.max_val || 0);
+
+    await conn.query(
+      "INSERT IGNORE INTO app_sequences (sequence_name, current_val) VALUES ('customer_id', ?)",
+      [maxExisting]
+    );
+    await conn.query(
+      "UPDATE app_sequences SET current_val = LAST_INSERT_ID(GREATEST(current_val, ?) + 1) WHERE sequence_name = 'customer_id'",
+      [maxExisting]
+    );
+    const [[{ nextVal }]] = await conn.query('SELECT LAST_INSERT_ID() AS nextVal');
+
+    let seqVal = Number(nextVal || 1);
+    let candidate = `TD-${String(seqVal).padStart(3, '0')}`;
+
+    // Bounded safety loop verifying uniqueness
+    const MAX_ATTEMPTS = 100;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const [existing] = await conn.query(
+        'SELECT id FROM users WHERE customer_id = ? LIMIT 1',
+        [candidate]
+      );
+      if (existing.length === 0) {
+        return candidate;
+      }
+
+      await conn.query(
+        "UPDATE app_sequences SET current_val = LAST_INSERT_ID(current_val + 1) WHERE sequence_name = 'customer_id'"
+      );
+      const [[{ advancedVal }]] = await conn.query('SELECT LAST_INSERT_ID() AS advancedVal');
+      seqVal = Number(advancedVal);
+      candidate = `TD-${String(seqVal).padStart(3, '0')}`;
+    }
+
+    throw new Error('Unable to allocate a unique Customer ID after maximum collision retries.');
+  } finally {
+    if (isPool && conn) {
+      conn.release();
+    }
+  }
+};
+
+/**
  * Normalizes a nullable Company ID string; converts empty/whitespace-only strings to null.
  */
 const normalizeCompanyIdValue = (val) => {
@@ -600,7 +660,7 @@ const resolvePermanentAccountId = async (connection, options = {}) => {
   if (userId) {
     try {
       const [users] = await connection.query(
-        'SELECT u.id, u.role, COALESCE(p.company_id, u.company_id) AS canonical_company_id FROM users u LEFT JOIN company_profiles p ON u.id = p.user_id WHERE u.id = ? LIMIT 1',
+        'SELECT u.id, u.role, u.customer_id, COALESCE(p.company_id, u.company_id) AS canonical_company_id FROM users u LEFT JOIN company_profiles p ON u.id = p.user_id WHERE u.id = ? LIMIT 1',
         [userId]
       );
       if (users && users.length > 0) {
@@ -609,10 +669,24 @@ const resolvePermanentAccountId = async (connection, options = {}) => {
           return isAmc ? formatAmcCompanyId(canonical) : canonical;
         }
         // Customer
-        if (isAmc) {
-          return formatAmcCompanyId(users[0].id);
+        let customerId = users[0].customer_id;
+        if (!customerId || !customerId.trim()) {
+          customerId = await generateCustomerId(connection);
+          try {
+            await connection.query('UPDATE users SET customer_id = ? WHERE id = ?', [customerId, users[0].id]);
+          } catch (updateErr) {
+            if (updateErr.code === 'ER_DUP_ENTRY') {
+              const [recheck] = await connection.query('SELECT customer_id FROM users WHERE id = ? LIMIT 1', [users[0].id]);
+              if (recheck.length > 0 && recheck[0].customer_id) {
+                customerId = recheck[0].customer_id;
+              }
+            }
+          }
         }
-        return `TD-${String(users[0].id).padStart(3, '0')}`;
+        if (isAmc) {
+          return formatAmcCompanyId(customerId);
+        }
+        return customerId;
       }
     } catch (e) {
       // ignore
@@ -723,6 +797,7 @@ module.exports = {
   sanitizeFilename,
   generateTechnicianId,
   generateCompanyId,
+  generateCustomerId,
   resolveCanonicalCompanyCode,
   allocateNextCompanyAmcContractNumber,
   resolvePermanentAccountId,

@@ -146,11 +146,11 @@ export default function SignUp() {
       }
 
       // ✅ Correctly read from result.data.data (the nested `data` object in the response)
-      const { id, name, email, role, token } = result.data.data;
+      const { id, customer_id, name, email, role, phone, token } = result.data.data;
       if (!token || !id || !name || !email || !role) {
         throw new Error('Authentication token or user profile missing from response.');
       }
-      login(token, { id, name, email, role: role as UserRole });
+      login(token, { id, customer_id, name, email, role: role as UserRole, phone });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to create account.';
       if (msg.toLowerCase().includes('email')) {

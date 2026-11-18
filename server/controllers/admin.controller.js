@@ -261,7 +261,7 @@ const getCustomers = async (req, res, next) => {
             baseQuery += ' AND u.role = ?';
             params.push(role);
         } else if (!role) {
-            baseQuery += ' AND u.role IN ("customer", "technician", "admin", "company")';
+            baseQuery += ' AND u.role IN ("customer", "technician", "company") AND u.role != "admin"';
         }
 
         if (status === 'active') {
@@ -291,7 +291,7 @@ const getCustomers = async (req, res, next) => {
             } else if (rawCustId) {
                 // TD-XXX customer ID format search - MUST ONLY match customers, NEVER admin
                 baseQuery += ` AND (
-                    (u.role = 'customer' AND u.id = ?)
+                    (u.role = 'customer' AND (u.customer_id = ? OR u.customer_id LIKE ? OR u.id = ?))
                     OR u.name LIKE ? 
                     OR cp.company_name LIKE ?
                     OR u.email LIKE ? 
@@ -303,7 +303,7 @@ const getCustomers = async (req, res, next) => {
                     OR u.id IN (SELECT user_id FROM service_requests WHERE ticket_number LIKE ?)
                     OR (u.role = 'company' AND u.id IN (SELECT company_id FROM service_requests WHERE ticket_number LIKE ?))
                 )`;
-                params.push(rawCustId, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
+                params.push(rawSearch, searchPattern, rawCustId, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
             } else if (rawId) {
                 // Numeric ID search - do not expose or match admin via internal primary key
                 baseQuery += ` AND (
@@ -313,13 +313,14 @@ const getCustomers = async (req, res, next) => {
                     OR u.email LIKE ? 
                     OR u.phone LIKE ? 
                     OR cp.phone_number LIKE ?
+                    OR u.customer_id LIKE ?
                     OR u.technician_id LIKE ? 
                     OR cp.company_id LIKE ? 
                     OR u.company_id LIKE ? 
                     OR u.id IN (SELECT user_id FROM service_requests WHERE ticket_number LIKE ?)
                     OR (u.role = 'company' AND u.id IN (SELECT company_id FROM service_requests WHERE ticket_number LIKE ?))
                 )`;
-                params.push(rawId, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
+                params.push(rawId, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
             } else {
                 baseQuery += ` AND (
                     u.name LIKE ? 
@@ -327,13 +328,14 @@ const getCustomers = async (req, res, next) => {
                     OR u.email LIKE ? 
                     OR u.phone LIKE ? 
                     OR cp.phone_number LIKE ?
+                    OR u.customer_id LIKE ?
                     OR u.technician_id LIKE ? 
                     OR cp.company_id LIKE ? 
                     OR u.company_id LIKE ? 
                     OR u.id IN (SELECT user_id FROM service_requests WHERE ticket_number LIKE ?)
                     OR (u.role = 'company' AND u.id IN (SELECT company_id FROM service_requests WHERE ticket_number LIKE ?))
                 )`;
-                params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
+                params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
             }
         }
 
@@ -357,6 +359,7 @@ const getCustomers = async (req, res, next) => {
         const [[{ total }]] = await connection.query(`SELECT COUNT(*) as total${baseQuery}`, params);
         const [rows] = await connection.query(
             `SELECT u.id, 
+                    u.customer_id,
                     u.technician_id,
                     COALESCE(cp.company_id, u.company_id) AS company_id,
                     COALESCE(cp.company_id, u.company_id) AS permanent_company_id,
@@ -364,7 +367,7 @@ const getCustomers = async (req, res, next) => {
                         WHEN u.role = 'admin' THEN 'ADMIN'
                         WHEN u.role = 'technician' THEN u.technician_id
                         WHEN u.role = 'company' THEN COALESCE(cp.company_id, u.company_id)
-                        ELSE CONCAT('TD-', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0'))
+                        ELSE COALESCE(u.customer_id, CONCAT('TD-', LPAD(u.id, GREATEST(3, CHAR_LENGTH(u.id)), '0')))
                     END as permanent_customer_id,
                     COALESCE(cp.company_name, u.name) as name, 
                     u.email, 

@@ -4,7 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const jwt = require('jsonwebtoken');
 const config = require('../config/app.config');
 const { pool } = require('../config/db.config');
-const { formatResponse, generateTicketNumber, generateInvoiceId } = require('../utils/helpers');
+const { formatResponse, generateTicketNumber, generateInvoiceId, generateCustomerId } = require('../utils/helpers');
 const { resolveDeviceAmcEligibility } = require('../services/amc.service');
 const logger = require('../utils/logger');
 const { sendAdminNotification, sendCustomerNotification } = require('../utils/email.utils');
@@ -206,7 +206,7 @@ const createRepairRequest = async (req, res, next) => {
 
       // Check if user already exists by email
       const [existingUsers] = await connection.query(
-        'SELECT id, name, email, phone, role, token_version FROM users WHERE LOWER(email) = ? LIMIT 1',
+        'SELECT id, name, email, phone, role, token_version, customer_id FROM users WHERE LOWER(email) = ? LIMIT 1',
         [cleanEmail]
       );
 
@@ -215,7 +215,7 @@ const createRepairRequest = async (req, res, next) => {
       // If not matched by email but mobile provided, check if user exists by phone
       if (!matchedUser && cleanMobile) {
         const [phoneUsers] = await connection.query(
-          'SELECT id, name, email, phone, role, token_version FROM users WHERE phone = ? LIMIT 1',
+          'SELECT id, name, email, phone, role, token_version, customer_id FROM users WHERE phone = ? LIMIT 1',
           [cleanMobile]
         );
         if (phoneUsers.length > 0) {
@@ -229,6 +229,24 @@ const createRepairRequest = async (req, res, next) => {
 
         // If user is a customer, verify ownership and establish authenticated session
         if (matchedUser.role === 'customer') {
+          // If customer has no customer_id on record yet, generate and attach sequential customer_id
+          if (!matchedUser.customer_id || !matchedUser.customer_id.trim()) {
+            try {
+              matchedUser.customer_id = await generateCustomerId(connection);
+              await connection.query(
+                'UPDATE users SET customer_id = ? WHERE id = ?',
+                [matchedUser.customer_id, matchedUser.id]
+              );
+            } catch (custErr) {
+              if (custErr.code === 'ER_DUP_ENTRY') {
+                const [recheck] = await connection.query('SELECT customer_id FROM users WHERE id = ? LIMIT 1', [matchedUser.id]);
+                if (recheck.length > 0 && recheck[0].customer_id) {
+                  matchedUser.customer_id = recheck[0].customer_id;
+                }
+              }
+            }
+          }
+
           // If customer has no phone on record yet, attach cleanMobile
           if (!matchedUser.phone && cleanMobile) {
             await connection.query(
@@ -250,6 +268,7 @@ const createRepairRequest = async (req, res, next) => {
             token: customerToken,
             user: {
               id: matchedUser.id,
+              customer_id: matchedUser.customer_id || null,
               name: matchedUser.name,
               email: matchedUser.email,
               role: 'customer',
@@ -270,18 +289,25 @@ const createRepairRequest = async (req, res, next) => {
         const hashedPassword = await bcrypt.hash(randomSecret, salt);
 
         let newUserId;
+        let newCustomerId = null;
         try {
+          newCustomerId = await generateCustomerId(connection);
           const [userResult] = await connection.query(
-            'INSERT INTO users (name, email, phone, password, role, token_version) VALUES (?, ?, ?, ?, "customer", 1)',
-            [customerName, cleanEmail, cleanMobile, hashedPassword]
+            'INSERT INTO users (name, email, phone, password, role, token_version, customer_id) VALUES (?, ?, ?, ?, "customer", 1, ?)',
+            [customerName, cleanEmail, cleanMobile, hashedPassword, newCustomerId]
           );
           newUserId = userResult.insertId;
         } catch (insertErr) {
           // Concurrency safety against rapid double submit race conditions
           if (insertErr.code === 'ER_DUP_ENTRY') {
-            const [dupUsers] = await connection.query('SELECT id, name, email, phone, role, token_version FROM users WHERE LOWER(email) = ? LIMIT 1', [cleanEmail]);
+            const [dupUsers] = await connection.query('SELECT id, name, email, phone, role, token_version, customer_id FROM users WHERE LOWER(email) = ? LIMIT 1', [cleanEmail]);
             if (dupUsers.length > 0) {
               newUserId = dupUsers[0].id;
+              newCustomerId = dupUsers[0].customer_id;
+              if (!newCustomerId) {
+                newCustomerId = await generateCustomerId(connection);
+                await connection.query('UPDATE users SET customer_id = ? WHERE id = ?', [newCustomerId, newUserId]);
+              }
               if (!dupUsers[0].phone && cleanMobile) {
                 await connection.query('UPDATE users SET phone = ? WHERE id = ? AND (phone IS NULL OR TRIM(phone) = "")', [cleanMobile, newUserId]);
               }
@@ -294,7 +320,7 @@ const createRepairRequest = async (req, res, next) => {
         }
 
         userId = newUserId;
-        const newUser = { id: userId, name: customerName, email: cleanEmail, role: 'customer', phone: cleanMobile || null, token_version: 1 };
+        const newUser = { id: userId, customer_id: newCustomerId, name: customerName, email: cleanEmail, role: 'customer', phone: cleanMobile || null, token_version: 1 };
         const sessionToken = generateToken(newUser);
 
         // Generate secure, short-lived (24h) set-password token bound to user and token_version
@@ -313,6 +339,7 @@ const createRepairRequest = async (req, res, next) => {
           token: sessionToken,
           user: {
             id: userId,
+            customer_id: newCustomerId,
             name: customerName,
             email: cleanEmail,
             role: 'customer',
@@ -322,7 +349,7 @@ const createRepairRequest = async (req, res, next) => {
           isNewCustomer: true
         };
 
-        logger.info(`New customer account auto-created: ${cleanEmail} (ID: ${userId})`);
+        logger.info(`New customer account auto-created: ${cleanEmail} (ID: ${userId}, CustomerID: ${newCustomerId})`);
       }
     }
 
