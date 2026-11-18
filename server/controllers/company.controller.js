@@ -9,7 +9,8 @@ const { generateToken } = require('../utils/auth.helpers');
 const { parseSpreadsheet, generateSpreadsheet, parseDateSafe, formatDateSafe } = require('../utils/spreadsheet.utils');
 const { parseCsv, generateCsv } = require('../utils/csv.utils');
 const { normalizePhoneNumber } = require('../middleware/validate.middleware');
-const { sendAdminNotification } = require('../utils/email.utils');
+const { sendAdminNotification, sendCustomerNotification } = require('../utils/email.utils');
+const pushService = require('../services/push.service');
 
 const { logActivity } = require('../utils/activity.logger');
 
@@ -1571,6 +1572,51 @@ const createCompanyRepairRequest = async (req, res, next) => {
 
         sendAdminNotification(emailSubject, emailHtml)
             .catch(err => logger.error(`Failed to send company ticket creation email notification to admin: ${err.message}`));
+
+        // ── Transactional Email 2: Corporate Ticket Booking Acknowledgment ──
+        const targetCompanyEmail = companyUser[0]?.email || profile?.company_email || req.user.email;
+        if (targetCompanyEmail) {
+            const baseUrl = getFrontendBaseUrl(req);
+            const corporatePortalUrl = `${baseUrl}/company/repairs`;
+            const companyAckSubject = `TekDoctor Corporate Repair Logged [Ticket #${ticketNumber}]`;
+            const companyAckHtml = `
+              <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #0d0d12; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; overflow: hidden; padding: 32px 24px;">
+                <div style="margin-bottom: 24px;">
+                  <span style="font-size: 20px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.5px; color: #ffffff;">TEK<span style="color: #00e5ff;">DOCTOR</span> <span style="font-size: 13px; color: #a1a1aa; font-weight: 400;">| Corporate Care</span></span>
+                </div>
+                <h2 style="font-size: 20px; font-weight: 700; color: #ffffff; margin-top: 0; margin-bottom: 12px;">Corporate Repair Request Logged</h2>
+                <p style="font-size: 14px; line-height: 1.6; color: #a1a1aa; margin-bottom: 16px;">Hello ${profile.company_name || 'Corporate Partner'},</p>
+                <p style="font-size: 14px; line-height: 1.6; color: #a1a1aa; margin-bottom: 20px;">
+                  A new corporate device service request has been logged and queued for technical evaluation.
+                </p>
+                <div style="background-color: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 13px; line-height: 1.6;">
+                  <div style="color: #00e5ff; font-weight: 700; font-family: monospace; font-size: 14px; margin-bottom: 8px;">TICKET ID: #${ticketNumber}</div>
+                  <div style="color: #d4d4d8;"><strong>Company:</strong> ${profile.company_name || 'N/A'} (ID: ${profile.company_id || 'N/A'})</div>
+                  <div style="color: #d4d4d8;"><strong>Device:</strong> ${deviceCategory} - ${resolvedBrand} ${resolvedModel || ''}</div>
+                  <div style="color: #d4d4d8;"><strong>Serial Number:</strong> ${resolvedSerial || 'N/A'}</div>
+                  <div style="color: #d4d4d8;"><strong>Employee:</strong> ${employeeName || 'Unassigned'}</div>
+                  <div style="color: #d4d4d8;"><strong>Reported Problem:</strong> ${problemType}</div>
+                  <div style="color: #d4d4d8;"><strong>Priority:</strong> ${priority || 'Standard'}</div>
+                  <div style="color: #d4d4d8;"><strong>Service Type:</strong> ${serviceType || 'Bring to Service Center'}</div>
+                </div>
+                <div style="margin: 28px 0; text-align: center;">
+                  <a href="${corporatePortalUrl}" style="background-color: #00e5ff; color: #000000; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 14px; display: inline-block; text-transform: uppercase; letter-spacing: 0.5px;">View In Corporate Portal</a>
+                </div>
+                <hr style="border: 0; border-top: 1px solid #27272a; margin: 24px 0;" />
+                <p style="font-size: 11px; color: #71717a; line-height: 1.5; margin: 0;">TekDoctor Corporate Operations • Automated Notification</p>
+              </div>
+            `;
+            sendCustomerNotification(targetCompanyEmail, companyAckSubject, companyAckHtml)
+                .catch(err => logger.error(`Failed to send company ticket confirmation email: ${err.message}`));
+        }
+
+        // Lockscreen push notification to corporate account user
+        pushService.sendPushToUser(companyUserId, {
+            title: 'B2B Repair Ticket Logged',
+            body: `Ticket #${ticketNumber} created for ${resolvedBrand} (${employeeName || 'Company Device'}).`,
+            url: `/company/repairs`,
+            tag: `tkt-${ticketNumber}`
+        }).catch(() => {});
 
         return res.status(201).json(formatResponse(true, 'B2B Repair ticket submitted successfully.', {
             id: result.insertId,

@@ -412,6 +412,40 @@ const createBaseTables = async (connection) => {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
+  // 11b. Web Push Subscriptions Table (PWA / Mobile Lockscreen alerts)
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      endpoint TEXT NOT NULL,
+      endpoint_hash VARCHAR(64) NOT NULL,
+      p256dh VARCHAR(255) NOT NULL,
+      auth VARCHAR(255) NOT NULL,
+      user_agent VARCHAR(255) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_user_endpoint (user_id, endpoint_hash),
+      INDEX idx_push_user (user_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  // 11b. Web Push Subscriptions Table (PWA / Mobile Lockscreen alerts)
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      endpoint TEXT NOT NULL,
+      endpoint_hash VARCHAR(64) NOT NULL,
+      p256dh VARCHAR(255) NOT NULL,
+      auth VARCHAR(255) NOT NULL,
+      user_agent VARCHAR(255) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_user_endpoint (user_id, endpoint_hash),
+      INDEX idx_push_user (user_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
   // 12. Messages Table
   await connection.query(`
     CREATE TABLE IF NOT EXISTS messages (
@@ -2068,6 +2102,56 @@ const MIGRATIONS = [
       `, [currentSeq]);
 
       console.log(`[Migration:2026_18] Added customer_id column to users, backfilled ${existingCustomers.length} existing customers, sequence initialized at ${currentSeq}.`);
+    }
+  },
+  {
+    version: '2026_19_create_push_subscriptions_table',
+    name: 'Create push_subscriptions table for PWA lockscreen Web Push notifications',
+    isSatisfied: async (connection) => {
+      return await checkTableExists(connection, 'push_subscriptions');
+    },
+    apply: async (connection) => {
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          endpoint TEXT NOT NULL,
+          endpoint_hash VARCHAR(64) NOT NULL,
+          p256dh VARCHAR(255) NOT NULL,
+          auth VARCHAR(255) NOT NULL,
+          user_agent VARCHAR(255) NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_user_endpoint (user_id, endpoint_hash),
+          INDEX idx_push_user (user_id),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      `);
+      console.log('[Migration:2026_19] Created push_subscriptions table for PWA lockscreen alerts.');
+    }
+  },
+  {
+    version: '2026_19_create_push_subscriptions_table',
+    name: 'Create push_subscriptions table for PWA lockscreen Web Push notifications',
+    isSatisfied: async (connection) => {
+      return await checkTableExists(connection, 'push_subscriptions');
+    },
+    apply: async (connection) => {
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          endpoint TEXT NOT NULL,
+          endpoint_hash VARCHAR(64) NOT NULL,
+          p256dh VARCHAR(255) NOT NULL,
+          auth VARCHAR(255) NOT NULL,
+          user_agent VARCHAR(255) NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_user_endpoint (user_id, endpoint_hash),
+          INDEX idx_push_user (user_id),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      `);
+      console.log('[Migration:2026_19] Created push_subscriptions table for PWA lockscreen alerts.');
     }
   }
 ];

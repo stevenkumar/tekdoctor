@@ -9,12 +9,22 @@ const {
   clearAllNotifications,
   sendNotification,
   broadcastNotification,
-  getNotificationHistory
+  getNotificationHistory,
+  getVapidPublicKey,
+  subscribe,
+  unsubscribe
 } = require('../controllers/notification.controller');
 const { authenticate, authorize } = require('../middleware/auth.middleware');
 
-// All notification routes require authentication
+// Public route to fetch active VAPID public key for browser push subscription
+router.get('/vapid-public-key', getVapidPublicKey);
+
+// All subsequent notification routes require authentication
 router.use(authenticate);
+
+// Web Push subscription registration/cancellation
+router.post('/subscribe', subscribe);
+router.post('/unsubscribe', unsubscribe);
 
 // User notification routes
 router.get('/', getNotifications);

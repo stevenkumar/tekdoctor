@@ -9,6 +9,7 @@ import { useSiteContext } from '@/context/SiteContext';
 import { getMediaUrl } from '@/utils/media';
 import { notificationApi } from '../services/api';
 import type { NotificationItem } from '../services/api';
+import { isPushNotificationSupported, checkIsPushSubscribed, subscribeToLiveAlerts, unsubscribeFromLiveAlerts } from '../utils/pushNotifications';
 import { CompanyProvider, useCompanyContext } from '../context/CompanyContext';
 import {
     LayoutDashboard, Users, Smartphone, Wrench, Building2,
@@ -46,8 +47,33 @@ function CompanyLayoutInner() {
     const [notifications, setNotifications] = useState<NotificationItem[]>([]);
     const [showNotifications, setShowNotifications] = useState(false);
     const [activeModalNotif, setActiveModalNotif] = useState<NotificationItem | null>(null);
+    const [isPushSubscribed, setIsPushSubscribed] = useState(false);
+    const [isPushLoading, setIsPushLoading] = useState(false);
     const notifRef = useRef<HTMLDivElement>(null);
     const unreadCount = notifications.filter(n => !n.is_read).length;
+
+    useEffect(() => {
+        if (showNotifications && user && token) {
+            checkIsPushSubscribed().then(setIsPushSubscribed).catch(() => {});
+        }
+    }, [showNotifications, user, token]);
+
+    const handleTogglePush = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!token) return;
+        setIsPushLoading(true);
+        try {
+            if (isPushSubscribed) {
+                const res = await unsubscribeFromLiveAlerts(token);
+                if (res.success) setIsPushSubscribed(false);
+            } else {
+                const res = await subscribeToLiveAlerts(token);
+                if (res.success) setIsPushSubscribed(true);
+            }
+        } finally {
+            setIsPushLoading(false);
+        }
+    };
 
     useEffect(() => {
         let interval: ReturnType<typeof setInterval>;
@@ -346,6 +372,26 @@ function CompanyLayoutInner() {
                                                 )}
                                             </div>
                                         </div>
+                                        {isPushNotificationSupported() && (
+                                            <div className="px-4 py-2 bg-zinc-950/80 border-b border-zinc-900 flex items-center justify-between text-xs">
+                                                <div className="flex items-center gap-1.5 text-zinc-400">
+                                                    <span className={`w-1.5 h-1.5 rounded-full ${isPushSubscribed ? 'bg-emerald-400' : 'bg-indigo-400 animate-pulse'}`} />
+                                                    <span className="text-[10px] font-mono tracking-wider uppercase text-zinc-300">Lockscreen Alerts</span>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleTogglePush}
+                                                    disabled={isPushLoading}
+                                                    className={`text-[9px] font-mono px-2 py-0.5 rounded transition-all cursor-pointer ${
+                                                        isPushSubscribed
+                                                            ? 'bg-zinc-800 text-zinc-400 hover:text-red-400 hover:bg-zinc-700'
+                                                            : 'bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 hover:bg-indigo-600 hover:text-white font-semibold'
+                                                    }`}
+                                                >
+                                                    {isPushLoading ? '...' : (isPushSubscribed ? 'Active' : 'Enable')}
+                                                </button>
+                                            </div>
+                                        )}
                                         <div className="max-h-72 overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-850">
                                             {notifications.length === 0 ? (
                                                 <div className="p-8 text-center text-zinc-655 text-xs font-mono">

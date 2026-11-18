@@ -6,6 +6,7 @@ const config = require('../config/app.config');
 const { pool } = require('../config/db.config');
 const { formatResponse, generateTicketNumber, generateInvoiceId, generateCustomerId } = require('../utils/helpers');
 const { resolveDeviceAmcEligibility } = require('../services/amc.service');
+const pushService = require('../services/push.service');
 const logger = require('../utils/logger');
 const { sendAdminNotification, sendCustomerNotification } = require('../utils/email.utils');
 const { logActivity } = require('../utils/activity.logger');
@@ -622,7 +623,78 @@ const createRepairRequest = async (req, res, next) => {
         if (config.env === 'development') {
           logger.info(`[DEV SET PASSWORD LINK] User: ${autoLoginData.user.email} | URL: ${setPasswordUrl}`);
         }
+      } else if (autoLoginData.isExistingCustomer && autoLoginData.user?.email) {
+        // ── Transactional Email 1a: Booking Confirmation for Matched Existing Customer ──
+        const baseUrl = getFrontendBaseUrl(req);
+        const trackingUrl = `${baseUrl}/repair/status?ticket=${encodeURIComponent(ticketNumber)}`;
+        const confirmSubject = `TekDoctor — Repair Booking Confirmed [Ticket: #${ticketNumber}]`;
+        const confirmHtml = `
+          <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #0d0d12; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; overflow: hidden; padding: 32px 24px;">
+            <div style="margin-bottom: 24px;">
+              <span style="font-size: 20px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.5px; color: #ffffff;">TEK<span style="color: #00e5ff;">DOCTOR</span></span>
+            </div>
+            <h2 style="font-size: 20px; font-weight: 700; color: #ffffff; margin-top: 0; margin-bottom: 12px;">Repair Request Confirmed</h2>
+            <p style="font-size: 14px; line-height: 1.6; color: #a1a1aa; margin-bottom: 16px;">Hello ${autoLoginData.user.name || cleanCustomerName || 'Valued Customer'},</p>
+            <p style="font-size: 14px; line-height: 1.6; color: #a1a1aa; margin-bottom: 20px;">
+              Your device repair request has been successfully registered. Our technical team is reviewing your ticket and will update your diagnostic progress shortly.
+            </p>
+            <div style="background-color: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 13px; line-height: 1.6;">
+              <div style="color: #00e5ff; font-weight: 700; font-family: monospace; font-size: 14px; margin-bottom: 8px;">TICKET ID: #${ticketNumber}</div>
+              <div style="color: #d4d4d8;"><strong>Device:</strong> ${displayBrand} ${resolvedModelNumber || ''} (${displayCategory})</div>
+              <div style="color: #d4d4d8;"><strong>Problem:</strong> ${displayProblem}</div>
+              <div style="color: #d4d4d8;"><strong>Priority:</strong> ${priority || 'Standard'}</div>
+              <div style="color: #d4d4d8;"><strong>Current Status:</strong> Pending Review / In Queue</div>
+            </div>
+            <div style="margin: 28px 0; text-align: center;">
+              <a href="${trackingUrl}" style="background-color: #00e5ff; color: #000000; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 14px; display: inline-block; text-transform: uppercase; letter-spacing: 0.5px;">Track Live Status</a>
+            </div>
+            <hr style="border: 0; border-top: 1px solid #27272a; margin: 24px 0;" />
+            <p style="font-size: 11px; color: #71717a; line-height: 1.5; margin: 0;">TekDoctor Automated System • Real-Time Diagnostics & Repair Management</p>
+          </div>
+        `;
+        sendCustomerNotification(autoLoginData.user.email, confirmSubject, confirmHtml).catch(err => logger.error(`Failed to send booking confirmation email: ${err.message}`));
       }
+    } else if (req.user && (cleanEmail || req.user.email)) {
+      // ── Transactional Email 1b: Booking Confirmation for Authenticated Logged-In Customer ──
+      const targetEmail = cleanEmail || req.user.email;
+      const baseUrl = getFrontendBaseUrl(req);
+      const trackingUrl = `${baseUrl}/repair/status?ticket=${encodeURIComponent(ticketNumber)}`;
+      const confirmSubject = `TekDoctor — Repair Booking Confirmed [Ticket: #${ticketNumber}]`;
+      const confirmHtml = `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #0d0d12; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; overflow: hidden; padding: 32px 24px;">
+          <div style="margin-bottom: 24px;">
+            <span style="font-size: 20px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.5px; color: #ffffff;">TEK<span style="color: #00e5ff;">DOCTOR</span></span>
+          </div>
+          <h2 style="font-size: 20px; font-weight: 700; color: #ffffff; margin-top: 0; margin-bottom: 12px;">Repair Request Confirmed</h2>
+          <p style="font-size: 14px; line-height: 1.6; color: #a1a1aa; margin-bottom: 16px;">Hello ${cleanCustomerName || req.user.name || 'Valued Customer'},</p>
+          <p style="font-size: 14px; line-height: 1.6; color: #a1a1aa; margin-bottom: 20px;">
+            Your device repair request has been successfully registered. Our technical team is reviewing your ticket and will update your diagnostic progress shortly.
+          </p>
+          <div style="background-color: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 13px; line-height: 1.6;">
+            <div style="color: #00e5ff; font-weight: 700; font-family: monospace; font-size: 14px; margin-bottom: 8px;">TICKET ID: #${ticketNumber}</div>
+            <div style="color: #d4d4d8;"><strong>Device:</strong> ${displayBrand} ${resolvedModelNumber || ''} (${displayCategory})</div>
+            <div style="color: #d4d4d8;"><strong>Problem:</strong> ${displayProblem}</div>
+            <div style="color: #d4d4d8;"><strong>Priority:</strong> ${priority || 'Standard'}</div>
+            <div style="color: #d4d4d8;"><strong>Current Status:</strong> Pending Review / In Queue</div>
+          </div>
+          <div style="margin: 28px 0; text-align: center;">
+            <a href="${trackingUrl}" style="background-color: #00e5ff; color: #000000; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 14px; display: inline-block; text-transform: uppercase; letter-spacing: 0.5px;">Track Live Status</a>
+          </div>
+          <hr style="border: 0; border-top: 1px solid #27272a; margin: 24px 0;" />
+          <p style="font-size: 11px; color: #71717a; line-height: 1.5; margin: 0;">TekDoctor Automated System • Real-Time Diagnostics & Repair Management</p>
+        </div>
+      `;
+      sendCustomerNotification(targetEmail, confirmSubject, confirmHtml).catch(err => logger.error(`Failed to send logged-in customer confirmation email: ${err.message}`));
+    }
+
+    // ── Dispatch PWA Lockscreen Push Notification ──
+    if (userId) {
+      pushService.sendPushToUser(userId, {
+        title: 'Repair Request Submitted',
+        body: `Ticket #${ticketNumber} created for ${displayBrand}. Tap to track live status.`,
+        url: `/repair/status?ticket=${encodeURIComponent(ticketNumber)}`,
+        tag: `tkt-${ticketNumber}`
+      }).catch(() => {});
     }
 
     // Log Activity
@@ -2522,6 +2594,12 @@ const notifyCustomer = async (req, res, next) => {
           'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
           [request.user_id, notifTitle, notifMsg, request.id, req.user.id]
         );
+        pushService.sendPushToUser(request.user_id, {
+          title: notifTitle,
+          body: notifMsg,
+          url: `/repair/status?ticket=${encodeURIComponent(request.ticket_number || request.id)}`,
+          tag: `tkt-${request.id}`
+        }).catch(() => {});
       }
 
       logger.info(`Customer notified for ${request.status} repair ID: ${request.id}`);
@@ -3095,6 +3173,12 @@ const sendMilestoneNotification = async (req, res, next) => {
         'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
         [reqData.user_id, milestoneTitle, milestoneMsg, id, req.user.id]
       );
+      pushService.sendPushToUser(reqData.user_id, {
+        title: milestoneTitle,
+        body: milestoneMsg,
+        url: `/repair/status?ticket=${encodeURIComponent(reqData.ticket_number || id)}`,
+        tag: `tkt-${id}`
+      }).catch(() => {});
     }
 
     // 2. Dispatch email if email exists
@@ -4013,6 +4097,16 @@ const submitDiagnosis = async (req, res, next) => {
       } catch (emailErr) { }
     }
 
+    // Customer Lockscreen Push Alert
+    if (request.user_id) {
+      pushService.sendPushToUser(request.user_id, {
+        title: `Repair Estimate Ready [${ticketNum}]`,
+        body: `Estimate of ${formattedCostStr} submitted for your ${request.brand}. Tap to review and approve.`,
+        url: `/repair/status?ticket=${encodeURIComponent(ticketNum)}`,
+        tag: `tkt-${ticketNum}`
+      }).catch(() => {});
+    }
+
     // Admin in-app notification
     try {
       const [admins] = await connection.query("SELECT id FROM users WHERE role = 'admin'");
@@ -4527,6 +4621,16 @@ const placeTicketOnHold = async (req, res, next) => {
         `;
         sendCustomerNotification(request.email, emailSubject, emailHtml).catch(e => logger.warn(`Customer hold email error: ${e.message}`));
       } catch (emailErr) { }
+    }
+
+    // Customer Lockscreen Push Alert
+    if (request.user_id) {
+      pushService.sendPushToUser(request.user_id, {
+        title: `Repair On Hold [${ticketNum}]`,
+        body: `Ticket placed on hold: ${holdReason || 'Awaiting estimate approval'}. Please review before ${deadlineStr}.`,
+        url: `/repair/status?ticket=${encodeURIComponent(ticketNum)}`,
+        tag: `tkt-${ticketNum}`
+      }).catch(() => {});
     }
 
     // 3. In-App Notification to Assigned Technician

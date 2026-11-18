@@ -9,6 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import { useSiteContext } from '../context/SiteContext';
 import { notificationApi } from '../services/api';
 import type { NotificationItem } from '../services/api';
+import { isPushNotificationSupported, checkIsPushSubscribed, subscribeToLiveAlerts, unsubscribeFromLiveAlerts } from '../utils/pushNotifications';
 import { ROUTES } from '../config/routes';
 import { appConfig } from '../config/appConfig';
 import { getMediaUrl } from '../utils/media';
@@ -21,9 +22,34 @@ const Navbar = () => {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [activeModalNotif, setActiveModalNotif] = useState<NotificationItem | null>(null);
+  const [isPushSubscribed, setIsPushSubscribed] = useState(false);
+  const [isPushLoading, setIsPushLoading] = useState(false);
   const { flattenedSettings } = useSiteContext();
   const location = useLocation();
   const notifRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (showNotifications && isAuthenticated) {
+      checkIsPushSubscribed().then(setIsPushSubscribed).catch(() => {});
+    }
+  }, [showNotifications, isAuthenticated]);
+
+  const handleTogglePush = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!token) return;
+    setIsPushLoading(true);
+    try {
+      if (isPushSubscribed) {
+        const res = await unsubscribeFromLiveAlerts(token);
+        if (res.success) setIsPushSubscribed(false);
+      } else {
+        const res = await subscribeToLiveAlerts(token);
+        if (res.success) setIsPushSubscribed(true);
+      }
+    } finally {
+      setIsPushLoading(false);
+    }
+  };
 
   const getLinkClass = (path: string) => {
     const isActive = location.pathname === path;
@@ -251,6 +277,26 @@ const Navbar = () => {
                           )}
                         </div>
                       </div>
+                      {isPushNotificationSupported() && (
+                        <div className="px-4 py-2 bg-zinc-900/60 border-b border-zinc-800/80 flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-1.5 text-zinc-400">
+                            <span className={`w-1.5 h-1.5 rounded-full ${isPushSubscribed ? 'bg-emerald-400' : 'bg-neon-cyan animate-pulse'}`} />
+                            <span className="text-[10px] font-mono tracking-wider uppercase text-zinc-300">Live Lockscreen Alerts</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleTogglePush}
+                            disabled={isPushLoading}
+                            className={`text-[9px] font-mono px-2 py-0.5 rounded transition-all cursor-pointer ${
+                              isPushSubscribed
+                                ? 'bg-zinc-800 text-zinc-400 hover:text-red-400 hover:bg-zinc-700'
+                                : 'bg-neon-cyan/20 border border-neon-cyan/40 text-neon-cyan hover:bg-neon-cyan hover:text-black font-semibold'
+                            }`}
+                          >
+                            {isPushLoading ? '...' : (isPushSubscribed ? 'Active' : 'Enable')}
+                          </button>
+                        </div>
+                      )}
                       <div className="max-h-80 overflow-y-auto scrollbar-thin divide-y divide-zinc-800/40">
                         {notifications.length === 0 ? (
                           <div className="p-6 text-center text-zinc-500 text-xs font-mono">No alerts found.</div>

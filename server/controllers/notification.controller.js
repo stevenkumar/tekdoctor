@@ -1,6 +1,53 @@
 const { pool } = require('../config/db.config');
 const { formatResponse } = require('../utils/helpers');
 const logger = require('../utils/logger');
+const pushService = require('../services/push.service');
+
+/**
+ * GET /api/notifications/vapid-public-key
+ * Returns active VAPID public key for browser push subscription
+ */
+const getVapidPublicKey = async (req, res, next) => {
+  try {
+    const publicKey = await pushService.getVapidPublicKey();
+    return res.status(200).json(formatResponse(true, 'VAPID public key retrieved.', { publicKey }));
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/notifications/subscribe
+ * Authenticated user registers a browser PushSubscription
+ */
+const subscribe = async (req, res, next) => {
+  try {
+    const { subscription } = req.body;
+    if (!subscription || !subscription.endpoint || !subscription.keys?.p256dh || !subscription.keys?.auth) {
+      return res.status(400).json(formatResponse(false, 'Valid PushSubscription with endpoint and keys is required.'));
+    }
+
+    const userAgent = req.headers['user-agent'] || null;
+    await pushService.saveSubscription(req.user.id, subscription, userAgent);
+    return res.status(201).json(formatResponse(true, 'Push subscription registered successfully.'));
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/notifications/unsubscribe
+ * Authenticated user deletes a browser PushSubscription
+ */
+const unsubscribe = async (req, res, next) => {
+  try {
+    const { endpoint } = req.body;
+    await pushService.removeSubscription(req.user.id, endpoint || null);
+    return res.status(200).json(formatResponse(true, 'Push subscription removed successfully.'));
+  } catch (error) {
+    next(error);
+  }
+};
 
 /**
  * GET /api/notifications
@@ -184,6 +231,14 @@ const sendNotification = async (req, res, next) => {
       [userId, title, message, ticketId || null, req.user.id]
     );
 
+    // Dispatch Web Push lockscreen alert to target user
+    pushService.sendPushToUser(userId, {
+      title,
+      body: message,
+      url: ticketId ? `/repair/status?ticket=${ticketId}` : '/notifications',
+      tag: ticketId ? `ticket-${ticketId}` : 'tekdoctor-alert'
+    }).catch(err => logger.debug(`[Push] Push dispatch error: ${err.message}`));
+
     logger.info(`Notification sent to user ${userId} by ${req.user.role} ${req.user.id}`);
     return res.status(201).json(formatResponse(true, 'Notification sent.', { id: result.insertId }));
   } catch (error) {
@@ -227,12 +282,45 @@ const broadcastNotification = async (req, res, next) => {
       [values]
     );
 
+    // Dispatch Web Push alert to all targeted users
+    pushService.sendPushToUser(users.map(u => u.id), {
+      title,
+      body: message,
+      url: '/notifications',
+      tag: 'tekdoctor-broadcast'
+    }).catch(err => logger.debug(`[Push] Broadcast push error: ${err.message}`));
+
     logger.info(`Broadcast notification sent to ${users.length} users by admin ${req.user.id}`);
     return res.status(201).json(formatResponse(true, `Notification sent to ${users.length} users.`));
   } catch (error) {
     next(error);
   } finally {
     if (connection) connection.release();
+  }
+};
+
+/**
+ * Central helper to create an in-app notification row and dispatch a real-time Web Push alert.
+ */
+const dispatchNotification = async (connOrPool, { userId, title, message, ticketId = null, senderId = null, url = null, tag = null }) => {
+  try {
+    const conn = connOrPool || pool;
+    const [result] = await conn.query(
+      'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
+      [userId, title, message, ticketId, senderId]
+    );
+
+    pushService.sendPushToUser(userId, {
+      title,
+      body: message,
+      url: url || (ticketId ? `/repair/status?ticket=${ticketId}` : '/notifications'),
+      tag: tag || (ticketId ? `tkt-${ticketId}` : 'tekdoctor-alert')
+    }).catch(err => logger.debug(`[Push] Dispatch error: ${err.message}`));
+
+    return result.insertId;
+  } catch (err) {
+    logger.error(`[Notification] dispatchNotification error for user ${userId}: ${err.message}`);
+    throw err;
   }
 };
 
@@ -280,5 +368,9 @@ module.exports = {
   clearAllNotifications,
   sendNotification,
   broadcastNotification,
-  getNotificationHistory
+  getNotificationHistory,
+  getVapidPublicKey,
+  subscribe,
+  unsubscribe,
+  dispatchNotification
 };

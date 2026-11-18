@@ -7,6 +7,28 @@ const { formatResponse, generateInvoiceId, generateQuotationId } = require('../u
 const logger = require('../utils/logger');
 const { logActivity } = require('../utils/activity.logger');
 const { canTechnicianAccessTicket, generateGuestInvoiceAccessToken, verifyInvoiceAuthorization } = require('../utils/auth.helpers');
+const { sendCustomerNotification } = require('../utils/email.utils');
+const pushService = require('../services/push.service');
+
+const getFrontendBaseUrl = (req) => {
+  const allowedOrigins = new Set();
+  if (config.frontend && config.frontend.url) {
+    allowedOrigins.add(config.frontend.url.replace(/\/+$/, ''));
+  }
+  if (config.server && config.server.publicOrigin) {
+    allowedOrigins.add(config.server.publicOrigin.replace(/\/+$/, ''));
+  }
+  if (Array.isArray(config.server && config.server.corsOrigins)) {
+    config.server.corsOrigins.forEach(o => {
+      if (o && o !== '*') allowedOrigins.add(o.replace(/\/+$/, ''));
+    });
+  }
+  const origin = req?.headers?.origin;
+  if (origin && allowedOrigins.has(origin.replace(/\/+$/, ''))) {
+    return origin.replace(/\/+$/, '');
+  }
+  return config.frontend?.url?.replace(/\/+$/, '') || 'https://thetekdoctor.com';
+};
 
 /**
  * Get public payment gateway configuration
@@ -1081,6 +1103,101 @@ const finalizeInvoice = async (req, res, next) => {
     await connection.commit();
     logger.info(`Invoice finalized: ${id} by Admin ${req.user.email} (Grand Total: ₹${calculated.grandTotal})`);
 
+    // Dispatch Lockscreen Push Notification to authorized recipients
+    if (recipientUserIds.size > 0) {
+      pushService.sendPushToUser(Array.from(recipientUserIds), {
+        title: `Invoice Finalized [#${id}]`,
+        body: notifMsg,
+        url: '/profile?tab=invoices',
+        tag: `inv-${id}`
+      }).catch(() => {});
+    }
+
+    // ── Transactional Email 3: Invoice Finalized / Issued ──
+    try {
+      let recipientEmail = inv.client_email || null;
+      let recipientName = inv.client_name || 'Customer';
+
+      if (!recipientEmail && inv.user_id) {
+        const [u] = await pool.query('SELECT email, name FROM users WHERE id = ? LIMIT 1', [inv.user_id]);
+        if (u.length > 0) {
+          recipientEmail = u[0].email;
+          if (!recipientName || recipientName === 'Customer') recipientName = u[0].name;
+        }
+      }
+
+      if (!recipientEmail && associatedTicket?.user_id) {
+        const [u] = await pool.query('SELECT email, name FROM users WHERE id = ? LIMIT 1', [associatedTicket.user_id]);
+        if (u.length > 0) {
+          recipientEmail = u[0].email;
+          if (!recipientName || recipientName === 'Customer') recipientName = u[0].name;
+        }
+      }
+
+      if (!recipientEmail && inv.ticket_id) {
+        const [sr] = await pool.query('SELECT email, customer_name FROM service_requests WHERE id = ? LIMIT 1', [inv.ticket_id]);
+        if (sr.length > 0) {
+          recipientEmail = sr[0].email;
+          if (!recipientName || recipientName === 'Customer') recipientName = sr[0].customer_name;
+        }
+      }
+
+      if (recipientEmail) {
+        const baseUrl = getFrontendBaseUrl(req);
+        const invoiceUrl = `${baseUrl}/profile?tab=invoices`;
+        const emailSubject = `TekDoctor — Invoice #${id} Finalized (Amount: ₹${calculated.grandTotal.toFixed(2)})`;
+        const emailHtml = `
+          <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #0d0d12; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; overflow: hidden; padding: 32px 24px;">
+            <div style="margin-bottom: 24px;">
+              <span style="font-size: 20px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.5px; color: #ffffff;">TEK<span style="color: #00e5ff;">DOCTOR</span></span>
+            </div>
+            <h2 style="font-size: 18px; font-weight: 700; color: #ffffff; margin-top: 0; margin-bottom: 8px;">Commercial Invoice Finalized & Issued</h2>
+            <p style="font-size: 14px; color: #a1a1aa; line-height: 1.6; margin-top: 0; margin-bottom: 20px;">Dear ${recipientName}, your official commercial tax invoice has been prepared and released by the administration.</p>
+            
+            <div style="background-color: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 18px; margin-bottom: 24px;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 13px; color: #d4d4d8;">
+                <tr>
+                  <td style="padding: 6px 0; color: #71717a;">Invoice Number:</td>
+                  <td style="padding: 6px 0; text-align: right; font-weight: 600; color: #00e5ff;">#${id}</td>
+                </tr>
+                ${ticketRef ? `
+                <tr>
+                  <td style="padding: 6px 0; color: #71717a;">Repair Ticket:</td>
+                  <td style="padding: 6px 0; text-align: right; font-weight: 500;">${ticketRef}</td>
+                </tr>` : ''}
+                <tr>
+                  <td style="padding: 6px 0; color: #71717a;">Subtotal:</td>
+                  <td style="padding: 6px 0; text-align: right; font-weight: 500;">₹${calculated.subtotal.toFixed(2)}</td>
+                </tr>
+                ${calculated.discountAmount > 0 ? `
+                <tr>
+                  <td style="padding: 6px 0; color: #71717a;">Discount:</td>
+                  <td style="padding: 6px 0; text-align: right; font-weight: 500; color: #10b981;">- ₹${calculated.discountAmount.toFixed(2)}</td>
+                </tr>` : ''}
+                <tr>
+                  <td style="padding: 6px 0; color: #71717a;">GST Amount (${calculated.gstType === 'inter' ? `IGST ${calculated.igstRate}%` : `CGST ${calculated.cgstRate}% + SGST ${calculated.sgstRate}%`}):</td>
+                  <td style="padding: 6px 0; text-align: right; font-weight: 500;">₹${calculated.taxAmount.toFixed(2)}</td>
+                </tr>
+                <tr style="border-top: 1px solid #27272a;">
+                  <td style="padding: 10px 0 4px 0; font-weight: 700; color: #ffffff; font-size: 15px;">Total Amount:</td>
+                  <td style="padding: 10px 0 4px 0; text-align: right; font-weight: 700; color: #00e5ff; font-size: 16px;">₹${calculated.grandTotal.toFixed(2)}</td>
+                </tr>
+              </table>
+            </div>
+
+            <div style="text-align: center; margin-bottom: 24px;">
+              <a href="${invoiceUrl}" style="display: inline-block; background-color: #00e5ff; color: #000000; font-weight: 600; font-size: 14px; text-decoration: none; padding: 12px 28px; border-radius: 8px;">View Invoice & Settle</a>
+            </div>
+
+            <p style="font-size: 12px; color: #71717a; line-height: 1.5; margin: 0;">You can download your PDF tax invoice and make payment securely through our portal. If you have already made payment via cash, it will reflect once verified by the store administrator.</p>
+          </div>
+        `;
+        sendCustomerNotification(recipientEmail, emailSubject, emailHtml).catch(e => logger.warn(`Invoice finalization email error: ${e.message}`));
+      }
+    } catch (invEmailErr) {
+      logger.warn(`Failed to process invoice email notification: ${invEmailErr.message}`);
+    }
+
     await logActivity(req.user.id, 'billing', 'finalize_invoice', 'invoices', id, {
       grandTotal: calculated.grandTotal,
       subtotal: calculated.subtotal,
@@ -2030,6 +2147,28 @@ const processAuthoritativePaymentSettlement = async ({
           logger.debug('Technician payment notification error: ' + techNotifErr.message);
         }
       }
+
+      // Notify Customer / Company
+      if (finalUserId) {
+        try {
+          const custNotifMsg = `Your payment of ₹${finalAmount.toFixed(2)} for ${ticketRef} has been received and settled successfully via ${paymentMethod.replace('_', ' ').toUpperCase()}. Transaction ID: ${paymentId}.`;
+          await connection.query(
+            `INSERT INTO notifications (user_id, ticket_id, title, message, sender_id)
+             VALUES (?, ?, 'Payment Received Successfully', ?, ?)`,
+            [finalUserId, resolvedTicketId || null, custNotifMsg, null]
+          );
+        } catch (custNotifErr) {
+          logger.debug('Customer payment notification error: ' + custNotifErr.message);
+        }
+
+        // Lockscreen push notification to paying user
+        pushService.sendPushToUser(finalUserId, {
+          title: 'Payment Received Successfully',
+          body: `Your payment of ₹${finalAmount.toFixed(2)} for ${ticketRef} has been verified and settled. Transaction ID: ${paymentId}`,
+          url: resolvedTicketId ? `/repair/status?ticket=${encodeURIComponent(ticketRef)}` : '/profile?tab=invoices',
+          tag: `pay-${paymentId}`
+        }).catch(() => {});
+      }
     } catch (postCommitErr) {
       logger.warn('Non-fatal error in post-settlement notification queries: ' + postCommitErr.message);
     }
@@ -2047,6 +2186,77 @@ const processAuthoritativePaymentSettlement = async ({
     if (!customerEmail && finalUserId) {
       const [uRows] = await connection.query('SELECT email FROM users WHERE id = ? LIMIT 1', [finalUserId]);
       if (uRows.length > 0) customerEmail = uRows[0].email;
+    }
+
+    // ── Transactional Email 4a: Online Payment Receipt ──
+    if (customerEmail) {
+      try {
+        let customerName = 'Customer';
+        if (resolvedTicketId) {
+          const [tks] = await connection.query('SELECT customer_name FROM service_requests WHERE id = ? LIMIT 1', [resolvedTicketId]);
+          if (tks.length > 0 && tks[0].customer_name) customerName = tks[0].customer_name;
+        }
+        if (customerName === 'Customer' && finalUserId) {
+          const [u] = await connection.query('SELECT name FROM users WHERE id = ? LIMIT 1', [finalUserId]);
+          if (u.length > 0 && u[0].name) customerName = u[0].name;
+        }
+
+        const resolvedRef = ticketNum ? `#${ticketNum}` : (resolvedTicketId ? `#${resolvedTicketId}` : (resolvedInvoiceId ? `Invoice #${resolvedInvoiceId}` : 'N/A'));
+        const baseUrl = config.frontend?.url?.replace(/\/+$/, '') || 'https://thetekdoctor.com';
+        const receiptUrl = resolvedTicketId ? `${baseUrl}/repair/status?ticket=${encodeURIComponent(ticketNum || resolvedTicketId)}` : `${baseUrl}/profile?tab=invoices`;
+        const paymentSubject = `TekDoctor — Payment Receipt [${resolvedRef}] (₹${finalAmount.toFixed(2)})`;
+        const paymentHtml = `
+          <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #0d0d12; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; overflow: hidden; padding: 32px 24px;">
+            <div style="margin-bottom: 24px;">
+              <span style="font-size: 20px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.5px; color: #ffffff;">TEK<span style="color: #00e5ff;">DOCTOR</span></span>
+            </div>
+            <div style="background-color: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px;">
+              <span style="color: #10b981; font-weight: 600; font-size: 14px;">✔ Payment Successfully Received & Settled</span>
+            </div>
+            <h2 style="font-size: 18px; font-weight: 700; color: #ffffff; margin-top: 0; margin-bottom: 8px;">Payment Receipt</h2>
+            <p style="font-size: 14px; color: #a1a1aa; line-height: 1.6; margin-top: 0; margin-bottom: 20px;">Dear ${customerName}, thank you for choosing TekDoctor. Your payment has been received and verified.</p>
+            
+            <div style="background-color: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 18px; margin-bottom: 24px;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 13px; color: #d4d4d8;">
+                <tr>
+                  <td style="padding: 6px 0; color: #71717a;">Amount Paid:</td>
+                  <td style="padding: 6px 0; text-align: right; font-weight: 700; color: #10b981; font-size: 16px;">₹${finalAmount.toFixed(2)}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0; color: #71717a;">Transaction ID:</td>
+                  <td style="padding: 6px 0; text-align: right; font-weight: 600; color: #00e5ff;">${paymentId}</td>
+                </tr>
+                ${orderId ? `
+                <tr>
+                  <td style="padding: 6px 0; color: #71717a;">Order Reference:</td>
+                  <td style="padding: 6px 0; text-align: right; font-weight: 500;">${orderId}</td>
+                </tr>` : ''}
+                <tr>
+                  <td style="padding: 6px 0; color: #71717a;">Repair Ticket:</td>
+                  <td style="padding: 6px 0; text-align: right; font-weight: 500;">${resolvedRef}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0; color: #71717a;">Payment Method:</td>
+                  <td style="padding: 6px 0; text-align: right; font-weight: 500;">${paymentMethod.replace('_', ' ').toUpperCase()}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0; color: #71717a;">Date & Time:</td>
+                  <td style="padding: 6px 0; text-align: right; font-weight: 500;">${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</td>
+                </tr>
+              </table>
+            </div>
+
+            <div style="text-align: center; margin-bottom: 24px;">
+              <a href="${receiptUrl}" style="display: inline-block; background-color: #00e5ff; color: #000000; font-weight: 600; font-size: 14px; text-decoration: none; padding: 12px 28px; border-radius: 8px;">View Repair & Receipt</a>
+            </div>
+
+            <p style="font-size: 12px; color: #71717a; line-height: 1.5; margin: 0;">This email serves as an official confirmation of payment. For billing questions or invoice copies, please visit your account dashboard or contact support@thetekdoctor.com.</p>
+          </div>
+        `;
+        sendCustomerNotification(customerEmail, paymentSubject, paymentHtml).catch(e => logger.warn(`Payment receipt email error: ${e.message}`));
+      } catch (payEmailErr) {
+        logger.warn(`Failed to dispatch payment receipt email: ${payEmailErr.message}`);
+      }
     }
 
     const invoiceAccessToken = generateGuestInvoiceAccessToken({
@@ -3486,6 +3696,14 @@ const verifyOfflinePayment = async (req, res, next) => {
         } catch (e) {
           logger.debug('Customer notification error on verify: ' + e.message);
         }
+
+        // Lockscreen push notification to customer
+        pushService.sendPushToUser(finalUserId, {
+          title: 'Payment Verified & Settled',
+          body: `Your offline payment of ₹${finalAmount.toFixed(2)} via ${paymentMethod.replace('_', ' ').toUpperCase()} has been verified and settled.`,
+          url: resolvedTicketId ? `/repair/status?ticket=${encodeURIComponent(resolvedTicketId)}` : '/profile?tab=invoices',
+          tag: `pay-${payment.payment_id}`
+        }).catch(() => {});
       }
 
       // Notify Assigned Technician
@@ -3512,6 +3730,76 @@ const verifyOfflinePayment = async (req, res, next) => {
         if (tks.length > 0) {
           customerEmail = tks[0].email;
           ticketNum = tks[0].ticket_number;
+        }
+      }
+      if (!customerEmail && finalUserId) {
+        const [u] = await pool.query('SELECT email FROM users WHERE id = ? LIMIT 1', [finalUserId]);
+        if (u.length > 0) customerEmail = u[0].email;
+      }
+
+      // ── Transactional Email 4b: Offline Payment Verified & Settled Receipt ──
+      if (customerEmail) {
+        try {
+          let customerName = 'Customer';
+          if (resolvedTicketId) {
+            const [tks] = await pool.query('SELECT customer_name FROM service_requests WHERE id = ? LIMIT 1', [resolvedTicketId]);
+            if (tks.length > 0 && tks[0].customer_name) customerName = tks[0].customer_name;
+          }
+          if (customerName === 'Customer' && finalUserId) {
+            const [u] = await pool.query('SELECT name FROM users WHERE id = ? LIMIT 1', [finalUserId]);
+            if (u.length > 0 && u[0].name) customerName = u[0].name;
+          }
+
+          const baseUrl = config.frontend?.url?.replace(/\/+$/, '') || 'https://thetekdoctor.com';
+          const receiptUrl = resolvedTicketId ? `${baseUrl}/repair/status?ticket=${encodeURIComponent(ticketNum || resolvedTicketId)}` : `${baseUrl}/profile?tab=invoices`;
+          const ticketRef = ticketNum ? `#${ticketNum}` : (resolvedTicketId ? `#${resolvedTicketId}` : (resolvedInvoiceId ? `Invoice #${resolvedInvoiceId}` : 'N/A'));
+          const emailSubject = `TekDoctor — Offline Payment Verified & Settled [${ticketRef}] (₹${finalAmount.toFixed(2)})`;
+          const emailHtml = `
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #0d0d12; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; overflow: hidden; padding: 32px 24px;">
+              <div style="margin-bottom: 24px;">
+                <span style="font-size: 20px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.5px; color: #ffffff;">TEK<span style="color: #00e5ff;">DOCTOR</span></span>
+              </div>
+              <div style="background-color: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px;">
+                <span style="color: #10b981; font-weight: 600; font-size: 14px;">✔ Offline Payment Verified & Settled</span>
+              </div>
+              <h2 style="font-size: 18px; font-weight: 700; color: #ffffff; margin-top: 0; margin-bottom: 8px;">Payment Settlement Receipt</h2>
+              <p style="font-size: 14px; color: #a1a1aa; line-height: 1.6; margin-top: 0; margin-bottom: 20px;">Dear ${customerName}, your offline payment has been verified by the TekDoctor administration. Your tax invoice is now officially settled and available for download.</p>
+              
+              <div style="background-color: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 18px; margin-bottom: 24px;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 13px; color: #d4d4d8;">
+                  <tr>
+                    <td style="padding: 6px 0; color: #71717a;">Amount Settled:</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 700; color: #10b981; font-size: 16px;">₹${finalAmount.toFixed(2)}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 6px 0; color: #71717a;">Payment Reference:</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600; color: #00e5ff;">${payment.payment_id}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 6px 0; color: #71717a;">Repair Ticket:</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 500;">${ticketRef}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 6px 0; color: #71717a;">Payment Mode:</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 500;">${paymentMethod.replace('_', ' ').toUpperCase()}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 6px 0; color: #71717a;">Settled Date:</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 500;">${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</td>
+                  </tr>
+                </table>
+              </div>
+
+              <div style="text-align: center; margin-bottom: 24px;">
+                <a href="${receiptUrl}" style="display: inline-block; background-color: #00e5ff; color: #000000; font-weight: 600; font-size: 14px; text-decoration: none; padding: 12px 28px; border-radius: 8px;">View Receipt & Tax Invoice</a>
+              </div>
+
+              <p style="font-size: 12px; color: #71717a; line-height: 1.5; margin: 0;">Thank you for your business. For any questions regarding your service or invoice, feel free to contact us at support@thetekdoctor.com.</p>
+            </div>
+          `;
+          sendCustomerNotification(customerEmail, emailSubject, emailHtml).catch(e => logger.warn(`Offline payment verification email error: ${e.message}`));
+        } catch (emailErr) {
+          logger.warn(`Failed to dispatch offline payment verification email: ${emailErr.message}`);
         }
       }
 

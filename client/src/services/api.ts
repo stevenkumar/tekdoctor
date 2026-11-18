@@ -1216,6 +1216,31 @@ export const notificationApi = {
         'Authorization': `Bearer ${token}`
       }
     });
+  },
+  getVapidPublicKey: async (): Promise<SafeResponse<{ publicKey: string }>> => {
+    return safeFetch<{ publicKey: string }>(getUrl('/api/notifications/vapid-public-key'), {
+      method: 'GET'
+    });
+  },
+  subscribePush: async (token: string, subscription: any): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl('/api/notifications/subscribe'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ subscription })
+    });
+  },
+  unsubscribePush: async (token: string, endpoint?: string): Promise<SafeResponse<any>> => {
+    return safeFetch<any>(getUrl('/api/notifications/unsubscribe'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ endpoint })
+    });
   }
 };
 
