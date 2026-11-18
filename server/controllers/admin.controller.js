@@ -1,3 +1,4 @@
+const { dispatchNotification } = require('./notification.controller');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
@@ -3095,13 +3096,65 @@ const importBulkCompanies = async (req, res, next) => {
 const bulkUpdateTickets = async (req, res, next) => {
     let connection;
     try {
-        connection = await pool.getConnection();
         const { ticketIds, assignedTechnicianId, status } = req.body;
 
         if (!ticketIds || !Array.isArray(ticketIds) || ticketIds.length === 0) {
-            return res.status(400).json(formatResponse(false, 'ticketIds array is required.'));
+            return res.status(400).json(formatResponse(false, 'ticketIds array is required and must not be empty.'));
         }
 
+        const cleanTicketIds = ticketIds.map(id => parseInt(id, 10)).filter(id => !isNaN(id) && id > 0);
+        if (cleanTicketIds.length === 0) {
+            return res.status(400).json(formatResponse(false, 'No valid numeric ticket IDs provided.'));
+        }
+
+        if (status === undefined && assignedTechnicianId === undefined) {
+            return res.status(400).json(formatResponse(false, 'No fields provided to update (status or assignedTechnicianId).'));
+        }
+
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+
+        // 1. Active Technician Validation (if assigning technician)
+        let assignedTech = null;
+        const isAssigningTech = assignedTechnicianId !== undefined && assignedTechnicianId !== null && assignedTechnicianId !== '' && Number(assignedTechnicianId) > 0;
+        if (isAssigningTech) {
+            const [techRows] = await connection.query(
+                'SELECT id, name, email FROM users WHERE id = ? AND role = "technician" AND is_active = 1 LIMIT 1',
+                [Number(assignedTechnicianId)]
+            );
+            if (techRows.length === 0) {
+                await connection.rollback();
+                return res.status(400).json(formatResponse(false, 'The selected technician does not exist or has been deactivated. Only active technicians can be assigned.'));
+            }
+            assignedTech = techRows[0];
+        }
+
+        // 2. Fetch target tickets with Row Locking
+        const [targetTickets] = await connection.query(
+            'SELECT id, ticket_number, customer_name, brand, model_number, status, assigned_technician_id FROM service_requests WHERE id IN (?) FOR UPDATE',
+            [cleanTicketIds]
+        );
+
+        if (targetTickets.length === 0) {
+            await connection.rollback();
+            return res.status(404).json(formatResponse(false, 'None of the requested repair tickets were found.'));
+        }
+
+        // 3. Terminal Status Guard: skip completed, delivered, and cancelled tickets
+        const eligibleTickets = targetTickets.filter(t => !['completed', 'delivered', 'cancelled'].includes((t.status || '').toLowerCase()));
+        const skippedCount = targetTickets.length - eligibleTickets.length;
+
+        if (eligibleTickets.length === 0) {
+            await connection.rollback();
+            return res.status(400).json(formatResponse(false, `No eligible tickets found to update. All ${targetTickets.length} selected ticket(s) are in completed, delivered, or cancelled status.`, {
+                updatedCount: 0,
+                skippedCount: targetTickets.length
+            }));
+        }
+
+        const eligibleIds = eligibleTickets.map(t => t.id);
+
+        // 4. Build Clean Assignment Update
         const updates = [];
         const params = [];
 
@@ -3111,23 +3164,83 @@ const bulkUpdateTickets = async (req, res, next) => {
         }
 
         if (assignedTechnicianId !== undefined) {
-            updates.push('assigned_technician_id = ?');
-            params.push(assignedTechnicianId === null ? null : assignedTechnicianId);
+            if (assignedTechnicianId === null || assignedTechnicianId === '' || Number(assignedTechnicianId) === 0) {
+                // Unassign technician
+                updates.push('assigned_technician_id = NULL', 'pending_technician_id = NULL');
+            } else {
+                updates.push('assigned_technician_id = ?', 'pending_technician_id = NULL');
+                params.push(Number(assignedTechnicianId));
+                // If status was not explicitly passed, move unassigned/open tickets to pending
+                if (!status) {
+                    updates.push("status = CASE WHEN status IN ('unassigned', 'open') THEN 'pending' ELSE status END");
+                }
+            }
         }
 
-        if (updates.length === 0) {
-            return res.status(400).json(formatResponse(false, 'No fields provided to update (status or assignedTechnicianId).'));
+        if (updates.length > 0) {
+            const query = `UPDATE service_requests SET ${updates.join(', ')} WHERE id IN (?)`;
+            await connection.query(query, [...params, eligibleIds]);
         }
 
-        const query = `UPDATE service_requests SET ${updates.join(', ')} WHERE id IN (?)`;
-        await connection.query(query, [...params, ticketIds]);
-
-        for (const tId of ticketIds) {
-            await logActivity(connection, req.user.id, 'bulk_update_ticket', 'service_request', tId, { status, assignedTechnicianId }, req.ip);
+        // 5. Activity Log for each updated ticket
+        for (const t of eligibleTickets) {
+            await logActivity(
+                connection,
+                req.user.id,
+                'bulk_update_ticket',
+                'service_request',
+                t.id,
+                {
+                    ticketNumber: t.ticket_number || `#${t.id}`,
+                    previousStatus: t.status,
+                    newStatus: status || t.status,
+                    previousTechnicianId: t.assigned_technician_id,
+                    assignedTechnicianId: assignedTechnicianId !== undefined ? (Number(assignedTechnicianId) || null) : t.assigned_technician_id
+                },
+                req.ip
+            );
         }
 
-        return res.json(formatResponse(true, 'Tickets updated successfully.'));
+        // 6. Consolidated Lockscreen Push + In-App Notification to Assigned Technician
+        if (isAssigningTech && assignedTech && eligibleTickets.length > 0) {
+            const count = eligibleTickets.length;
+            const ticketListStr = eligibleTickets
+                .slice(0, 5)
+                .map(t => (t.ticket_number ? `#${t.ticket_number}` : `#${t.id}`))
+                .join(', ') + (count > 5 ? ` and ${count - 5} more` : '');
+
+            const notifTitle = count === 1 ? 'Repair Ticket Assigned' : `${count} Repair Tickets Assigned`;
+            const notifMsg = count === 1
+                ? `Admin assigned Ticket ${ticketListStr} (${eligibleTickets[0].brand || ''} ${eligibleTickets[0].model_number || ''}) to you.`
+                : `Admin assigned ${count} repair tickets (${ticketListStr}) to you. Tap to review.`;
+
+            await dispatchNotification(connection, {
+                userId: assignedTech.id,
+                title: notifTitle,
+                message: notifMsg,
+                ticketId: count === 1 ? eligibleTickets[0].id : null,
+                senderId: req.user.id,
+                url: '/technician/assigned-tickets',
+                tag: count === 1 ? `tkt-${eligibleTickets[0].id}` : `bulk-assign-${Date.now()}`
+            });
+        }
+
+        await connection.commit();
+
+        const successMessage = skippedCount > 0
+            ? `Successfully updated ${eligibleTickets.length} ticket(s). ${skippedCount} terminal ticket(s) (completed, delivered, or cancelled) were skipped.`
+            : `Successfully updated ${eligibleTickets.length} ticket(s).`;
+
+        return res.json(formatResponse(true, successMessage, {
+            updatedCount: eligibleTickets.length,
+            skippedCount
+        }));
     } catch (error) {
+        if (connection) {
+            try {
+                await connection.rollback();
+            } catch (_) {}
+        }
         next(error);
     } finally {
         if (connection) connection.release();

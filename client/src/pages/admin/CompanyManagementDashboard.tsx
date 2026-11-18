@@ -168,6 +168,21 @@ export default function CompanyManagementDashboard() {
     const [assignStatus, setAssignStatus] = useState<string>('in_progress');
     const [assigning, setAssigning] = useState(false);
 
+    // Bulk Ticket Assignment State
+    const [selectedTicketIds, setSelectedTicketIds] = useState<number[]>([]);
+    const [bulkAssigning, setBulkAssigning] = useState(false);
+    const [bulkTechSelect, setBulkTechSelect] = useState<number | ''>('');
+    const [bulkStatusSelect, setBulkStatusSelect] = useState<string>('');
+
+    const activeTechnicians = useMemo(() => {
+        return technicians.filter((t: any) => t.is_active === 1 || t.is_active === true || t.isActive === 1 || t.isActive === true);
+    }, [technicians]);
+
+    // Clear bulk selection when switching tabs or changing filters
+    useEffect(() => {
+        setSelectedTicketIds([]);
+    }, [activeOverviewTab, drilldownTab, selectedCompany?.id, repairSearch, repairStatusFilter, repairPriorityFilter, repairCompanyFilter, repairPage, ticketSearch, ticketStatusFilter]);
+
     // In-Dashboard Company Registration State
     const [showRegisterModal, setShowRegisterModal] = useState(false);
     const [registering, setRegistering] = useState(false);
@@ -846,6 +861,47 @@ export default function CompanyManagementDashboard() {
             toast.error('Network error during technician assignment');
         } finally {
             setAssigning(false);
+        }
+    };
+
+    // Bulk Ticket Assignment Handler
+    const handleBulkUpdateTickets = async () => {
+        if (!token || selectedTicketIds.length === 0) return;
+        setBulkAssigning(true);
+        const payload: { ticketIds: number[]; assignedTechnicianId?: number | null; status?: string } = {
+            ticketIds: selectedTicketIds
+        };
+        if (bulkTechSelect !== '') {
+            payload.assignedTechnicianId = Number(bulkTechSelect);
+        }
+        if (bulkStatusSelect !== '') {
+            payload.status = bulkStatusSelect;
+        }
+
+        try {
+            const res = await adminApi.bulkUpdateTickets(token, payload);
+            if (res.ok) {
+                const updated = (res.data as any)?.data?.updatedCount ?? (res.data as any)?.updatedCount ?? selectedTicketIds.length;
+                const skipped = (res.data as any)?.data?.skippedCount ?? (res.data as any)?.skippedCount ?? 0;
+                if (skipped > 0) {
+                    toast.success(`Updated ${updated} ticket(s). ${skipped} terminal ticket(s) (completed/delivered/cancelled) were safely skipped.`);
+                } else {
+                    toast.success(`Successfully updated ${updated} ticket(s)!`);
+                }
+                setSelectedTicketIds([]);
+                setBulkTechSelect('');
+                setBulkStatusSelect('');
+                fetchCorporateRepairs();
+                if (selectedCompany) {
+                    loadCompanyDrilldown(selectedCompany.id);
+                }
+            } else {
+                toast.error(res.error || 'Failed to update tickets');
+            }
+        } catch {
+            toast.error('An error occurred during bulk ticket update.');
+        } finally {
+            setBulkAssigning(false);
         }
     };
 
@@ -2335,10 +2391,78 @@ export default function CompanyManagementDashboard() {
                                 </div>
 
                                 {/* Table Body */}
+                                {selectedTicketIds.length > 0 && (
+                                    <div className="bg-zinc-950 border border-neon-cyan/30 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl mb-4 animate-in fade-in">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs font-mono text-neon-cyan font-bold uppercase">{selectedTicketIds.length} tickets selected</span>
+                                            <button
+                                                type="button"
+                                                onClick={() => setSelectedTicketIds([])}
+                                                className="text-[10px] text-zinc-400 hover:text-white underline cursor-pointer"
+                                            >
+                                                Clear Selection
+                                            </button>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                                            <select
+                                                value={bulkTechSelect}
+                                                onChange={e => setBulkTechSelect(e.target.value === '' ? '' : Number(e.target.value))}
+                                                className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none cursor-pointer w-full sm:w-auto"
+                                            >
+                                                <option value="">Assign Active Technician...</option>
+                                                {activeTechnicians.map((t: any) => (
+                                                    <option key={t.id} value={t.id}>
+                                                        {t.name} ({t.email})
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            <select
+                                                value={bulkStatusSelect}
+                                                onChange={e => setBulkStatusSelect(e.target.value)}
+                                                className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none cursor-pointer w-full sm:w-auto"
+                                            >
+                                                <option value="">Update Status (Optional)...</option>
+                                                <option value="pending">Pending</option>
+                                                <option value="in_progress">In Progress</option>
+                                            </select>
+                                            <button
+                                                type="button"
+                                                onClick={handleBulkUpdateTickets}
+                                                disabled={bulkAssigning || (bulkTechSelect === '' && !bulkStatusSelect)}
+                                                className="bg-neon-cyan hover:bg-cyan-400 text-black px-4 py-2 rounded-xl text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-sm w-full sm:w-auto text-center"
+                                            >
+                                                {bulkAssigning ? 'Applying...' : 'Assign / Update Selected'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
                                 <div className="overflow-x-auto">
                                     <table className="w-full min-w-[760px] text-left border-collapse text-xs">
                                         <thead>
                                             <tr className="border-b border-zinc-900 bg-zinc-950/40 text-[11px] font-mono uppercase tracking-wider text-zinc-500">
+                                                <th className="py-3.5 px-3 w-10 text-center">
+                                                    {(() => {
+                                                        const eligible = allCorporateRepairs.filter(t => !['completed', 'delivered', 'cancelled'].includes((t.status || '').toLowerCase()));
+                                                        const allSelected = eligible.length > 0 && eligible.every(t => selectedTicketIds.includes(t.id));
+                                                        return (
+                                                            <input
+                                                                type="checkbox"
+                                                                disabled={eligible.length === 0}
+                                                                checked={allSelected}
+                                                                onChange={e => {
+                                                                    if (e.target.checked) {
+                                                                        setSelectedTicketIds(prev => Array.from(new Set([...prev, ...eligible.map(t => t.id)])));
+                                                                    } else {
+                                                                        const eligibleSet = new Set(eligible.map(t => t.id));
+                                                                        setSelectedTicketIds(prev => prev.filter(id => !eligibleSet.has(id)));
+                                                                    }
+                                                                }}
+                                                                className="rounded border-zinc-700/50 hover:border-zinc-600/60 bg-zinc-900 text-neon-cyan focus:ring-0 focus:ring-offset-0 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                                                            />
+                                                        );
+                                                    })()}
+                                                </th>
                                                 <th className="py-3.5 px-4">Ticket</th>
                                                 <th className="py-3.5 px-4">Company & Branch</th>
                                                 <th className="py-3.5 px-4">Device & Problem</th>
@@ -2352,6 +2476,7 @@ export default function CompanyManagementDashboard() {
                                             {corporateRepairsLoading ? (
                                                 Array.from({ length: 6 }).map((_, idx) => (
                                                     <tr key={idx} className="animate-pulse border-b border-zinc-900/50">
+                                                        <td className="py-3.5 px-3"><div className="h-4 w-4 bg-zinc-800/80 rounded mx-auto" /></td>
                                                         <td className="py-3.5 px-4"><div className="h-4 w-28 bg-zinc-800/80 rounded" /></td>
                                                         <td className="py-3.5 px-4"><div className="h-4 w-32 bg-zinc-800/80 rounded" /></td>
                                                         <td className="py-3.5 px-4"><div className="h-4 w-36 bg-zinc-800/80 rounded" /></td>
@@ -2363,7 +2488,7 @@ export default function CompanyManagementDashboard() {
                                                 ))
                                             ) : allCorporateRepairs.length === 0 ? (
                                                 <tr>
-                                                    <td colSpan={7} className="py-12 text-center text-zinc-500">
+                                                    <td colSpan={8} className="py-12 text-center text-zinc-500">
                                                         <div className="max-w-xs mx-auto space-y-2">
                                                             <div className="w-10 h-10 rounded-full bg-zinc-900 flex items-center justify-center mx-auto text-zinc-600">
                                                                 <Wrench size={20} />
@@ -2376,6 +2501,21 @@ export default function CompanyManagementDashboard() {
                                             ) : (
                                                 allCorporateRepairs.map((t: any) => (
                                                     <tr key={t.id} className="hover:bg-zinc-900/30 transition-colors">
+                                                        <td className="py-3.5 px-3 text-center" onClick={e => e.stopPropagation()}>
+                                                            <input
+                                                                type="checkbox"
+                                                                disabled={['completed', 'delivered', 'cancelled'].includes((t.status || '').toLowerCase())}
+                                                                checked={selectedTicketIds.includes(t.id)}
+                                                                onChange={e => {
+                                                                    if (e.target.checked) {
+                                                                        setSelectedTicketIds(prev => [...prev, t.id]);
+                                                                    } else {
+                                                                        setSelectedTicketIds(prev => prev.filter(id => id !== t.id));
+                                                                    }
+                                                                }}
+                                                                className="rounded border-zinc-700/50 hover:border-zinc-600/60 bg-zinc-900 text-neon-cyan focus:ring-0 focus:ring-offset-0 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                                                            />
+                                                        </td>
                                                         <td className="py-3.5 px-4">
                                                             <div 
                                                                 onClick={() => handleOpenTicketWorkspace(t)}
@@ -3175,42 +3315,126 @@ export default function CompanyManagementDashboard() {
                                     ) : null}
                                 </div>
                             ) : (
-                                <div className="bg-[#0c0c0c] border border-zinc-800/40 rounded-2xl overflow-hidden shadow-xl">
-                                    <div className="overflow-x-auto">
-                                        <table className="w-full text-left">
-                                            <thead>
-                                                <tr className="border-b border-zinc-800/30 text-xs text-zinc-500 uppercase tracking-widest font-mono select-none">
-                                                    <th className="py-4 px-6">Ticket No.</th>
-                                                    <th className="py-4 px-4 font-mono">Device Details</th>
-                                                    <th className="py-4 px-4">User Assignment</th>
-                                                    <th className="py-4 px-4">Priority / Type</th>
-                                                    <th className="py-4 px-4">SLA Resolve Deadline</th>
-                                                    <th className="py-4 px-4">Status</th>
-                                                    <th className="py-4 px-4">Payment</th>
-                                                    <th className="py-4 px-4 text-right">Actions</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-zinc-900/40 text-sm text-zinc-300 font-medium">
-                                                {filteredCompanyTickets.map((rep: any) => {
-                                                    const isSlaClose = rep.sla_deadline
-                                                        ? new Date(rep.sla_deadline) < new Date(Date.now() + 24 * 60 * 60 * 1000) && !['completed', 'delivered', 'cancelled'].includes((rep.status || '').toLowerCase())
-                                                        : false;
-                                                    const approxBudget = Number(rep.estimated_cost || rep.estimatedCost || rep.repair_cost || rep.repairCost || rep.charges || 0);
-                                                    const approvalStatus = (rep.customer_approval_status || rep.customerApprovalStatus || 'none').toLowerCase();
-                                                    const pStatus = (rep.payment_status || rep.paymentStatus || 'unpaid').toLowerCase();
-                                                    const hasTech = Boolean(rep.assigned_technician_id || rep.assignedTechnicianId);
-                                                    const ticketNum = rep.ticket_number || rep.ticketNumber || rep.id;
-                                                    const createdDate = rep.created_at || rep.createdAt;
-                                                    const devId = rep.device_id || rep.deviceId;
+                                <>
+                                    {selectedTicketIds.length > 0 && (
+                                        <div className="bg-zinc-950 border border-neon-cyan/30 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl mb-4 animate-in fade-in">
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-xs font-mono text-neon-cyan font-bold uppercase">{selectedTicketIds.length} tickets selected</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setSelectedTicketIds([])}
+                                                    className="text-[10px] text-zinc-400 hover:text-white underline cursor-pointer"
+                                                >
+                                                    Clear Selection
+                                                </button>
+                                            </div>
+                                            <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                                                <select
+                                                    value={bulkTechSelect}
+                                                    onChange={e => setBulkTechSelect(e.target.value === '' ? '' : Number(e.target.value))}
+                                                    className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none cursor-pointer w-full sm:w-auto"
+                                                >
+                                                    <option value="">Assign Active Technician...</option>
+                                                    {activeTechnicians.map((t: any) => (
+                                                        <option key={t.id} value={t.id}>
+                                                            {t.name} ({t.email})
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                <select
+                                                    value={bulkStatusSelect}
+                                                    onChange={e => setBulkStatusSelect(e.target.value)}
+                                                    className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none cursor-pointer w-full sm:w-auto"
+                                                >
+                                                    <option value="">Update Status (Optional)...</option>
+                                                    <option value="pending">Pending</option>
+                                                    <option value="in_progress">In Progress</option>
+                                                </select>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleBulkUpdateTickets}
+                                                    disabled={bulkAssigning || (bulkTechSelect === '' && !bulkStatusSelect)}
+                                                    className="bg-neon-cyan hover:bg-cyan-400 text-black px-4 py-2 rounded-xl text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-sm w-full sm:w-auto text-center"
+                                                >
+                                                    {bulkAssigning ? 'Applying...' : 'Assign / Update Selected'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
 
-                                                    return (
-                                                        <tr
-                                                            key={rep.id}
-                                                            onClick={() => handleOpenTicketWorkspace(rep)}
-                                                            className="hover:bg-zinc-900/10 transition-colors cursor-pointer group hover:opacity-90"
-                                                        >
-                                                            {/* Ticket No. */}
-                                                            <td className="py-4 px-6">
+                                    <div className="bg-[#0c0c0c] border border-zinc-800/40 rounded-2xl overflow-hidden shadow-xl">
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full text-left">
+                                                <thead>
+                                                    <tr className="border-b border-zinc-800/30 text-xs text-zinc-500 uppercase tracking-widest font-mono select-none">
+                                                        <th className="py-4 px-4 w-12 text-center">
+                                                            {(() => {
+                                                                const eligible = filteredCompanyTickets.filter((t: any) => !['completed', 'delivered', 'cancelled'].includes((t.status || '').toLowerCase()));
+                                                                const allSelected = eligible.length > 0 && eligible.every((t: any) => selectedTicketIds.includes(t.id));
+                                                                return (
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        disabled={eligible.length === 0}
+                                                                        checked={allSelected}
+                                                                        onChange={e => {
+                                                                            if (e.target.checked) {
+                                                                                setSelectedTicketIds(prev => Array.from(new Set([...prev, ...eligible.map((t: any) => t.id)])));
+                                                                            } else {
+                                                                                const eligibleSet = new Set(eligible.map((t: any) => t.id));
+                                                                                setSelectedTicketIds(prev => prev.filter(id => !eligibleSet.has(id)));
+                                                                            }
+                                                                        }}
+                                                                        className="rounded border-zinc-700/50 hover:border-zinc-600/60 bg-zinc-900 text-neon-cyan focus:ring-0 focus:ring-offset-0 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                                                                    />
+                                                                );
+                                                            })()}
+                                                        </th>
+                                                        <th className="py-4 px-6">Ticket No.</th>
+                                                        <th className="py-4 px-4 font-mono">Device Details</th>
+                                                        <th className="py-4 px-4">User Assignment</th>
+                                                        <th className="py-4 px-4">Priority / Type</th>
+                                                        <th className="py-4 px-4">SLA Resolve Deadline</th>
+                                                        <th className="py-4 px-4">Status</th>
+                                                        <th className="py-4 px-4">Payment</th>
+                                                        <th className="py-4 px-4 text-right">Actions</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-zinc-900/40 text-sm text-zinc-300 font-medium">
+                                                    {filteredCompanyTickets.map((rep: any) => {
+                                                        const isSlaClose = rep.sla_deadline
+                                                            ? new Date(rep.sla_deadline) < new Date(Date.now() + 24 * 60 * 60 * 1000) && !['completed', 'delivered', 'cancelled'].includes((rep.status || '').toLowerCase())
+                                                            : false;
+                                                        const approxBudget = Number(rep.estimated_cost || rep.estimatedCost || rep.repair_cost || rep.repairCost || rep.charges || 0);
+                                                        const approvalStatus = (rep.customer_approval_status || rep.customerApprovalStatus || 'none').toLowerCase();
+                                                        const pStatus = (rep.payment_status || rep.paymentStatus || 'unpaid').toLowerCase();
+                                                        const hasTech = Boolean(rep.assigned_technician_id || rep.assignedTechnicianId);
+                                                        const ticketNum = rep.ticket_number || rep.ticketNumber || rep.id;
+                                                        const createdDate = rep.created_at || rep.createdAt;
+                                                        const devId = rep.device_id || rep.deviceId;
+
+                                                        return (
+                                                            <tr
+                                                                key={rep.id}
+                                                                onClick={() => handleOpenTicketWorkspace(rep)}
+                                                                className="hover:bg-zinc-900/10 transition-colors cursor-pointer group hover:opacity-90"
+                                                            >
+                                                                <td className="py-4 px-4 text-center w-12" onClick={e => e.stopPropagation()}>
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        disabled={['completed', 'delivered', 'cancelled'].includes((rep.status || '').toLowerCase())}
+                                                                        checked={selectedTicketIds.includes(rep.id)}
+                                                                        onChange={e => {
+                                                                            if (e.target.checked) {
+                                                                                setSelectedTicketIds(prev => [...prev, rep.id]);
+                                                                            } else {
+                                                                                setSelectedTicketIds(prev => prev.filter(id => id !== rep.id));
+                                                                            }
+                                                                        }}
+                                                                        className="rounded border-zinc-700/50 hover:border-zinc-600/60 bg-zinc-900 text-neon-cyan focus:ring-0 focus:ring-offset-0 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                                                                    />
+                                                                </td>
+                                                                {/* Ticket No. */}
+                                                                <td className="py-4 px-6">
                                                                 <span className="font-mono text-white text-sm block group-hover:text-neon-cyan transition-colors">
                                                                     #{ticketNum}
                                                                 </span>
@@ -3438,6 +3662,7 @@ export default function CompanyManagementDashboard() {
                                         </table>
                                     </div>
                                 </div>
+                                </>
                             )}
                         </div>
                     ) : drilldownTab === 'devices' ? (
@@ -3896,7 +4121,7 @@ export default function CompanyManagementDashboard() {
                                         className="w-full px-3.5 py-2.5 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white focus:outline-none focus:border-neon-cyan transition-colors cursor-pointer"
                                     >
                                         <option value="">-- Unassigned (Remove Technician) --</option>
-                                        {technicians.map((tech) => (
+                                        {activeTechnicians.map((tech) => (
                                             <option key={tech.id} value={tech.id}>
                                                 {tech.name} ({tech.email}) {tech.phone ? `• ${tech.phone}` : ''}
                                             </option>

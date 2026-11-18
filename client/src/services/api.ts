@@ -1862,7 +1862,7 @@ export const adminApi = {
     }),
 
   bulkUpdateTickets: (token: string, data: { ticketIds: number[]; assignedTechnicianId?: number | null; status?: string }) =>
-    safeFetch(getUrl('/api/admin/tickets/bulk'), {
+    safeFetch<{ success: boolean; message: string; data?: { updatedCount: number; skippedCount: number } }>(getUrl('/api/admin/tickets/bulk'), {
       method: 'POST',
       headers: adminHeaders(token),
       body: JSON.stringify(data),

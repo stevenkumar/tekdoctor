@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useSearchParams, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { repairApi, technicianApi, adminApi, billingApi } from '@/services/api';
@@ -48,6 +48,10 @@ export default function RepairTickets() {
 
     const [requests, setRequests] = useState<ServiceRequest[]>([]);
     const [technicians, setTechnicians] = useState<TechnicianUser[]>([]);
+
+    const activeTechnicians = useMemo(() => {
+        return technicians.filter(t => t.is_active === true || (t as any).is_active === 1 || (t as any).isActive === true);
+    }, [technicians]);
     const [loading, setLoading] = useState(true);
     const [notifyModalId, setNotifyModalId] = useState<number | null>(null);
 
@@ -638,6 +642,11 @@ export default function RepairTickets() {
         }
     };
 
+    // Clear selected tickets whenever filters, search, or pagination changes
+    useEffect(() => {
+        setSelectedTicketIds([]);
+    }, [page, activeFilter, debouncedSearch, priorityFilter, paymentFilter, technicianFilter, customerTypeFilter, startDate, endDate]);
+
     const handleBulkUpdate = async () => {
         if (!token || selectedTicketIds.length === 0) return;
         setBulkAssigning(true);
@@ -650,7 +659,13 @@ export default function RepairTickets() {
         }
         const res = await adminApi.bulkUpdateTickets(token, payload);
         if (res.ok) {
-            toast.success(`Bulk update successful for ${selectedTicketIds.length} tickets!`);
+            const updated = (res.data as any)?.data?.updatedCount ?? (res.data as any)?.updatedCount ?? selectedTicketIds.length;
+            const skipped = (res.data as any)?.data?.skippedCount ?? (res.data as any)?.skippedCount ?? 0;
+            if (skipped > 0) {
+                toast.success(`Updated ${updated} ticket(s). ${skipped} terminal ticket(s) (completed/delivered/cancelled) were safely skipped.`);
+            } else {
+                toast.success(`Bulk update successful for ${updated} tickets!`);
+            }
             setSelectedTicketIds([]);
             setBulkTechSelect('');
             setBulkStatusSelect('');
@@ -1510,7 +1525,7 @@ export default function RepairTickets() {
                                             className="bg-zinc-900 border border-zinc-800/50 hover:border-zinc-700/50 rounded-xl px-3 py-2 text-xs text-white focus:outline-none cursor-pointer w-full sm:w-auto"
                                         >
                                             <option value="">Assign Technician...</option>
-                                            {technicians.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                            {activeTechnicians.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                                         </select>
                                         <select
                                             value={bulkStatusSelect}
@@ -1555,10 +1570,14 @@ export default function RepairTickets() {
                                                 <th className="py-4 px-4 w-12 text-center">
                                                     <input
                                                         type="checkbox"
-                                                        checked={filteredRequests.length > 0 && selectedTicketIds.length === filteredRequests.length}
+                                                        checked={(() => {
+                                                            const eligible = filteredRequests.filter(r => !['completed', 'delivered', 'cancelled'].includes((r.status || '').toLowerCase()));
+                                                            return eligible.length > 0 && eligible.every(r => selectedTicketIds.includes(r.id));
+                                                        })()}
                                                         onChange={e => {
                                                             if (e.target.checked) {
-                                                                setSelectedTicketIds(filteredRequests.map(r => r.id));
+                                                                const eligible = filteredRequests.filter(r => !['completed', 'delivered', 'cancelled'].includes((r.status || '').toLowerCase()));
+                                                                setSelectedTicketIds(eligible.map(r => r.id));
                                                             } else {
                                                                 setSelectedTicketIds([]);
                                                             }
@@ -1579,12 +1598,13 @@ export default function RepairTickets() {
                                         <tbody className="divide-y divide-zinc-900/40 text-sm text-zinc-300 font-medium">
                                             {filteredRequests.map(r => {
                                                 const isSelected = selectedTicketIds.includes(r.id);
+                                                const isTerminal = ['completed', 'delivered', 'cancelled'].includes((r.status || '').toLowerCase());
                                                 const approxBudget = Number(r.estimatedCost || (r as any).estimated_cost || r.repairCost || (r as any).repair_cost || 0);
                                                 const approvalStatus = r.customerApprovalStatus || (r as any).customer_approval_status || 'none';
                                                 const pStatus = (r.paymentStatus || (r as any).payment_status || 'unpaid').toLowerCase();
                                                 const cStatus = (r.collectionStatus || (r as any).collection_status || '').toLowerCase();
                                                 const isSlaClose = (r as any).sla_deadline || (r as any).slaDeadline
-                                                    ? new Date((r as any).sla_deadline || (r as any).slaDeadline) < new Date(Date.now() + 24 * 60 * 60 * 1000) && !['completed', 'delivered', 'cancelled'].includes(r.status)
+                                                    ? new Date((r as any).sla_deadline || (r as any).slaDeadline) < new Date(Date.now() + 24 * 60 * 60 * 1000) && !isTerminal
                                                     : false;
 
                                                 return (
@@ -1597,6 +1617,8 @@ export default function RepairTickets() {
                                                             <input
                                                                 type="checkbox"
                                                                 checked={isSelected}
+                                                                disabled={isTerminal}
+                                                                title={isTerminal ? `Ticket is ${r.status} (terminal) and cannot be reassigned` : undefined}
                                                                 onChange={e => {
                                                                     if (e.target.checked) {
                                                                         setSelectedTicketIds(prev => [...prev, r.id]);
@@ -1604,7 +1626,7 @@ export default function RepairTickets() {
                                                                         setSelectedTicketIds(prev => prev.filter(id => id !== r.id));
                                                                     }
                                                                 }}
-                                                                className="rounded border-zinc-700/50 hover:border-zinc-600/60 bg-zinc-900 text-indigo-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                                                className="rounded border-zinc-700/50 hover:border-zinc-600/60 bg-zinc-900 text-indigo-500 focus:ring-0 focus:ring-offset-0 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                                                             />
                                                         </td>
                                                         <td className="py-4 px-6">
@@ -1980,7 +2002,7 @@ export default function RepairTickets() {
                                     className="w-full bg-zinc-900 border border-zinc-800/50 hover:border-zinc-700/50 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-neon-cyan/60 cursor-pointer"
                                 >
                                     <option value="">-- No Technician (Unassigned) --</option>
-                                    {technicians.map(t => <option key={t.id} value={t.id}>{t.name} ({t.email})</option>)}
+                                    {activeTechnicians.map(t => <option key={t.id} value={t.id}>{t.name} ({t.email})</option>)}
                                 </select>
                             </div>
                         </div>
