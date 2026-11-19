@@ -1,9 +1,10 @@
-import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { Suspense, useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { ROUTES } from '../config/routes';
 import FeedbackWidget from '../components/FeedbackWidget';
 import { SkeletonDashboard } from '@/components/Skeleton';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSiteContext } from '@/context/SiteContext';
 import { getMediaUrl } from '@/utils/media';
@@ -34,6 +35,7 @@ const companyNavItems = [
 function CompanyLayoutInner() {
     const { user, logout, token } = useAuth();
     const navigate = useNavigate();
+    const location = useLocation();
     const [collapsed, setCollapsed] = useState(false);
     const [mobileOpen, setMobileOpen] = useState(false);
     const { flattenedSettings } = useSiteContext();
@@ -570,9 +572,11 @@ function CompanyLayoutInner() {
 
                 {/* Page content */}
                 <div className="flex-1 p-4 md:p-6 lg:p-8 overflow-auto">
-                    <Suspense fallback={<SkeletonDashboard />}>
-                        <Outlet />
-                    </Suspense>
+                    <ErrorBoundary key={location.pathname} fallbackTitle="Corporate Workspace Error">
+                        <Suspense fallback={<SkeletonDashboard />}>
+                            <Outlet />
+                        </Suspense>
+                    </ErrorBoundary>
                 </div>
             </main>
             <FeedbackWidget />

@@ -25,7 +25,8 @@ export default function ProtectedCompanyRoute() {
 
         authApi.getMe(token).then((res) => {
             if (!isMounted) return;
-            if (res.ok && res.data && (res.data as any).data?.role === 'company') {
+            const userData = (res.data as any)?.data;
+            if (res.ok && userData && userData.role === 'company' && userData.is_active !== 0 && userData.is_active !== false) {
                 setIsVerified(true);
             } else {
                 setIsVerified(false);
@@ -34,6 +35,7 @@ export default function ProtectedCompanyRoute() {
         }).catch(() => {
             if (!isMounted) return;
             setIsVerified(false);
+            logout();
         }).finally(() => {
             if (isMounted) setIsValidating(false);
         });

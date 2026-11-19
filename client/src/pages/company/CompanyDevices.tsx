@@ -185,7 +185,7 @@ export default function CompanyDevices() {
 
         setIsSubmitting(true);
         try {
-            const payload = {
+            const payload: any = {
                 deviceCategory: category,
                 category,
                 brand,
@@ -195,9 +195,7 @@ export default function CompanyDevices() {
                 assetTag,
                 purchaseDate: purchaseDate || null,
                 warrantyExpiry: warrantyExpiry || null,
-                employeeId: assignedEmployeeId ? parseInt(assignedEmployeeId, 10) : null,
-                isAmc,
-                amcTag
+                employeeId: assignedEmployeeId ? parseInt(assignedEmployeeId, 10) : null
             };
 
             const res = editingId
@@ -816,31 +814,39 @@ export default function CompanyDevices() {
                                 </div>
                             </div>
 
-                            <div className="grid grid-cols-2 gap-4 items-center bg-zinc-900/40 p-4 rounded-xl border border-zinc-800/60">
-                                <label className="flex items-center gap-3 cursor-pointer">
-                                    <input
-                                        type="checkbox"
-                                        checked={isAmc}
-                                        onChange={e => setIsAmc(e.target.checked)}
-                                        className="w-5 h-5 rounded border-zinc-700 bg-zinc-950 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-zinc-900"
-                                    />
-                                    <div className="flex flex-col">
-                                        <span className="text-sm font-semibold text-white">Under AMC Contract</span>
-                                        <span className="text-xs text-zinc-500">Enable proactive maintenance</span>
+                            <div className="bg-zinc-900/40 p-4 rounded-xl border border-zinc-800/60">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                        <div className={`p-2 rounded-lg ${isAmc ? 'bg-emerald-500/10 text-emerald-400' : 'bg-zinc-800 text-zinc-400'}`}>
+                                            {isAmc ? <ShieldCheck size={20} /> : <ShieldOff size={20} />}
+                                        </div>
+                                        <div>
+                                            <span className="text-sm font-semibold text-white">AMC Contract Coverage</span>
+                                            <p className="text-xs text-zinc-500">
+                                                {editingId
+                                                    ? (isAmc
+                                                        ? 'Proactive maintenance enabled under corporate contract'
+                                                        : 'Not enrolled under active corporate AMC coverage')
+                                                    : 'Enrolled under active corporate AMC coverage once registered'}
+                                            </p>
+                                        </div>
                                     </div>
-                                </label>
-
-                                <div className={`space-y-1 transition-opacity duration-300 ${isAmc ? 'opacity-100 block' : 'opacity-50 pointer-events-none'}`}>
-                                    <label className="text-xs font-mono uppercase text-zinc-550 tracking-wider font-semibold">AMC Tag (Auto if empty)</label>
-                                    <input
-                                        type="text"
-                                        placeholder="e.g. td-amc-024"
-                                        value={amcTag}
-                                        onChange={e => setAmcTag(e.target.value)}
-                                        disabled={!isAmc}
-                                        className="w-full bg-[#050505] border border-zinc-900 focus:border-indigo-500/50 rounded-xl px-4 py-2 text-sm text-white focus:outline-none transition-colors disabled:opacity-50"
-                                    />
+                                    <div>
+                                        {isAmc ? (
+                                            <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-mono font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
+                                                <CheckCircle2 size={13} />
+                                                {amcTag ? amcTag : 'Covered'}
+                                            </span>
+                                        ) : (
+                                            <span className="px-3 py-1 text-xs font-mono text-zinc-500 bg-zinc-800/60 border border-zinc-700/60 rounded-lg">
+                                                Standard / None
+                                            </span>
+                                        )}
+                                    </div>
                                 </div>
+                                <p className="text-[11px] text-zinc-500 mt-2.5">
+                                    AMC coverage status is governed by your corporate service contract and can only be modified by TekDoctor administrators.
+                                </p>
                             </div>
 
                             <div className="space-y-1">

@@ -47,7 +47,7 @@ const getFrontendBaseUrl = (req) => {
         } catch (_) {}
     }
 
-    return config.frontend?.url || config.server?.publicOrigin || Array.from(allowedOrigins)[0] || '';
+    return (config.frontend?.url || config.server?.publicOrigin || Array.from(allowedOrigins)[0] || '').replace(/\/+$/, '');
 };
 
 // Helper for logging company activity
@@ -79,6 +79,56 @@ const resolveTargetCompanyId = async (req, connection) => {
         return { companyId: parsedId, companyName: valid[0].name };
     }
     return { companyId: req.user.id, companyName: req.user.name };
+};
+
+/**
+ * Strict Multi-Tenant Child Foreign Key Ownership Validation
+ * Verifies that any specified child entity IDs (branchId, employeeId, deviceId) belong strictly to targetCompanyId.
+ */
+const assertTenantOwnership = async (connection, targetCompanyId, { branchId, employeeId, deviceId } = {}) => {
+    if (branchId !== undefined && branchId !== null && branchId !== '') {
+        const parsedBranchId = parseInt(branchId, 10);
+        if (isNaN(parsedBranchId) || parsedBranchId <= 0) {
+            return { error: 'Invalid branch ID specified.', status: 400 };
+        }
+        const [rows] = await connection.query(
+            'SELECT id FROM company_branches WHERE id = ? AND company_id = ? LIMIT 1',
+            [parsedBranchId, targetCompanyId]
+        );
+        if (rows.length === 0) {
+            return { error: 'Selected branch does not exist or does not belong to your company.', status: 400 };
+        }
+    }
+
+    if (employeeId !== undefined && employeeId !== null && employeeId !== '') {
+        const parsedEmpId = parseInt(employeeId, 10);
+        if (isNaN(parsedEmpId) || parsedEmpId <= 0) {
+            return { error: 'Invalid employee ID specified.', status: 400 };
+        }
+        const [rows] = await connection.query(
+            'SELECT id FROM company_employees WHERE id = ? AND company_id = ? LIMIT 1',
+            [parsedEmpId, targetCompanyId]
+        );
+        if (rows.length === 0) {
+            return { error: 'Selected employee does not exist or does not belong to your company.', status: 400 };
+        }
+    }
+
+    if (deviceId !== undefined && deviceId !== null && deviceId !== '') {
+        const parsedDevId = parseInt(deviceId, 10);
+        if (isNaN(parsedDevId) || parsedDevId <= 0) {
+            return { error: 'Invalid device ID specified.', status: 400 };
+        }
+        const [rows] = await connection.query(
+            'SELECT id FROM company_devices WHERE id = ? AND company_id = ? LIMIT 1',
+            [parsedDevId, targetCompanyId]
+        );
+        if (rows.length === 0) {
+            return { error: 'Selected device does not exist or does not belong to your company.', status: 400 };
+        }
+    }
+
+    return { valid: true };
 };
 
 // ── Company Auth Controllers ──────────────────────────────────────────
@@ -450,6 +500,24 @@ const deleteBranch = async (req, res, next) => {
         if (target.error) return res.status(target.status).json(formatResponse(false, target.error));
         const targetCompanyId = target.companyId;
 
+        // Check referential integrity: active employees or active devices assigned to this branch
+        const [empRows] = await connection.query(
+            'SELECT COUNT(*) as cnt FROM company_employees WHERE branch_id = ? AND company_id = ? AND is_active = 1 AND status != "inactive"',
+            [id, targetCompanyId]
+        );
+        const [devRows] = await connection.query(
+            'SELECT COUNT(*) as cnt FROM company_devices WHERE branch_id = ? AND company_id = ? AND is_active = 1 AND status != "decommissioned" AND status != "inactive"',
+            [id, targetCompanyId]
+        );
+        const activeEmps = empRows[0]?.cnt || 0;
+        const activeDevs = devRows[0]?.cnt || 0;
+        if (activeEmps > 0 || activeDevs > 0) {
+            return res.status(400).json(formatResponse(
+                false,
+                `Cannot deactivate branch: ${activeEmps} active employee(s) and ${activeDevs} active device(s) are still assigned to this branch. Please reassign them first.`
+            ));
+        }
+
         const [result] = await connection.query(
             'UPDATE company_branches SET is_active = FALSE, status = "inactive", deactivated_at = NOW(), deactivated_by = ?, deactivation_reason = ? WHERE id = ? AND company_id = ?',
             [req.user.id, reason || 'Deactivated by company', id, targetCompanyId]
@@ -577,6 +645,12 @@ const createEmployee = async (req, res, next) => {
             }
         }
 
+        // Verify branch belongs to target company
+        if (branchId) {
+            const check = await assertTenantOwnership(connection, targetCompanyId, { branchId });
+            if (check.error) return res.status(check.status).json(formatResponse(false, check.error));
+        }
+
         const [result] = await connection.query(
             'INSERT INTO company_employees (company_id, branch_id, name, email, phone, department, designation) VALUES (?, ?, ?, ?, ?, ?, ?)',
             [targetCompanyId, branchId || null, name.trim(), cleanEmail, cleanPhone, department || null, designation || null]
@@ -603,6 +677,12 @@ const updateEmployee = async (req, res, next) => {
         const target = await resolveTargetCompanyId(req, connection);
         if (target.error) return res.status(target.status).json(formatResponse(false, target.error));
         const targetCompanyId = target.companyId;
+
+        // Verify branch belongs to target company
+        if (branchId) {
+            const check = await assertTenantOwnership(connection, targetCompanyId, { branchId });
+            if (check.error) return res.status(check.status).json(formatResponse(false, check.error));
+        }
 
         // Check duplicate email within company for other employee
         if (cleanEmail) {
@@ -656,6 +736,24 @@ const deleteEmployee = async (req, res, next) => {
         const target = await resolveTargetCompanyId(req, connection);
         if (target.error) return res.status(target.status).json(formatResponse(false, target.error));
         const targetCompanyId = target.companyId;
+
+        // Check referential integrity: active devices or open repair tickets assigned to this employee
+        const [devRows] = await connection.query(
+            'SELECT COUNT(*) as cnt FROM company_devices WHERE employee_id = ? AND company_id = ? AND is_active = 1 AND status != "decommissioned" AND status != "inactive"',
+            [id, targetCompanyId]
+        );
+        const [ticketRows] = await connection.query(
+            'SELECT COUNT(*) as cnt FROM service_requests WHERE employee_id = ? AND company_id = ? AND status IN ("pending", "in_progress")',
+            [id, targetCompanyId]
+        );
+        const activeDevs = devRows[0]?.cnt || 0;
+        const activeTickets = ticketRows[0]?.cnt || 0;
+        if (activeDevs > 0 || activeTickets > 0) {
+            return res.status(400).json(formatResponse(
+                false,
+                `Cannot deactivate employee: ${activeDevs} active device(s) and ${activeTickets} open repair ticket(s) are currently associated with this employee. Please unassign devices and resolve open tickets first.`
+            ));
+        }
 
         const [result] = await connection.query(
             'UPDATE company_employees SET is_active = FALSE, status = "inactive", deactivated_at = NOW(), deactivated_by = ?, deactivation_reason = ? WHERE id = ? AND company_id = ?',
@@ -788,6 +886,12 @@ const createDevice = async (req, res, next) => {
             }));
         }
 
+        // Verify branch and employee belong to target company
+        if (branchId || employeeId) {
+            const check = await assertTenantOwnership(connection, targetCompanyId, { branchId, employeeId });
+            if (check.error) return res.status(check.status).json(formatResponse(false, check.error));
+        }
+
         // Fleet inventory devices are registered without client self-entitled AMC coverage.
         // AMC coverage is granted strictly via contract device selection.
         const [result] = await connection.query(
@@ -829,9 +933,7 @@ const updateDevice = async (req, res, next) => {
         purchaseDate,
         warrantyExpiry,
         notes,
-        branchId,
-        isAmc,
-        amcTag
+        branchId
     } = req.body;
 
     let connection;
@@ -841,30 +943,18 @@ const updateDevice = async (req, res, next) => {
         if (target.error) return res.status(target.status).json(formatResponse(false, target.error));
         const targetCompanyId = target.companyId;
 
-        let finalAmcTag = amcTag || null;
-        if (isAmc && !finalAmcTag) {
-            const [maxRows] = await connection.query(
-                `SELECT amc_tag FROM company_devices 
-                 WHERE company_id = ? AND amc_tag LIKE 'td-amc-%' 
-                 ORDER BY CAST(SUBSTRING(amc_tag, 8) AS UNSIGNED) DESC 
-                 LIMIT 1`,
-                [targetCompanyId]
-            );
-            let nextNum = 1;
-            if (maxRows.length > 0) {
-                const match = maxRows[0].amc_tag.match(/td-amc-(\d+)/);
-                if (match) {
-                    nextNum = parseInt(match[1], 10) + 1;
-                }
-            }
-            finalAmcTag = `td-amc-${String(nextNum).padStart(3, '0')}`;
+        // Verify branch and employee belong to target company
+        if (branchId || employeeId) {
+            const check = await assertTenantOwnership(connection, targetCompanyId, { branchId, employeeId });
+            if (check.error) return res.status(check.status).json(formatResponse(false, check.error));
         }
 
+        // Fleet inventory updates cannot self-entitle or modify AMC status/tags.
+        // AMC coverage is granted strictly via formal AMC contract device assignment.
         const [result] = await connection.query(
             `UPDATE company_devices 
          SET branch_id = ?, employee_id = ?, device_category = ?, brand = ?, model_number = ?, 
-             serial_number = ?, asset_id = ?, purchase_date = ?, warranty_expiry = ?, notes = ?, 
-             is_amc = ?, amc_tag = ? 
+             serial_number = ?, asset_id = ?, purchase_date = ?, warranty_expiry = ?, notes = ? 
          WHERE id = ? AND company_id = ?`,
             [
                 branchId || null,
@@ -877,8 +967,6 @@ const updateDevice = async (req, res, next) => {
                 purchaseDate || null,
                 warrantyExpiry || null,
                 notes || null,
-                isAmc ? 1 : 0,
-                finalAmcTag,
                 id,
                 targetCompanyId
             ]
@@ -907,6 +995,19 @@ const deleteDevice = async (req, res, next) => {
         const target = await resolveTargetCompanyId(req, connection);
         if (target.error) return res.status(target.status).json(formatResponse(false, target.error));
         const targetCompanyId = target.companyId;
+
+        // Check referential integrity: open repair tickets currently in progress for this device
+        const [ticketRows] = await connection.query(
+            'SELECT COUNT(*) as cnt FROM service_requests WHERE device_id = ? AND company_id = ? AND status IN ("pending", "in_progress")',
+            [id, targetCompanyId]
+        );
+        const activeTickets = ticketRows[0]?.cnt || 0;
+        if (activeTickets > 0) {
+            return res.status(400).json(formatResponse(
+                false,
+                `Cannot decommission device: ${activeTickets} open repair ticket(s) are currently in progress for this device. Please resolve or close open tickets first.`
+            ));
+        }
 
         const [result] = await connection.query(
             'UPDATE company_devices SET is_active = FALSE, status = "decommissioned", deactivated_at = NOW(), deactivated_by = ?, deactivation_reason = ? WHERE id = ? AND company_id = ?',
@@ -1374,6 +1475,17 @@ const createCompanyRepairRequest = async (req, res, next) => {
             resolvedDeviceId = device.id;
         }
 
+        // Validate tenant ownership of employee and branch if supplied
+        if (employeeId) {
+            const empCheck = await assertTenantOwnership(connection, targetCompanyId, { employeeId });
+            if (empCheck.error) return res.status(empCheck.status).json(formatResponse(false, empCheck.error));
+        }
+        const bId = req.body.branchId || req.body.branch_id;
+        if (bId) {
+            const branchCheck = await assertTenantOwnership(connection, targetCompanyId, { branchId: bId });
+            if (branchCheck.error) return res.status(branchCheck.status).json(formatResponse(false, branchCheck.error));
+        }
+
         // Check if device is deactivated / inactive / decommissioned
         const isDeactivated = device.is_active === 0 || device.is_active === false || device.status === 'decommissioned' || device.status === 'inactive' || device.status === 'retired' || device.status === 'disposed';
         if (isDeactivated) {
@@ -1792,20 +1904,29 @@ const sendMessage = async (req, res, next) => {
         let senderId = req.user.id;
         let finalReceiverId = receiverId;
 
+        // If ticket ID is provided, verify ticket exists and belongs to this company
+        if (repairRequestId) {
+            const [tk] = await connection.query(
+                'SELECT id FROM service_requests WHERE id = ? AND company_id = ? LIMIT 1',
+                [repairRequestId, targetCompanyId]
+            );
+            if (tk.length === 0) {
+                return res.status(403).json(formatResponse(false, 'Repair ticket not found or does not belong to your company.'));
+            }
+        }
+
         if (req.user.role === 'admin') {
             // Admin sending message to this company
             if (!finalReceiverId) {
                 finalReceiverId = targetCompanyId;
             }
         } else {
-            // Company sending message to Admin
-            if (!finalReceiverId) {
-                const [admins] = await connection.query('SELECT id FROM users WHERE role = "admin" LIMIT 1');
-                if (admins.length > 0) {
-                    finalReceiverId = admins[0].id;
-                } else {
-                    return res.status(404).json(formatResponse(false, 'No administrator was found to deliver the message.'));
-                }
+            // Company sending message strictly to an active Admin (enforce recipient to prevent spoofing/IDOR)
+            const [admins] = await connection.query('SELECT id FROM users WHERE role = "admin" AND is_active = 1 ORDER BY id ASC LIMIT 1');
+            if (admins.length > 0) {
+                finalReceiverId = admins[0].id;
+            } else {
+                return res.status(404).json(formatResponse(false, 'No active administrator was found to deliver the message.'));
             }
         }
 
