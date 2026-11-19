@@ -12,6 +12,18 @@ const { verifyGoogleIdentity, getGoogleConfig } = require('../utils/google.auth'
 const { normalizePhoneNumber } = require('../middleware/validate.middleware');
 
 /**
+ * Helper to determine whether a user has an established, user-known password.
+ * Accounts created purely via Google OAuth have an internal placeholder hash and hasPassword === false.
+ */
+const checkUserHasPassword = (user) => {
+  if (!user || !user.password) return false;
+  const isBcrypt = user.password.startsWith('$2a$') || user.password.startsWith('$2b$') || user.password.startsWith('$2y$') || user.password.startsWith('$2');
+  if (!isBcrypt) return false;
+  if (user.auth_provider === 'google') return false;
+  return true;
+};
+
+/**
  * Handle new user registration (SignUp)
  */
 const signup = async (req, res, next) => {
@@ -80,6 +92,7 @@ const signup = async (req, res, next) => {
       role: userRole,
       phone: cleanPhone || null,
       company_id: null,
+      hasPassword: true,
       token
     }));
 
@@ -205,6 +218,7 @@ const signin = async (req, res, next) => {
     }
 
     const token = generateToken(user);
+    const hasPassword = checkUserHasPassword(user);
 
     logger.info(`User logged in: ${email} (ID: ${user.id})`);
 
@@ -221,6 +235,7 @@ const signin = async (req, res, next) => {
       company_id: companyId,
       permanent_company_id: companyId,
       avatar_url: avatarUrl,
+      hasPassword,
       token
     }));
 
@@ -401,7 +416,8 @@ const resendOtp = async (req, res, next) => {
  * Handle password changes for logged-in users
  */
 const setPassword = async (req, res, next) => {
-  const { password } = req.body;
+  const { password, newPassword: reqNewPassword, currentPassword } = req.body || {};
+  const targetNewPassword = reqNewPassword || password;
   const userId = req.user.id;
   const userRole = req.user.role;
   let connection;
@@ -412,20 +428,56 @@ const setPassword = async (req, res, next) => {
   }
 
   try {
-    if (!password || password.length < 8) {
+    if (!targetNewPassword || typeof targetNewPassword !== 'string' || targetNewPassword.length < 8) {
       return res.status(400).json(formatResponse(false, 'Password must be at least 8 characters long.'));
     }
 
     connection = await pool.getConnection();
 
-    // Hash the password
+    const [users] = await connection.query(
+      'SELECT id, name, email, password, auth_provider, role, token_version, is_active FROM users WHERE id = ? LIMIT 1',
+      [userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json(formatResponse(false, 'User not found.'));
+    }
+
+    const user = users[0];
+
+    if (user.is_active === 0 || user.is_active === false) {
+      return res.status(403).json(formatResponse(false, 'Your account has been deactivated. Please contact support.'));
+    }
+
+    // OWASP ASVS V2.1.1: If user already has an established password, verify currentPassword
+    const hasExistingPassword = checkUserHasPassword(user);
+
+    if (hasExistingPassword) {
+      if (!currentPassword) {
+        return res.status(400).json(formatResponse(false, 'Current password is required.'));
+      }
+
+      const isCurrentValid = await bcrypt.compare(currentPassword, user.password);
+      if (!isCurrentValid) {
+        return res.status(400).json(formatResponse(false, 'Current password is incorrect.'));
+      }
+
+      if (targetNewPassword === currentPassword) {
+        return res.status(400).json(formatResponse(false, 'New password must be different from your current password.'));
+      }
+    }
+
+    // Hash the new password
     const salt = await bcrypt.genSalt(12);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const hashedPassword = await bcrypt.hash(targetNewPassword, salt);
+
+    // If account was created purely via Google OAuth, upgrade provider to 'both'
+    const newAuthProvider = user.auth_provider === 'google' ? 'both' : (user.auth_provider || 'local');
 
     // Update in database and increment token_version
     const [result] = await connection.query(
-      'UPDATE users SET password = ?, token_version = token_version + 1 WHERE id = ?',
-      [hashedPassword, userId]
+      'UPDATE users SET password = ?, auth_provider = ?, token_version = token_version + 1 WHERE id = ?',
+      [hashedPassword, newAuthProvider, userId]
     );
 
     if (result.affectedRows === 0) {
@@ -459,13 +511,16 @@ const setPassword = async (req, res, next) => {
     // Generate a new token with updated version so they aren't logged out
     const newToken = generateToken({
       id: userId,
-      name: req.user.name,
-      email: req.user.email,
+      name: user.name || req.user.name,
+      email: user.email || req.user.email,
       role: userRole,
       token_version: newTokenVersion
     });
 
-    return res.status(200).json(formatResponse(true, 'Password updated successfully.', { token: newToken }));
+    return res.status(200).json(formatResponse(true, 'Password updated successfully.', {
+      token: newToken,
+      hasPassword: true
+    }));
 
   } catch (error) {
     next(error);
@@ -515,7 +570,7 @@ const getFrontendBaseUrl = (req) => {
   }
 
   // 3. Fallback strictly to configured frontend URL or first allowed origin
-  return config.frontend?.url || config.server?.publicOrigin || Array.from(allowedOrigins)[0] || '';
+  return (config.frontend?.url || config.server?.publicOrigin || Array.from(allowedOrigins)[0] || '').replace(/\/+$/, '');
 };
 
 /**
@@ -988,6 +1043,7 @@ const googleSignIn = async (req, res, next) => {
       }
 
       const token = generateToken(user);
+      const hasPassword = checkUserHasPassword(user);
       logger.info(`Google Sign-In successful for linked user: ${email} (ID: ${user.id}, Role: ${user.role})`);
       await logActivity(user.id, 'security', 'google_login', 'users', user.id, { email, role: user.role }, req.ip);
 
@@ -1000,6 +1056,7 @@ const googleSignIn = async (req, res, next) => {
         phone: user.phone || null,
         company_id: user.company_id || null,
         avatar_url: user.avatar_url || avatarUrl,
+        hasPassword,
         token
       }));
     }
@@ -1086,6 +1143,7 @@ const googleSignIn = async (req, res, next) => {
       }
 
       const token = generateToken(user);
+      const hasPassword = checkUserHasPassword(user);
       logger.info(`Existing account ${email} securely linked to Google ID ${googleId} (ID: ${user.id}, Role: ${user.role})`);
       await logActivity(user.id, 'security', 'google_account_link', 'users', user.id, { email, role: user.role }, req.ip);
 
@@ -1098,6 +1156,7 @@ const googleSignIn = async (req, res, next) => {
         phone: user.phone || null,
         company_id: user.company_id || null,
         avatar_url: user.avatar_url || avatarUrl,
+        hasPassword,
         token
       }));
     }
@@ -1149,6 +1208,7 @@ const googleSignIn = async (req, res, next) => {
       phone: null,
       company_id: null,
       avatar_url: avatarUrl,
+      hasPassword: false,
       token
     }));
 
@@ -1168,7 +1228,7 @@ const getMe = async (req, res, next) => {
   try {
     connection = await pool.getConnection();
     const [rows] = await connection.query(
-      'SELECT id, name, email, role, phone, avatar_url, is_active, customer_id FROM users WHERE id = ? LIMIT 1',
+      'SELECT id, name, email, password, auth_provider, role, phone, avatar_url, is_active, customer_id FROM users WHERE id = ? LIMIT 1',
       [req.user.id]
     );
 
@@ -1228,6 +1288,8 @@ const getMe = async (req, res, next) => {
       }
     }
 
+    const hasPassword = checkUserHasPassword(user);
+
     return res.status(200).json(formatResponse(true, 'Session verified.', {
       id: user.id,
       customer_id: userCustomerId,
@@ -1236,7 +1298,8 @@ const getMe = async (req, res, next) => {
       role: user.role,
       phone: userPhone || null,
       avatar_url: companyProfile?.company_logo || user.avatar_url,
-      company_id: companyProfile?.company_id || null
+      company_id: companyProfile?.company_id || null,
+      hasPassword
     }));
   } catch (error) {
     next(error);
