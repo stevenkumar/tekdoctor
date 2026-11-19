@@ -4,6 +4,7 @@ const { formatResponse, generateTechnicianId } = require('../utils/helpers');
 const { normalizePhoneNumber } = require('../middleware/validate.middleware');
 const logger = require('../utils/logger');
 const { logActivity } = require('../utils/activity.logger');
+const { dispatchNotification } = require('./notification.controller');
 
 /**
  * GET /api/technicians
@@ -106,9 +107,99 @@ const createTechnician = async (req, res, next) => {
 };
 
 /**
+ * Helper: Safely deactivates a technician inside an active transaction.
+ * Reverts active 'in_progress' and 'pending' tickets to unassigned 'pending' state
+ * and increments token_version to immediately revoke all active JWT sessions.
+ */
+const deactivateTechnicianCore = async (connection, technicianId, technicianName, adminUserId, reason, clientIp) => {
+    // 1. Lock and select any open/active tickets currently assigned to this technician
+    const [affectedTickets] = await connection.query(
+        'SELECT id, ticket_number, status FROM service_requests WHERE assigned_technician_id = ? AND status IN ("pending", "in_progress") FOR UPDATE',
+        [technicianId]
+    );
+
+    // 2. Unassign technician and revert any 'in_progress' tickets back to 'pending'
+    if (affectedTickets.length > 0) {
+        await connection.query(
+            'UPDATE service_requests SET assigned_technician_id = NULL, status = "pending" WHERE assigned_technician_id = ? AND status IN ("pending", "in_progress")',
+            [technicianId]
+        );
+    }
+
+    // 3. Clear pending assignment offers targeting this technician
+    await connection.query(
+        'UPDATE service_requests SET pending_technician_id = NULL WHERE pending_technician_id = ?',
+        [technicianId]
+    );
+
+    // 4. Cancel pending transfers involving this technician (as target or initiator)
+    await connection.query(
+        "UPDATE task_transfers SET status = 'cancelled' WHERE (to_technician_id = ? OR from_technician_id = ?) AND status = 'pending'",
+        [technicianId, technicianId]
+    );
+
+    // 5. Deactivate technician record & increment token_version to invalidate active sessions
+    await connection.query(
+        'UPDATE users SET is_active = 0, token_version = token_version + 1, deactivated_at = NOW(), deactivated_by = ?, deactivation_reason = ? WHERE id = ?',
+        [adminUserId || null, reason || 'Deactivated by admin', technicianId]
+    );
+
+    // 6. Log central audit activity
+    await logActivity(
+        adminUserId || null,
+        'repair',
+        'deactivate_technician',
+        'users',
+        technicianId,
+        {
+            name: technicianName,
+            reason: reason || 'Deactivated by admin',
+            reassignedTicketCount: affectedTickets.length,
+            ticketNumbers: affectedTickets.map(t => t.ticket_number || `TD-${t.id}`)
+        },
+        clientIp
+    );
+
+    return affectedTickets;
+};
+
+/**
+ * Helper: Alerts active administrators if deactivating a technician orphaned tickets.
+ */
+const alertAdminsOnTechnicianDeactivation = async (connection, technicianName, adminUserId, affectedTickets) => {
+    if (!affectedTickets || affectedTickets.length === 0) return;
+    try {
+        const [admins] = await connection.query(
+            'SELECT id FROM users WHERE role = "admin" AND is_active = 1'
+        );
+        const ticketNumbersStr = affectedTickets.map(t => t.ticket_number || `TD-${t.id}`).slice(0, 5).join(', ');
+        const moreCount = affectedTickets.length > 5 ? ` and ${affectedTickets.length - 5} more` : '';
+        const alertTitle = 'Technician Deactivated: Tickets Require Reassignment';
+        const alertMsg = `${technicianName} was deactivated. ${affectedTickets.length} active ticket(s) (${ticketNumbersStr}${moreCount}) were reverted to pending and require reassignment.`;
+
+        for (const admin of admins) {
+            try {
+                await dispatchNotification(connection, {
+                    userId: admin.id,
+                    title: alertTitle,
+                    message: alertMsg,
+                    senderId: adminUserId || null,
+                    url: '/admin/repair-tickets?status=pending',
+                    tag: 'admin-tech-reassign'
+                });
+            } catch (notifErr) {
+                logger.warn(`Failed to dispatch admin notification on tech deactivation: ${notifErr.message}`);
+            }
+        }
+    } catch (err) {
+        logger.warn(`Error resolving active admins for tech deactivation alert: ${err.message}`);
+    }
+};
+
+/**
  * DELETE /api/technicians/:id
  * Admin deactivates a technician account.
- * Any open tickets assigned to this technician are unassigned.
+ * Any open tickets assigned to this technician are unassigned and reverted to pending.
  */
 const deleteTechnician = async (req, res, next) => {
     const { id } = req.params;
@@ -116,34 +207,42 @@ const deleteTechnician = async (req, res, next) => {
     let connection;
     try {
         connection = await pool.getConnection();
+        await connection.beginTransaction();
 
         // Verify this is a technician account
         const [rows] = await connection.query(
-            'SELECT id, name FROM users WHERE id = ? AND role = ? LIMIT 1',
+            'SELECT id, name FROM users WHERE id = ? AND role = ? LIMIT 1 FOR UPDATE',
             [id, 'technician']
         );
         if (rows.length === 0) {
+            await connection.rollback();
             return res.status(404).json(formatResponse(false, 'Technician not found.'));
         }
 
-        // Unassign active/open tickets before deactivating
-        await connection.query(
-            'UPDATE service_requests SET assigned_technician_id = NULL WHERE assigned_technician_id = ? AND status IN ("pending", "in_progress")',
-            [id]
+        const affectedTickets = await deactivateTechnicianCore(
+            connection,
+            id,
+            rows[0].name,
+            req.user ? req.user.id : null,
+            reason,
+            req.ip
         );
 
-        // Deactivate technician record
-        await connection.query(
-            'UPDATE users SET is_active = 0, deactivated_at = NOW(), deactivated_by = ?, deactivation_reason = ? WHERE id = ?',
-            [req.user ? req.user.id : null, reason || 'Deactivated by admin', id]
-        );
+        await connection.commit();
 
-        logger.info(`Technician account deactivated by admin: ${rows[0].name} (ID: ${id})`);
-        await logActivity(connection, req.user ? req.user.id : null, 'deactivate_technician', 'user', id, { name: rows[0].name, reason }, req.ip);
+        logger.info(`Technician account deactivated by admin: ${rows[0].name} (ID: ${id}). Reassigned ${affectedTickets.length} ticket(s).`);
 
-        return res.status(200).json(formatResponse(true, 'Technician account deactivated successfully.'));
+        // Post-commit alert to admins
+        await alertAdminsOnTechnicianDeactivation(connection, rows[0].name, req.user ? req.user.id : null, affectedTickets);
+
+        return res.status(200).json(formatResponse(true, `Technician account deactivated successfully. ${affectedTickets.length} ticket(s) returned to pending queue.`, {
+            reassignedTicketCount: affectedTickets.length
+        }));
 
     } catch (error) {
+        if (connection) {
+            try { await connection.rollback(); } catch (_) {}
+        }
         next(error);
     } finally {
         if (connection) connection.release();
@@ -221,39 +320,61 @@ const toggleTechnicianStatus = async (req, res, next) => {
     let connection;
     try {
         connection = await pool.getConnection();
+        await connection.beginTransaction();
 
         const [rows] = await connection.query(
-            'SELECT id, name, is_active FROM users WHERE id = ? AND role = ? LIMIT 1',
+            'SELECT id, name, is_active FROM users WHERE id = ? AND role = ? LIMIT 1 FOR UPDATE',
             [id, 'technician']
         );
         if (rows.length === 0) {
+            await connection.rollback();
             return res.status(404).json(formatResponse(false, 'Technician not found.'));
         }
 
         const newStatus = isActive !== undefined ? Boolean(isActive) : !rows[0].is_active;
+        let affectedTickets = [];
 
         if (newStatus) {
             await connection.query(
                 'UPDATE users SET is_active = 1, deactivated_at = NULL, deactivated_by = NULL, deactivation_reason = NULL WHERE id = ?',
                 [id]
             );
-        } else {
-            await connection.query(
-                'UPDATE users SET is_active = 0, deactivated_at = NOW(), deactivated_by = ?, deactivation_reason = ? WHERE id = ?',
-                [req.user ? req.user.id : null, reason || 'Deactivated by admin', id]
+            await logActivity(
+                req.user ? req.user.id : null,
+                'repair',
+                'activate_technician',
+                'users',
+                id,
+                { name: rows[0].name, reason },
+                req.ip
             );
-            // Unassign open tickets when deactivating
-            await connection.query(
-                'UPDATE service_requests SET assigned_technician_id = NULL WHERE assigned_technician_id = ? AND status IN ("pending", "in_progress")',
-                [id]
+        } else {
+            affectedTickets = await deactivateTechnicianCore(
+                connection,
+                id,
+                rows[0].name,
+                req.user ? req.user.id : null,
+                reason,
+                req.ip
             );
         }
 
-        logger.info(`Technician ${rows[0].name} (ID: ${id}) ${newStatus ? 'activated' : 'deactivated'} by admin.`);
-        await logActivity(connection, req.user ? req.user.id : null, newStatus ? 'activate_technician' : 'deactivate_technician', 'user', id, { name: rows[0].name, reason }, req.ip);
+        await connection.commit();
 
-        return res.json(formatResponse(true, `Technician ${newStatus ? 'activated' : 'deactivated'} successfully.`, { is_active: newStatus }));
+        logger.info(`Technician ${rows[0].name} (ID: ${id}) ${newStatus ? 'activated' : 'deactivated'} by admin.`);
+
+        if (!newStatus) {
+            await alertAdminsOnTechnicianDeactivation(connection, rows[0].name, req.user ? req.user.id : null, affectedTickets);
+        }
+
+        return res.json(formatResponse(true, `Technician ${newStatus ? 'activated' : 'deactivated'} successfully.${!newStatus ? ` ${affectedTickets.length} ticket(s) returned to pending queue.` : ''}`, {
+            is_active: newStatus,
+            reassignedTicketCount: affectedTickets.length
+        }));
     } catch (error) {
+        if (connection) {
+            try { await connection.rollback(); } catch (_) {}
+        }
         next(error);
     } finally {
         if (connection) connection.release();
