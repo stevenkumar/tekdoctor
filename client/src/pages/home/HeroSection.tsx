@@ -4,6 +4,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ArrowRight, Sparkles, ChevronDown, Monitor, ShieldCheck, Zap } from 'lucide-react';
+import { ROUTES } from '@/config/routes';
 import { useSiteContext } from '../../context/SiteContext';
 
 const HeroSection = () => {
@@ -55,7 +56,7 @@ const HeroSection = () => {
           className="absolute inset-0 bg-cover bg-center bg-no-repeat scale-105 animate-soft-zoom"
           style={{ backgroundImage: "url('/hero.png')" }}
         />
-        Layered Overlays for Depth
+        {/* Layered Overlays for Depth */}
         <div className="absolute inset-0 bg-gradient-to-b from-gray-950/80 via-gray-950/40 to-gray-950/90" />
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,#030712_100%)]" />
       </div>
@@ -126,10 +127,10 @@ const HeroSection = () => {
               </motion.button>
             </Link>
 
-            <Link to="/contact">
+            <Link to={ROUTES.REPAIR}>
               <motion.button
                 whileHover={{ scale: 1.05 }}
-                className="px-8 py-4 border border-white/20 text-white font-bold rounded-full backdrop-blur-md hover:bg-white/5 transition-all flex items-center gap-2"
+                className="px-8 py-4 border border-white/20 text-white font-bold rounded-full backdrop-blur-md hover:bg-white/5 transition-all flex items-center gap-2 cursor-pointer"
               >
                 Emergency Repair
               </motion.button>

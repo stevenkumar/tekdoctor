@@ -7,7 +7,7 @@ import {
   Search, Package, CheckCircle2, Clock, Wrench, Cpu, History, User,
   ExternalLink, CreditCard, Hash, Settings, FileImage, Image, RefreshCw,
   AlertCircle, ShieldCheck, AlertTriangle, Download, Check, X, FileText,
-  DollarSign, Loader2, Sparkles, CheckCheck, Star
+  DollarSign, Loader2, Sparkles, CheckCheck, Star, BellRing, Smartphone
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
@@ -23,6 +23,11 @@ import { downloadPaymentBillPdf } from '@/utils/billGenerator';
 import RepairStepProgress, { type WorkflowStepKey } from '@/components/RepairStepProgress';
 import PaymentMethodModal from '@/components/PaymentMethodModal';
 import { SkeletonTicketWorkspace, SkeletonList } from '@/components/Skeleton';
+import {
+  isPushNotificationSupported,
+  subscribeToLiveAlerts,
+  checkIsPushSubscribed
+} from '@/utils/pushNotifications';
 
 const getFileUrl = (path: string | null) => {
   if (!path) return null;
@@ -78,6 +83,42 @@ export default function ServiceTracker() {
   const [revisionNote, setRevisionNote] = useState('');
   const [isSubmittingRevision, setIsSubmittingRevision] = useState(false);
   const [guestInvoiceToken, setGuestInvoiceToken] = useState<string | null>(null);
+  const [guestPaymentToken, setGuestPaymentToken] = useState<string | null>(null);
+  const [isPushSubscribed, setIsPushSubscribed] = useState(false);
+  const [isPushLoading, setIsPushLoading] = useState(false);
+
+  useEffect(() => {
+    if (showStatus && token && isPushNotificationSupported()) {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        setIsPushSubscribed(true);
+      }
+      checkIsPushSubscribed().then((sub) => {
+        if (sub) setIsPushSubscribed(true);
+      }).catch(() => {});
+    }
+  }, [showStatus, token]);
+
+  const isPushGrantedOrSubscribed = isPushSubscribed || (typeof Notification !== 'undefined' && Notification.permission === 'granted');
+
+  const handleEnablePushAlerts = async () => {
+    if (!token) return;
+    setIsPushLoading(true);
+    try {
+      const res = await subscribeToLiveAlerts(token);
+      if (res.success) {
+        setIsPushSubscribed(true);
+        toast.success('Live lockscreen alerts enabled! You will receive real-time updates for this ticket.');
+      } else if (res.permission === 'denied') {
+        toast.error('Notification permission was blocked in your browser settings.');
+      } else {
+        toast.error(res.error || 'Failed to enable live alerts.');
+      }
+    } catch {
+      toast.error('Failed to enable live alerts.');
+    } finally {
+      setIsPushLoading(false);
+    }
+  };
 
   const fetchTicketStatus = useCallback(async (idToSearch: string, isManualRefresh = false, mobileOverride?: string) => {
     if (!idToSearch) return;
@@ -102,6 +143,9 @@ export default function ServiceTracker() {
       });
       if (res.ok && res.data) {
         setTrackingData(res.data.data);
+        if (res.data.data?.guestPaymentToken) {
+          setGuestPaymentToken(res.data.data.guestPaymentToken);
+        }
         setShowStatus(true);
         setRequiresMobile(false);
       } else {
@@ -122,7 +166,7 @@ export default function ServiceTracker() {
   }, [customerMobile, searchParams, token, isAuthenticated]);
 
   const queryToken = searchParams.get('token') || searchParams.get('approvalToken') || searchParams.get('actionToken') || searchParams.get('invoiceToken');
-  const effectiveToken = token || guestInvoiceToken || queryToken || null;
+  const effectiveToken = token || guestInvoiceToken || guestPaymentToken || queryToken || null;
 
   // Auto-fetch ticket details when 'id', 'ticket', or 'ticketId' query param is provided
   useEffect(() => {
@@ -264,8 +308,10 @@ export default function ServiceTracker() {
     setIsPaying(true);
 
     try {
+      const activeGuestToken = guestPaymentToken || trackingData.guestPaymentToken || null;
+
       // 1. Check eligibility
-      const eligRes = await billingApi.getEligibility(trackingData.id, token);
+      const eligRes = await billingApi.getEligibility(trackingData.id, token, activeGuestToken);
       if (!eligRes.ok || !eligRes.data?.data?.eligible) {
         const reason = eligRes.data?.data?.reason || eligRes.error || 'This ticket is not currently eligible for payment settlement.';
         toast.error(reason);
@@ -286,7 +332,7 @@ export default function ServiceTracker() {
         ticketNumber: trackingData.ticketNumber,
         amount: payableAmount,
         currency: 'INR'
-      }, token);
+      }, token, activeGuestToken);
 
       if (!orderRes.ok || !orderRes.data?.data) {
         throw new Error(orderRes.error || 'Failed to initialize payment order with gateway.');
@@ -316,7 +362,7 @@ export default function ServiceTracker() {
               ticketId: trackingData.id,
               ticket_id: trackingData.id,
               ticketNumber: trackingData.ticketNumber
-            }, token);
+            }, token, activeGuestToken);
 
             if (verifyRes.ok) {
               const invToken = verifyRes.data?.data?.invoiceAccessToken || verifyRes.data?.invoiceAccessToken || (verifyRes.data as any)?.token;
@@ -586,6 +632,30 @@ export default function ServiceTracker() {
                     </div>
                   </div>
                 </div>
+
+                {/* Optional Lockscreen Alert Prompt if supported & not yet subscribed */}
+                {isPushNotificationSupported() && isAuthenticated && token && !isPushGrantedOrSubscribed && (
+                  <div className="mb-6 p-4 bg-zinc-900/60 border border-zinc-800/80 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-3 text-zinc-300">
+                      <div className="p-2 rounded-xl bg-neon-cyan/10 border border-neon-cyan/30 text-neon-cyan shrink-0">
+                        <BellRing size={18} />
+                      </div>
+                      <div>
+                        <span className="font-bold text-white text-sm font-outfit block">Get Live Lockscreen Updates</span>
+                        <span className="text-zinc-400 text-xs">Receive real-time push alerts as your device moves through diagnosis, repair, and delivery.</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleEnablePushAlerts}
+                      disabled={isPushLoading}
+                      className="px-4 py-2 bg-neon-cyan hover:bg-neon-cyan/90 text-black font-mono font-bold text-xs rounded-xl transition-all shrink-0 cursor-pointer shadow-md shadow-neon-cyan/20 disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      {isPushLoading ? <Loader2 size={13} className="animate-spin" /> : <Smartphone size={13} />}
+                      <span>{isPushLoading ? 'Enabling...' : 'Enable Alerts'}</span>
+                    </button>
+                  </div>
+                )}
 
                 {/* 4-Step Progressive Workflow Bar */}
                 <div className="mb-8 sm:mb-10 w-full overflow-hidden">

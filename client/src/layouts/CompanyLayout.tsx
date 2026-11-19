@@ -54,9 +54,16 @@ function CompanyLayoutInner() {
 
     useEffect(() => {
         if (showNotifications && user && token) {
-            checkIsPushSubscribed().then(setIsPushSubscribed).catch(() => {});
+            if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+                setIsPushSubscribed(true);
+            }
+            checkIsPushSubscribed().then((sub) => {
+                if (sub) setIsPushSubscribed(true);
+            }).catch(() => {});
         }
     }, [showNotifications, user, token]);
+
+    const isPushGrantedOrSubscribed = isPushSubscribed || (typeof Notification !== 'undefined' && Notification.permission === 'granted');
 
     const handleTogglePush = async (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -372,7 +379,7 @@ function CompanyLayoutInner() {
                                                 )}
                                             </div>
                                         </div>
-                                        {isPushNotificationSupported() && (
+                                        {isPushNotificationSupported() && !isPushGrantedOrSubscribed && (
                                             <div className="px-4 py-2 bg-zinc-950/80 border-b border-zinc-900 flex items-center justify-between text-xs">
                                                 <div className="flex items-center gap-1.5 text-zinc-400">
                                                     <span className={`w-1.5 h-1.5 rounded-full ${isPushSubscribed ? 'bg-emerald-400' : 'bg-indigo-400 animate-pulse'}`} />

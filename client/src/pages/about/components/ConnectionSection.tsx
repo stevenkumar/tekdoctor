@@ -7,6 +7,7 @@ import { useSiteContext } from '@/context/SiteContext';
 
 export default function ConnectionSection() {
   const { flattenedSettings } = useSiteContext();
+  const tekunikUrl = flattenedSettings?.tekunik_url || 'https://tekunik.com';
   const configuredLogo = flattenedSettings?.tekunik_image_url;
   const logoSrc = configuredLogo && configuredLogo.trim() !== ''
     ? (configuredLogo.startsWith('http') || configuredLogo.startsWith('/') ? configuredLogo : `/uploads/${configuredLogo}`)
@@ -40,7 +41,7 @@ export default function ConnectionSection() {
               lifecycle of your tech needs.
             </p>
             <a
-              href="https://thetekdoctor.com"
+              href={tekunikUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 text-white font-bold hover:text-neon-cyan transition-colors group"

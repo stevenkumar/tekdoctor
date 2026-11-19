@@ -1411,7 +1411,7 @@ export const billingApi = {
     });
   },
 
-  getEligibility: async (ticketId: number | string, token?: string | null): Promise<SafeResponse<{
+  getEligibility: async (ticketId: number | string, token?: string | null, guestPaymentToken?: string | null): Promise<SafeResponse<{
     success: boolean;
     data: {
       eligible: boolean;
@@ -1423,6 +1423,7 @@ export const billingApi = {
   }>> => {
     const headers: Record<string, string> = {};
     if (token) headers['Authorization'] = `Bearer ${token}`;
+    if (guestPaymentToken) headers['x-guest-payment-token'] = guestPaymentToken;
     return safeFetch<any>(getUrl(`/api/billing/eligibility/${ticketId}`), {
       method: 'GET',
       headers,
@@ -1438,7 +1439,7 @@ export const billingApi = {
     ticket_number?: string;
     amount?: number;
     currency?: string;
-  }, token?: string | null): Promise<SafeResponse<{
+  }, token?: string | null, guestPaymentToken?: string | null): Promise<SafeResponse<{
     success: boolean;
     data: {
       orderId: string;
@@ -1453,6 +1454,7 @@ export const billingApi = {
   }>> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
+    if (guestPaymentToken) headers['x-guest-payment-token'] = guestPaymentToken;
     const payload = {
       ...data,
       ticketId: data.ticketId || data.ticket_id,
@@ -1460,7 +1462,8 @@ export const billingApi = {
       invoiceId: data.invoiceId || data.invoice_id,
       invoice_id: data.invoice_id || data.invoiceId,
       ticketNumber: data.ticketNumber || data.ticket_number,
-      ticket_number: data.ticket_number || data.ticketNumber
+      ticket_number: data.ticket_number || data.ticketNumber,
+      guestPaymentToken: guestPaymentToken || undefined
     };
     return safeFetch<any>(getUrl('/api/billing/create-order'), {
       method: 'POST',
@@ -1479,9 +1482,10 @@ export const billingApi = {
     invoice_id?: number | string;
     ticketNumber?: string;
     ticket_number?: string;
-  }, token?: string | null): Promise<SafeResponse<any>> => {
+  }, token?: string | null, guestPaymentToken?: string | null): Promise<SafeResponse<any>> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
+    if (guestPaymentToken) headers['x-guest-payment-token'] = guestPaymentToken;
     const payload = {
       ...data,
       ticketId: data.ticketId || data.ticket_id,

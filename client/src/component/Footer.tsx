@@ -31,10 +31,15 @@ const Footer = () => {
           </div>
 
           <div className="flex flex-wrap justify-center gap-6 text-[10px] font-semibold text-zinc-500 uppercase tracking-widest">
-            <Link to="#" className="hover:text-neon-cyan transition-colors">Privacy Policy</Link>
-            <Link to="#" className="hover:text-neon-cyan transition-colors">Terms of Service</Link>
+            <Link to={ROUTES.PRIVACY} className="hover:text-neon-cyan transition-colors">Privacy Policy</Link>
+            <Link to={ROUTES.TERMS} className="hover:text-neon-cyan transition-colors">Terms of Service</Link>
             <Link to={ROUTES.FAQ} className="hover:text-neon-cyan transition-colors">FAQ</Link>
-            <Link to="#" className="hover:text-neon-cyan transition-colors">Careers</Link>
+            <a
+              href={flattenedSettings.company_email ? `mailto:${flattenedSettings.company_email}?subject=Career%20Inquiry` : "mailto:careers@thetekdoctor.com?subject=Career%20Inquiry"}
+              className="hover:text-neon-cyan transition-colors"
+            >
+              Careers
+            </a>
           </div>
 
           <div className="flex gap-4">

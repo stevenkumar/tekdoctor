@@ -53,6 +53,15 @@ export default function TitleManager() {
                 case ROUTES.CONTACT:
                     baseTitle = `${appName.toUpperCase()} - Contact`;
                     break;
+                case ROUTES.AMC:
+                    baseTitle = `${appName.toUpperCase()} - Annual Maintenance Contracts`;
+                    break;
+                case ROUTES.PRIVACY:
+                    baseTitle = `${appName.toUpperCase()} - Privacy Policy`;
+                    break;
+                case ROUTES.TERMS:
+                    baseTitle = `${appName.toUpperCase()} - Terms of Service`;
+                    break;
                 case ROUTES.SIGN_IN:
                     baseTitle = `${appName.toUpperCase()} - Login`;
                     break;

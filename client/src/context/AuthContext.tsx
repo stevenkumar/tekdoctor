@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { STORAGE_KEYS } from '../config/storage';
 import { ROUTES } from '../config/routes';
 import { authApi } from '../services/api';
+import { syncPushSubscriptionIfGranted } from '../utils/pushNotifications';
 
 // All roles supported by the backend Users.role ENUM
 export type UserRole = 'customer' | 'technician' | 'admin' | 'company';
@@ -85,6 +86,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(null); setToken(null); setRole(null);
     }
   }, []);
+
+  // Silent auto-subscribe on login / session restore if Notification permission is already granted
+  useEffect(() => {
+    if (!token) return;
+    syncPushSubscriptionIfGranted(token);
+  }, [token]);
 
   /**
    * Call after a successful signup or signin.

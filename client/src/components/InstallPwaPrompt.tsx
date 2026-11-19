@@ -11,8 +11,39 @@ interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>;
 }
 
+const isStandaloneMode = () => {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    (window.navigator as any).standalone === true ||
+    document.referrer.includes('android-app://')
+  );
+};
+
+const checkIsIos = () => {
+  if (typeof window === 'undefined') return false;
+  const ua = window.navigator.userAgent.toLowerCase();
+  return (
+    /iphone|ipad|ipod/.test(ua) ||
+    (window.navigator.platform === 'MacIntel' && window.navigator.maxTouchPoints > 1)
+  );
+};
+
+const isAutoPopupAllowed = () => {
+  try {
+    const dismissedAt = localStorage.getItem('tekdoctor_pwa_dismissed');
+    if (dismissedAt) {
+      const hoursSinceDismiss = (Date.now() - parseInt(dismissedAt, 10)) / (1000 * 60 * 60);
+      return hoursSinceDismiss >= 24;
+    }
+  } catch (_) {}
+  return true;
+};
+
 export default function InstallPwaPrompt() {
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(() => {
+    return typeof window !== 'undefined' && window.__deferredPwaPrompt ? window.__deferredPwaPrompt : null;
+  });
   const [isVisible, setIsVisible] = useState(false);
   const [isIos, setIsIos] = useState(false);
   const [isInstalled, setIsInstalled] = useState(false);
@@ -21,69 +52,90 @@ export default function InstallPwaPrompt() {
 
   useEffect(() => {
     // 1. Check if already running in standalone PWA mode
-    const isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
-      (window.navigator as any).standalone === true ||
-      document.referrer.includes('android-app://');
-
-    if (isStandalone) {
+    if (isStandaloneMode()) {
       setIsInstalled(true);
       return;
     }
 
-    // 2. Check if user recently dismissed the prompt (hide for 24 hours)
-    const dismissedAt = localStorage.getItem('tekdoctor_pwa_dismissed');
-    if (dismissedAt) {
-      const hoursSinceDismiss = (Date.now() - parseInt(dismissedAt, 10)) / (1000 * 60 * 60);
-      if (hoursSinceDismiss < 24) {
-        return;
+    // 2. Detect iOS / iPadOS (Safari, Chrome iOS CriOS, Firefox iOS FxiOS, Edge iOS EdgiOS)
+    const isIosDevice = checkIsIos();
+    if (isIosDevice) {
+      setIsIos(true);
+      if (isAutoPopupAllowed()) {
+        const timer = setTimeout(() => setIsVisible(true), 500);
+        return () => clearTimeout(timer);
+      }
+      return;
+    }
+
+    // 3. Check if prompt was already captured at module top-level
+    if (window.__deferredPwaPrompt) {
+      console.log('[PWA] Install prompt ready');
+      setDeferredPrompt(window.__deferredPwaPrompt);
+      if (isAutoPopupAllowed()) {
+        const timer = setTimeout(() => setIsVisible(true), 500);
+        return () => clearTimeout(timer);
       }
     }
 
-    // 3. Detect iOS Safari
-    const userAgent = window.navigator.userAgent.toLowerCase();
-    const isIosDevice = /iphone|ipad|ipod/.test(userAgent) && !(window as any).MSStream;
-    const isSafari = /safari/.test(userAgent) && !/chrome|crios|fxios/.test(userAgent);
+    // 4. Capture standard Chromium/Android beforeinstallprompt event & custom triggers
+    const handlePromptReady = () => {
+      console.log('[PWA] Install prompt ready');
+      if (window.__deferredPwaPrompt) {
+        setDeferredPrompt(window.__deferredPwaPrompt);
+        if (isAutoPopupAllowed()) {
+          setTimeout(() => setIsVisible(true), 500);
+        }
+      }
+    };
 
-    if (isIosDevice && isSafari) {
-      setIsIos(true);
-      // Delay prompt slightly so page settles
-      const timer = setTimeout(() => setIsVisible(true), 3000);
-      return () => clearTimeout(timer);
-    }
-
-    // 4. Capture standard Chromium/Android beforeinstallprompt event
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
+      console.log('[PWA] Install prompt ready');
+      window.__deferredPwaPrompt = e as BeforeInstallPromptEvent;
       setDeferredPrompt(e as BeforeInstallPromptEvent);
-      // Wait 2.5 seconds after page load before showing prompt
-      setTimeout(() => {
-        setIsVisible(true);
-      }, 2500);
+      if (isAutoPopupAllowed()) {
+        setTimeout(() => setIsVisible(true), 500);
+      }
     };
 
     const handleAppInstalled = () => {
       setIsInstalled(true);
       setIsVisible(false);
       setDeferredPrompt(null);
-      localStorage.removeItem('tekdoctor_pwa_dismissed');
+      window.__deferredPwaPrompt = null;
+      try {
+        localStorage.removeItem('tekdoctor_pwa_dismissed');
+      } catch (_) {}
+    };
+
+    const handleShowGuide = () => {
+      setIsVisible(true);
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('tekdoctor:pwa-install-ready', handlePromptReady);
     window.addEventListener('appinstalled', handleAppInstalled);
+    window.addEventListener('tekdoctor:pwa-app-installed', handleAppInstalled);
+    window.addEventListener('tekdoctor:show-pwa-guide', handleShowGuide);
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('tekdoctor:pwa-install-ready', handlePromptReady);
       window.removeEventListener('appinstalled', handleAppInstalled);
+      window.removeEventListener('tekdoctor:pwa-app-installed', handleAppInstalled);
+      window.removeEventListener('tekdoctor:show-pwa-guide', handleShowGuide);
     };
   }, []);
 
   const handleInstallClick = async () => {
-    if (!deferredPrompt) return;
+    const activePrompt = deferredPrompt || (typeof window !== 'undefined' ? window.__deferredPwaPrompt : null);
+    if (!activePrompt) return;
     setIsInstalling(true);
 
     try {
-      await deferredPrompt.prompt();
-      const choiceResult = await deferredPrompt.userChoice;
+      await activePrompt.prompt();
+      const choiceResult = await activePrompt.userChoice;
 
       if (choiceResult.outcome === 'accepted') {
         setInstalledSuccess(true);
@@ -99,12 +151,15 @@ export default function InstallPwaPrompt() {
     } finally {
       setIsInstalling(false);
       setDeferredPrompt(null);
+      if (typeof window !== 'undefined') window.__deferredPwaPrompt = null;
     }
   };
 
   const handleDismiss = () => {
     setIsVisible(false);
-    localStorage.setItem('tekdoctor_pwa_dismissed', Date.now().toString());
+    try {
+      localStorage.setItem('tekdoctor_pwa_dismissed', Date.now().toString());
+    } catch (_) {}
   };
 
   // Do not render if installed or not ready
@@ -119,7 +174,7 @@ export default function InstallPwaPrompt() {
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 40, scale: 0.95 }}
         transition={{ type: 'spring', damping: 20, stiffness: 260 }}
-        className="fixed bottom-4 left-3 right-3 sm:left-auto sm:right-6 sm:w-96 z-50 pointer-events-auto"
+        className="fixed bottom-4 left-3 right-3 sm:left-auto sm:right-6 sm:w-96 z-[9999] pointer-events-auto"
         role="region"
         aria-label="Install TekDoctor App"
       >
@@ -140,9 +195,9 @@ export default function InstallPwaPrompt() {
             {/* App Icon */}
             <div className="w-12 h-12 rounded-xl bg-black border border-neon-cyan/50 p-1 shrink-0 shadow-[0_0_12px_rgba(0,229,255,0.3)] flex items-center justify-center overflow-hidden">
               <img
-                src="/favicon.png"
+                src="/pwa-192.png"
                 alt="TekDoctor App Icon"
-                className="w-full h-full object-contain p-1 rounded-lg"
+                className="w-full h-full object-contain rounded-lg"
               />
             </div>
 
@@ -155,7 +210,7 @@ export default function InstallPwaPrompt() {
               <p className="text-xs text-zinc-300 mt-0.5 leading-snug">
                 {isIos
                   ? 'Add to your Home Screen for faster 1-tap access!'
-                  : 'Install on your phone for instant, smooth 1-tap access without opening browser tabs.'}
+                  : 'Install on your device for instant, smooth 1-tap access without opening browser tabs.'}
               </p>
             </div>
           </div>

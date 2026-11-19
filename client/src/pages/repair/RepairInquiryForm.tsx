@@ -4,7 +4,7 @@ import {
   User, Smartphone, Mail, MapPin,
   Laptop, Tag, Wrench, Shield, CheckCircle,
   FileImage, Eye, Trash2, Loader2, Info, ExternalLink,
-  Copy, Check, ShieldCheck, ArrowRight
+  Copy, Check, ShieldCheck, ArrowRight, BellRing
 } from 'lucide-react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
@@ -16,6 +16,11 @@ import { INDIAN_STATES, STATES_DISTRICTS, validateName, validateProblemDescripti
 import PhoneInput from '@/components/PhoneInput';
 import { validatePhoneNumber, parsePhoneNumber, DEFAULT_COUNTRY } from '@/utils/phoneUtils';
 import { getRecaptchaToken } from '@/utils/recaptcha';
+import {
+  isPushNotificationSupported,
+  subscribeToLiveAlerts,
+  checkIsPushSubscribed
+} from '@/utils/pushNotifications';
 
 const DRAFT_ID_KEY = 'tekdoctor_repair_form_draft_id';
 
@@ -413,6 +418,46 @@ export default function RepairInquiryForm() {
     window.crypto && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15)
   );
   const [submitError, setSubmitError] = useState('');
+
+  const [isPushSubscribed, setIsPushSubscribed] = useState(false);
+  const [pushLoading, setPushLoading] = useState(false);
+  const [activeSessionToken, setActiveSessionToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (submitSuccess) {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        setIsPushSubscribed(true);
+      }
+      checkIsPushSubscribed().then((sub) => {
+        if (sub) setIsPushSubscribed(true);
+      }).catch(() => {});
+    }
+  }, [submitSuccess]);
+
+  const handleEnablePushUpdates = async () => {
+    setAutoRedirectPaused(true);
+    const targetToken = activeSessionToken || token;
+    if (!targetToken) {
+      toast.error('Please log in or check your email to enable live updates.');
+      return;
+    }
+    setPushLoading(true);
+    try {
+      const res = await subscribeToLiveAlerts(targetToken);
+      if (res.success) {
+        setIsPushSubscribed(true);
+        toast.success('Live lockscreen alerts enabled! You will receive real-time updates for this ticket.');
+      } else if (res.permission === 'denied') {
+        toast.error('Notification permission was blocked in your browser settings.');
+      } else {
+        toast.error(res.error || 'Failed to enable live alerts.');
+      }
+    } catch {
+      toast.error('Failed to enable live alerts.');
+    } finally {
+      setPushLoading(false);
+    }
+  };
 
   const deviceImageInputRef = useRef<HTMLInputElement>(null);
   const errorScreenshotInputRef = useRef<HTMLInputElement>(null);
@@ -1110,9 +1155,27 @@ export default function RepairInquiryForm() {
         setAutoRedirectPaused(false);
 
         // If guest submitted and system auto-created a customer account, log them in
+        const resolvedToken = response.data?.autoLogin?.token || token;
+        if (resolvedToken) {
+          setActiveSessionToken(resolvedToken);
+        }
+
         if (response.data && response.data.autoLogin) {
           const { token: newToken, user: newUser } = response.data.autoLogin;
           login(newToken, newUser, true); // skip navigation on auto-login
+        }
+
+        // Silent gesture trigger for push notifications if supported & default
+        if (resolvedToken && isPushNotificationSupported() && typeof Notification !== 'undefined') {
+          if (Notification.permission === 'default') {
+            subscribeToLiveAlerts(resolvedToken)
+              .then((res) => {
+                if (res.success) setIsPushSubscribed(true);
+              })
+              .catch(() => {});
+          } else if (Notification.permission === 'granted') {
+            setIsPushSubscribed(true);
+          }
         }
 
         try {
@@ -1263,6 +1326,57 @@ export default function RepairInquiryForm() {
             }}
           />
         </div>
+
+        {/* Live Lockscreen Alerts High-Intent CTA */}
+        {isPushNotificationSupported() && (
+          <div className="bg-zinc-950/80 border border-zinc-800/90 rounded-2xl p-4 sm:p-5 mb-5 text-left flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start sm:items-center gap-3">
+              <div className={`p-2.5 rounded-xl border shrink-0 ${isPushSubscribed ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-neon-cyan/10 border-neon-cyan/30 text-neon-cyan'}`}>
+                {isPushSubscribed ? <ShieldCheck size={20} /> : <BellRing size={20} />}
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h4 className="text-sm font-bold text-white font-outfit">
+                    {isPushSubscribed ? 'Live Lockscreen Updates Active' : 'Get Live Lockscreen Updates'}
+                  </h4>
+                  {isPushSubscribed && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                      Active
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  {isPushSubscribed
+                    ? 'Your device lockscreen will receive instant real-time alerts as our engineers service your device.'
+                    : 'Get real-time updates directly on your phone lockscreen as our engineers diagnose and service your device.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="shrink-0 self-start sm:self-center">
+              {isPushSubscribed ? (
+                <div className="flex items-center gap-1.5 text-emerald-400 text-xs font-mono font-bold px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+                  <Check size={14} />
+                  <span>Subscribed</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleEnablePushUpdates}
+                  disabled={pushLoading}
+                  className="px-4 py-2.5 bg-neon-cyan hover:bg-neon-cyan/90 text-black font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-[0_0_20px_rgba(0,242,255,0.25)] flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                >
+                  {pushLoading ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Smartphone size={14} />
+                  )}
+                  <span>Get Live Updates</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Primary Action Buttons */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">

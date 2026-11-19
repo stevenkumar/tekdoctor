@@ -131,3 +131,20 @@ export async function unsubscribeFromLiveAlerts(token: string): Promise<{ succes
     return { success: false, error: err?.message || 'Failed to unsubscribe.' };
   }
 }
+
+/**
+ * Silently synchronizes the device's PushSubscription with the backend if Notification.permission is already 'granted'.
+ * Avoids any UI prompts or toasts; safe to call on session load, login, or route changes.
+ */
+export async function syncPushSubscriptionIfGranted(token: string): Promise<boolean> {
+  if (!isPushNotificationSupported()) return false;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return false;
+
+  try {
+    const res = await subscribeToLiveAlerts(token);
+    return res.success;
+  } catch (err) {
+    console.debug('[PushSubscription] Silent subscription sync skipped or failed:', err);
+    return false;
+  }
+}

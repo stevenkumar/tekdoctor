@@ -40,6 +40,9 @@ const RepairProtocolPage = lazy(() => import('./pages/protocol/page'));
 const ProfilePage = lazy(() => import('./pages/profile/page'));
 const UserNotifications = lazy(() => import('./pages/notifications/UserNotifications'));
 const AmcCertificateVerification = lazy(() => import('./pages/public/AmcCertificateVerification'));
+const AmcPage = lazy(() => import('./pages/amc/page'));
+const PrivacyPolicy = lazy(() => import('./pages/legal/PrivacyPolicy'));
+const TermsOfService = lazy(() => import('./pages/legal/TermsOfService'));
 
 // Admin Pages (Lazy Loaded)
 const DashboardOverview = lazy(() => import('./pages/admin/DashboardOverview'));
@@ -190,6 +193,9 @@ function App() {
                   <Route path={ROUTES.NOTIFICATIONS} element={<UserNotifications />} />
                   <Route path={ROUTES.VERIFY_CERTIFICATE} element={<AmcCertificateVerification />} />
                   <Route path="/verify-certificate/:code" element={<AmcCertificateVerification />} />
+                  <Route path={ROUTES.AMC} element={<AmcPage />} />
+                  <Route path={ROUTES.PRIVACY} element={<PrivacyPolicy />} />
+                  <Route path={ROUTES.TERMS} element={<TermsOfService />} />
 
                   {/* Fallback */}
                   <Route path="*" element={<HomePage />} />

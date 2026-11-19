@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /company/
+Disallow: /technician/
+Disallow: /api/
+
+Sitemap: https://thetekdoctor.com/sitemap.xml

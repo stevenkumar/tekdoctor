@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Menu, X, Bell, Trash2, ArrowUpRight } from 'lucide-react';
+import { Menu, X, Bell, Trash2, ArrowUpRight, Download } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useSiteContext } from '../context/SiteContext';
 import { notificationApi } from '../services/api';
@@ -13,6 +13,24 @@ import { isPushNotificationSupported, checkIsPushSubscribed, subscribeToLiveAler
 import { ROUTES } from '../config/routes';
 import { appConfig } from '../config/appConfig';
 import { getMediaUrl } from '../utils/media';
+
+const isStandaloneMode = () => {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    (window.navigator as any).standalone === true ||
+    document.referrer.includes('android-app://')
+  );
+};
+
+const checkIsIos = () => {
+  if (typeof window === 'undefined') return false;
+  const ua = window.navigator.userAgent.toLowerCase();
+  return (
+    /iphone|ipad|ipod/.test(ua) ||
+    (window.navigator.platform === 'MacIntel' && window.navigator.maxTouchPoints > 1)
+  );
+};
 
 const Navbar = () => {
   const { isAuthenticated, logout, user, token } = useAuth();
@@ -24,15 +42,76 @@ const Navbar = () => {
   const [activeModalNotif, setActiveModalNotif] = useState<NotificationItem | null>(null);
   const [isPushSubscribed, setIsPushSubscribed] = useState(false);
   const [isPushLoading, setIsPushLoading] = useState(false);
+  const [canInstall, setCanInstall] = useState(false);
+  const [isInstallingPwa, setIsInstallingPwa] = useState(false);
   const { flattenedSettings } = useSiteContext();
   const location = useLocation();
   const notifRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (isStandaloneMode()) {
+      setCanInstall(false);
+      return;
+    }
+
+    if (window.__deferredPwaPrompt || checkIsIos()) {
+      setCanInstall(true);
+    }
+
+    const handleInstallReady = () => {
+      if (!isStandaloneMode()) setCanInstall(true);
+    };
+
+    const handleAppInstalled = () => {
+      setCanInstall(false);
+    };
+
+    window.addEventListener('tekdoctor:pwa-install-ready', handleInstallReady);
+    window.addEventListener('beforeinstallprompt', handleInstallReady);
+    window.addEventListener('appinstalled', handleAppInstalled);
+    window.addEventListener('tekdoctor:pwa-app-installed', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('tekdoctor:pwa-install-ready', handleInstallReady);
+      window.removeEventListener('beforeinstallprompt', handleInstallReady);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+      window.removeEventListener('tekdoctor:pwa-app-installed', handleAppInstalled);
+    };
+  }, []);
+
+  const handleInstallPwa = async () => {
+    if (window.__deferredPwaPrompt) {
+      setIsInstallingPwa(true);
+      try {
+        const promptEvent = window.__deferredPwaPrompt;
+        await promptEvent.prompt();
+        const choice = await promptEvent.userChoice;
+        if (choice?.outcome === 'accepted') {
+          setCanInstall(false);
+          window.__deferredPwaPrompt = null;
+        }
+      } catch (err) {
+        console.warn('[PWA] Navbar install prompt error:', err);
+      } finally {
+        setIsInstallingPwa(false);
+      }
+    } else if (checkIsIos()) {
+      window.dispatchEvent(new Event('tekdoctor:show-pwa-guide'));
+    }
+  };
+
+  useEffect(() => {
     if (showNotifications && isAuthenticated) {
-      checkIsPushSubscribed().then(setIsPushSubscribed).catch(() => {});
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        setIsPushSubscribed(true);
+      }
+      checkIsPushSubscribed().then((sub) => {
+        if (sub) setIsPushSubscribed(true);
+      }).catch(() => {});
     }
   }, [showNotifications, isAuthenticated]);
+
+  const isPushGrantedOrSubscribed = isPushSubscribed || (typeof Notification !== 'undefined' && Notification.permission === 'granted');
 
   const handleTogglePush = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -222,8 +301,8 @@ const Navbar = () => {
           <Link to={ROUTES.ABOUT} className={getLinkClass(ROUTES.ABOUT)}>About</Link>
           <span className="text-[11px] font-semibold text-zinc-700 uppercase tracking-widest">|</span>
           <Link to={ROUTES.SERVICES} className={getLinkClass(ROUTES.SERVICES)}>Services</Link>
-          {/* <span className="text-[11px] font-semibold text-zinc-700 uppercase tracking-widest">|</span> */}
-          {/* <Link to={ROUTES.SHOP} className={getLinkClass(ROUTES.SHOP)}>Shop</Link> */}
+          <span className="text-[11px] font-semibold text-zinc-700 uppercase tracking-widest">|</span>
+          <Link to={ROUTES.AMC} className={getLinkClass(ROUTES.AMC)}>AMC</Link>
           <span className="text-[11px] font-semibold text-zinc-700 uppercase tracking-widest">|</span>
           <Link to={ROUTES.CONTACT} className={getLinkClass(ROUTES.CONTACT)}>Contact</Link>
 
@@ -277,7 +356,7 @@ const Navbar = () => {
                           )}
                         </div>
                       </div>
-                      {isPushNotificationSupported() && (
+                      {isPushNotificationSupported() && !isPushGrantedOrSubscribed && (
                         <div className="px-4 py-2 bg-zinc-900/60 border-b border-zinc-800/80 flex items-center justify-between text-xs">
                           <div className="flex items-center gap-1.5 text-zinc-400">
                             <span className={`w-1.5 h-1.5 rounded-full ${isPushSubscribed ? 'bg-emerald-400' : 'bg-neon-cyan animate-pulse'}`} />
@@ -328,6 +407,20 @@ const Navbar = () => {
         </div>
 
         <div className="flex items-center gap-2 sm:gap-4">
+          {/* Desktop Install App Trigger */}
+          {canInstall && (
+            <button
+              type="button"
+              onClick={handleInstallPwa}
+              disabled={isInstallingPwa}
+              className="hidden md:flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-neon-cyan/40 hover:border-neon-cyan text-neon-cyan text-[10px] font-mono font-bold uppercase tracking-wider transition-all cursor-pointer shadow-[0_0_12px_rgba(0,229,255,0.15)] disabled:opacity-50"
+              title="Install TekDoctor App"
+            >
+              <Download size={13} />
+              <span>{isInstallingPwa ? 'Installing...' : 'Install App'}</span>
+            </button>
+          )}
+
           {/* Hide floating Repair button for Admin/Company/Tech as it's in their main nav */}
           <Link to={ROUTES.REPAIR} className="hidden sm:block">
             <button className="btn-neon cursor-pointer flex items-center gap-2 group relative py-2 px-4">
@@ -335,6 +428,20 @@ const Navbar = () => {
               <div className="w-1.5 h-1.5 rounded-full bg-neon-cyan animate-pulse group-hover:scale-125 transition-transform" />
             </button>
           </Link>
+
+          {/* Mobile Install App Button */}
+          {canInstall && (
+            <button
+              type="button"
+              onClick={handleInstallPwa}
+              disabled={isInstallingPwa}
+              className="md:hidden relative p-2 text-neon-cyan hover:text-white transition-colors cursor-pointer flex items-center justify-center min-h-[44px] min-w-[44px]"
+              aria-label="Install TekDoctor App"
+              title="Install App"
+            >
+              <Download size={19} />
+            </button>
+          )}
 
           {/* Mobile Notification Bell Icon (beside hamburger button) */}
           {isMounted && isAuthenticated && (
@@ -387,7 +494,7 @@ const Navbar = () => {
               <div className="flex flex-col p-6 space-y-6">
                 <Link to={ROUTES.ABOUT} onClick={toggleMenu} className={getMobileLinkClass(ROUTES.ABOUT)}>About</Link>
                 <Link to={ROUTES.SERVICES} onClick={toggleMenu} className={getMobileLinkClass(ROUTES.SERVICES)}>Services</Link>
-                {/* <Link to={ROUTES.SHOP} onClick={toggleMenu} className={getMobileLinkClass(ROUTES.SHOP)}>Shop</Link> */}
+                <Link to={ROUTES.AMC} onClick={toggleMenu} className={getMobileLinkClass(ROUTES.AMC)}>AMC Contracts</Link>
                 <Link to={ROUTES.CONTACT} onClick={toggleMenu} className={getMobileLinkClass(ROUTES.CONTACT)}>Contact</Link>
 
                 <div className="pt-6 border-t border-white/5 flex flex-col space-y-6">
@@ -411,6 +518,18 @@ const Navbar = () => {
                   ) : isMounted ? (
                     <Link to={ROUTES.SIGN_IN} onClick={toggleMenu} className="text-xs font-semibold text-neon-cyan uppercase tracking-[0.2em] transition-colors">Auth Terminal (Sign In)</Link>
                   ) : null}
+
+                  {canInstall && (
+                    <button
+                      type="button"
+                      onClick={() => { handleInstallPwa(); toggleMenu(); }}
+                      disabled={isInstallingPwa}
+                      className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-zinc-900 border border-neon-cyan/40 hover:border-neon-cyan text-neon-cyan text-xs font-mono font-bold uppercase tracking-[0.2em] rounded-xl transition-all cursor-pointer shadow-[0_0_15px_rgba(0,229,255,0.15)] disabled:opacity-50"
+                    >
+                      <Download size={15} />
+                      <span>{isInstallingPwa ? 'Installing...' : 'Install TekDoctor App'}</span>
+                    </button>
+                  )}
 
                   <Link to={ROUTES.REPAIR} onClick={toggleMenu} className="sm:hidden">
                     <button className="w-full btn-neon py-4 text-center font-bold uppercase text-[10px] tracking-[0.3em]">

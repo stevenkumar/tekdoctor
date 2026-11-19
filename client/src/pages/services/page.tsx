@@ -1,8 +1,10 @@
 'use client';
 
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ShieldCheck, Zap, Activity, Microscope } from 'lucide-react';
+import { ROUTES } from '@/config/routes';
 import ExpandableServices from './component/ExpandableService';
 import XRayScanner from './component/XRayScanner';
 
@@ -53,10 +55,10 @@ const ServicesPage = () => {
               </div>
 
               <div className="flex flex-wrap gap-6">
-                <a href="/protocol" className="group relative px-10 py-5 bg-neon-cyan text-black font-black uppercase tracking-widest text-xs rounded-full overflow-hidden transition-all" style={{ '--hover-shadow': '0 0 50px rgba(var(--neon-cyan-rgb), 0.4)' } as React.CSSProperties} onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 0 50px rgba(var(--neon-cyan-rgb), 0.4)')} onMouseLeave={e => (e.currentTarget.style.boxShadow = 'none')}>
+                <Link to={ROUTES.PROTOCOL} className="group relative px-10 py-5 bg-neon-cyan text-black font-black uppercase tracking-widest text-xs rounded-full overflow-hidden transition-all cursor-pointer" style={{ '--hover-shadow': '0 0 50px rgba(var(--neon-cyan-rgb), 0.4)' } as React.CSSProperties} onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 0 50px rgba(var(--neon-cyan-rgb), 0.4)')} onMouseLeave={e => (e.currentTarget.style.boxShadow = 'none')}>
                   <span className="relative z-10">Check Repair Protocol</span>
                   <div className="absolute inset-0 bg-white translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
-                </a>
+                </Link>
                 {/* <button className="px-10 py-5 border border-white/10 text-white font-bold uppercase tracking-widest text-xs rounded-full hover:bg-white/5 transition-all backdrop-blur-sm">
                   View Service Matrix
                 </button> */}

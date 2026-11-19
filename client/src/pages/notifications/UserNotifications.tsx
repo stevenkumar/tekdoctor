@@ -16,7 +16,8 @@ import {
   isPushNotificationSupported,
   getPushPermissionState,
   subscribeToLiveAlerts,
-  unsubscribeFromLiveAlerts
+  unsubscribeFromLiveAlerts,
+  checkIsPushSubscribed
 } from '@/utils/pushNotifications';
 
 export default function UserNotifications() {
@@ -30,21 +31,32 @@ export default function UserNotifications() {
   const [activeModalNotif, setActiveModalNotif] = useState<NotificationItem | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [pushState, setPushState] = useState<'granted' | 'denied' | 'default' | 'unsupported'>('default');
+  const [isPushSubscribed, setIsPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
 
   useEffect(() => {
-    setPushState(getPushPermissionState());
+    const perm = getPushPermissionState();
+    setPushState(perm);
+    if (perm === 'granted') {
+      setIsPushSubscribed(true);
+    }
+    checkIsPushSubscribed().then((sub) => {
+      if (sub) setIsPushSubscribed(true);
+    }).catch(() => {});
   }, []);
+
+  const isGrantedOrSubscribed = pushState === 'granted' || isPushSubscribed || (typeof Notification !== 'undefined' && Notification.permission === 'granted');
 
   const handleTogglePush = async () => {
     if (!token) return;
     setPushLoading(true);
     try {
-      if (pushState === 'granted') {
+      if (isGrantedOrSubscribed) {
         const res = await unsubscribeFromLiveAlerts(token);
         if (res.success) {
           toast.success('Live lockscreen alerts paused.');
           setPushState('default');
+          setIsPushSubscribed(false);
         } else {
           toast.error(res.error || 'Failed to update push settings.');
         }
@@ -53,6 +65,7 @@ export default function UserNotifications() {
         if (res.success) {
           toast.success('TekDoctor Live Lockscreen Alerts enabled!');
           setPushState('granted');
+          setIsPushSubscribed(true);
         } else if (res.permission === 'denied') {
           toast.error('Notification permission was blocked in your browser.');
           setPushState('denied');
@@ -287,27 +300,20 @@ export default function UserNotifications() {
         </header>
 
         {/* PWA Web Push / Lockscreen Live Alerts Banner */}
-        {pushState !== 'unsupported' && (
+        {pushState !== 'unsupported' && !isGrantedOrSubscribed && (
           <div className="p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-start sm:items-center gap-3">
-              <div className={`p-2.5 rounded-xl border ${pushState === 'granted' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-neon-cyan/10 border-neon-cyan/30 text-neon-cyan'}`}>
-                {pushState === 'granted' ? <ShieldCheck size={20} /> : <BellRing size={20} />}
+              <div className="p-2.5 rounded-xl border bg-neon-cyan/10 border-neon-cyan/30 text-neon-cyan">
+                <BellRing size={20} />
               </div>
               <div>
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm font-bold text-white font-outfit">
-                    {pushState === 'granted' ? 'TekDoctor Live Lockscreen Alerts Active' : 'Enable TekDoctor Live Lockscreen Alerts'}
+                    Enable TekDoctor Live Lockscreen Alerts
                   </h3>
-                  {pushState === 'granted' && (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                      Active
-                    </span>
-                  )}
                 </div>
                 <p className="text-xs text-zinc-400 mt-0.5">
-                  {pushState === 'granted'
-                    ? 'You will receive real-time push alerts on your phone screen when estimates, repairs, or invoices change.'
-                    : 'Get instant app-like alerts on your phone lockscreen as soon as your device status updates.'}
+                  Get instant app-like alerts on your phone lockscreen as soon as your device status updates.
                 </p>
               </div>
             </div>
@@ -317,16 +323,10 @@ export default function UserNotifications() {
                 type="button"
                 onClick={handleTogglePush}
                 disabled={pushLoading}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                  pushState === 'granted'
-                    ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700'
-                    : 'bg-neon-cyan hover:bg-neon-cyan/90 text-black shadow-lg shadow-neon-cyan/20'
-                } disabled:opacity-50`}
+                className="px-3.5 py-1.5 rounded-xl text-xs font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 bg-neon-cyan hover:bg-neon-cyan/90 text-black shadow-lg shadow-neon-cyan/20 disabled:opacity-50"
               >
                 {pushLoading ? (
                   <Loader2 size={13} className="animate-spin" />
-                ) : pushState === 'granted' ? (
-                  <span>Pause Alerts</span>
                 ) : (
                   <>
                     <Smartphone size={13} />
