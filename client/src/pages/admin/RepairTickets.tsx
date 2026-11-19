@@ -280,6 +280,7 @@ export default function RepairTickets() {
         try {
             const filters: RepairFilters = {
                 status: (activeFilter !== 'all' && activeFilter !== 'approval_budget' && activeFilter !== 'pending_approval') ? activeFilter : undefined,
+                customerApprovalStatus: (activeFilter === 'pending_approval' || activeFilter === 'approval_budget') ? 'pending_approval' : undefined,
                 paymentStatus: paymentFilter !== 'all' ? paymentFilter : undefined,
                 priority: priorityFilter !== 'all' ? priorityFilter : undefined,
                 technicianId: technicianFilter !== 'all' ? technicianFilter : undefined,

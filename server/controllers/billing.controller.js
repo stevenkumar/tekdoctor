@@ -6,7 +6,7 @@ const config = require('../config/app.config');
 const { formatResponse, generateInvoiceId, generateQuotationId } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const { logActivity } = require('../utils/activity.logger');
-const { canTechnicianAccessTicket, generateGuestInvoiceAccessToken, verifyInvoiceAuthorization } = require('../utils/auth.helpers');
+const { canTechnicianAccessTicket, generateGuestInvoiceAccessToken, verifyInvoiceAuthorization, verifyGuestPaymentToken } = require('../utils/auth.helpers');
 const { sendCustomerNotification } = require('../utils/email.utils');
 const pushService = require('../services/push.service');
 
@@ -1233,10 +1233,23 @@ const deleteInvoice = async (req, res, next) => {
 
   try {
     connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    const [existing] = await connection.query('SELECT id, status FROM invoices WHERE id = ? LIMIT 1', [id]);
+    const [existing] = await connection.query(
+      'SELECT id, status, ticket_id FROM invoices WHERE id = ? LIMIT 1 FOR UPDATE',
+      [id]
+    );
     if (existing.length === 0) {
+      await connection.rollback();
       return res.status(404).json(formatResponse(false, 'Invoice not found.'));
+    }
+
+    const inv = existing[0];
+    if (inv.status === 'Paid') {
+      await connection.rollback();
+      return res.status(400).json(
+        formatResponse(false, 'Paid invoices cannot be voided. Issue a credit note or refund instead.')
+      );
     }
 
     const { reason } = req.body || {};
@@ -1247,10 +1260,35 @@ const deleteInvoice = async (req, res, next) => {
       [req.user ? req.user.id : null, reason || 'Voided / deactivated by admin', id]
     );
 
+    // Cancel any pending unverified payments associated with this invoice
+    await connection.query(
+      `UPDATE payments 
+       SET status = 'cancelled', 
+           reference_note = CONCAT(COALESCE(reference_note, ''), ' | Invoice voided by admin') 
+       WHERE invoice_id = ? 
+         AND status IN ('created', 'processing', 'pending_verification')`,
+      [id]
+    );
+
+    // If linked to an active repair ticket, reset ticket payment status if it was pending verification or pending
+    if (inv.ticket_id) {
+      await connection.query(
+        `UPDATE service_requests 
+         SET payment_status = 'unpaid',
+             collection_status = 'not_applicable',
+             payment_id = NULL,
+             payment_order_id = NULL
+         WHERE id = ? AND payment_status IN ('pending', 'pending_verification')`,
+        [inv.ticket_id]
+      );
+    }
+
+    await connection.commit();
     logger.info(`Invoice voided/deactivated: ${id}`);
     return res.status(200).json(formatResponse(true, 'Invoice voided and deactivated successfully.'));
 
   } catch (error) {
+    if (connection) await connection.rollback().catch(() => {});
     next(error);
   } finally {
     if (connection) connection.release();
@@ -1309,7 +1347,28 @@ const checkTicketPaymentEligibility = (ticket, user = null, options = {}) => {
   const isRegisteredTicket = Boolean(ticketUserId || ticketCompanyId);
 
   if (isRegisteredTicket && !options.allowSettlement) {
-    if (!user) {
+    let isGuestTokenAuthorized = false;
+
+    // Validate signed guest payment token if user is unauthenticated
+    if (!user && options.guestPaymentToken && !ticketCompanyId) {
+      const tokenVerification = verifyGuestPaymentToken(options.guestPaymentToken);
+      if (
+        tokenVerification.valid &&
+        tokenVerification.decoded &&
+        tokenVerification.decoded.purpose === 'guest_payment' &&
+        Number(tokenVerification.decoded.ticketId) === Number(ticket.id)
+      ) {
+        isGuestTokenAuthorized = true;
+      } else {
+        return {
+          eligible: false,
+          statusCode: 401,
+          reason: 'Invalid, expired, or mismatched guest payment token. Please refresh your tracking view.'
+        };
+      }
+    }
+
+    if (!user && !isGuestTokenAuthorized) {
       if (ticketCompanyId) {
         return {
           eligible: false,
@@ -1324,50 +1383,52 @@ const checkTicketPaymentEligibility = (ticket, user = null, options = {}) => {
       };
     }
 
-    const authUserId = Number(user.id);
-    const role = user.role;
+    if (user) {
+      const authUserId = Number(user.id);
+      const role = user.role;
 
-    if (role === 'admin') {
-      // Admins have full access to payment operations
-    } else if (role === 'technician') {
-      const assignedTechId = ticket.assigned_technician_id ? Number(ticket.assigned_technician_id) : null;
-      const pendingTechId = ticket.pending_technician_id ? Number(ticket.pending_technician_id) : null;
-      if (assignedTechId !== authUserId && pendingTechId !== authUserId) {
+      if (role === 'admin') {
+        // Admins have full access to payment operations
+      } else if (role === 'technician') {
+        const assignedTechId = ticket.assigned_technician_id ? Number(ticket.assigned_technician_id) : null;
+        const pendingTechId = ticket.pending_technician_id ? Number(ticket.pending_technician_id) : null;
+        if (assignedTechId !== authUserId && pendingTechId !== authUserId) {
+          return {
+            eligible: false,
+            statusCode: 403,
+            reason: 'Forbidden: Technicians can only access payment for their assigned repair tickets.'
+          };
+        }
+      } else if (role === 'customer') {
+        if (ticketUserId && ticketUserId !== authUserId) {
+          return {
+            eligible: false,
+            statusCode: 403,
+            reason: 'Forbidden: You can only pay for your own repair tickets.'
+          };
+        }
+        if (ticketCompanyId && !ticketUserId) {
+          return {
+            eligible: false,
+            statusCode: 403,
+            reason: 'Forbidden: You cannot pay for a corporate repair ticket with a personal customer account.'
+          };
+        }
+      } else if (role === 'company') {
+        if (ticketCompanyId && ticketCompanyId !== authUserId && ticketUserId !== authUserId) {
+          return {
+            eligible: false,
+            statusCode: 403,
+            reason: 'Forbidden: You can only pay for your corporate repair tickets.'
+          };
+        }
+      } else {
         return {
           eligible: false,
           statusCode: 403,
-          reason: 'Forbidden: Technicians can only access payment for their assigned repair tickets.'
+          reason: 'Forbidden: Insufficient permissions.'
         };
       }
-    } else if (role === 'customer') {
-      if (ticketUserId && ticketUserId !== authUserId) {
-        return {
-          eligible: false,
-          statusCode: 403,
-          reason: 'Forbidden: You can only pay for your own repair tickets.'
-        };
-      }
-      if (ticketCompanyId && !ticketUserId) {
-        return {
-          eligible: false,
-          statusCode: 403,
-          reason: 'Forbidden: You cannot pay for a corporate repair ticket with a personal customer account.'
-        };
-      }
-    } else if (role === 'company') {
-      if (ticketCompanyId && ticketCompanyId !== authUserId && ticketUserId !== authUserId) {
-        return {
-          eligible: false,
-          statusCode: 403,
-          reason: 'Forbidden: You can only pay for your corporate repair tickets.'
-        };
-      }
-    } else {
-      return {
-        eligible: false,
-        statusCode: 403,
-        reason: 'Forbidden: Insufficient permissions.'
-      };
     }
   }
 
@@ -1463,6 +1524,7 @@ const checkTicketPaymentEligibility = (ticket, user = null, options = {}) => {
  */
 const getPaymentEligibility = async (req, res, next) => {
   const ticketId = req.params.ticketId || req.query.ticketId || req.query.ticketNumber;
+  const guestPaymentToken = req.headers['x-guest-payment-token'] || req.query.guestPaymentToken || req.body?.guestPaymentToken;
   if (!ticketId) {
     return res.status(400).json(formatResponse(false, 'Ticket ID or ticket number is required.'));
   }
@@ -1489,7 +1551,7 @@ const getPaymentEligibility = async (req, res, next) => {
     );
     const linkedInvoice = invRows.length > 0 ? invRows[0] : null;
 
-    const eligibility = checkTicketPaymentEligibility(ticket, req.user, { invoice: linkedInvoice });
+    const eligibility = checkTicketPaymentEligibility(ticket, req.user, { invoice: linkedInvoice, guestPaymentToken });
     if (!eligibility.eligible && (eligibility.statusCode === 401 || eligibility.statusCode === 403)) {
       return res.status(eligibility.statusCode).json(formatResponse(false, eligibility.reason, {
         eligible: false,
@@ -1532,6 +1594,7 @@ const createPaymentOrder = async (req, res, next) => {
   const ticketId = reqBody.ticketId || reqBody.ticket_id;
   const invoiceId = reqBody.invoiceId || reqBody.invoice_id;
   const ticketNumber = reqBody.ticketNumber || reqBody.ticket_number;
+  const guestPaymentToken = req.headers['x-guest-payment-token'] || reqBody.guestPaymentToken || req.query.guestPaymentToken;
   let connection;
 
   try {
@@ -1576,7 +1639,7 @@ const createPaymentOrder = async (req, res, next) => {
       const linkedInvoice = invRows.length > 0 ? invRows[0] : null;
       if (linkedInvoice) targetInvoice = linkedInvoice;
 
-      const eligibility = checkTicketPaymentEligibility(targetTicket, req.user, { invoice: linkedInvoice });
+      const eligibility = checkTicketPaymentEligibility(targetTicket, req.user, { invoice: linkedInvoice, guestPaymentToken });
       if (!eligibility.eligible) {
         const statusCode = eligibility.statusCode || 400;
         return res.status(statusCode).json(formatResponse(false, eligibility.reason));
@@ -1655,7 +1718,7 @@ const createPaymentOrder = async (req, res, next) => {
             return res.status(400).json(formatResponse(false, 'Cash has already been collected for this repair. Online checkout is not available.'));
           }
           if (lTicket.company_id) targetCompanyId = lTicket.company_id;
-          const lEligibility = checkTicketPaymentEligibility(lTicket, req.user, { invoice: targetInvoice });
+          const lEligibility = checkTicketPaymentEligibility(lTicket, req.user, { invoice: targetInvoice, guestPaymentToken });
           if (!lEligibility.eligible) {
             const lStatusCode = lEligibility.statusCode || 400;
             return res.status(lStatusCode).json(formatResponse(false, `Associated repair ticket payment blocked: ${lEligibility.reason}`));
@@ -1756,6 +1819,7 @@ const processAuthoritativePaymentSettlement = async ({
   currency = 'INR',
   gatewayResponse = null,
   user = null,
+  guestPaymentToken = null,
   ip = '127.0.0.1'
 }) => {
   let connection;
@@ -1876,7 +1940,7 @@ const processAuthoritativePaymentSettlement = async ({
         }
 
         // Strict post-completion verification guard against uncompleted, rejected, cancelled, on_hold, or unapproved ticket payments
-        const eligibility = checkTicketPaymentEligibility(ticket, user, { allowSettlement: true });
+        const eligibility = checkTicketPaymentEligibility(ticket, user, { allowSettlement: true, guestPaymentToken });
         if (!eligibility.eligible) {
           await connection.rollback();
           logger.warn(`Security block: Rejected payment verification for ticket ${ticket.ticket_number || ticket.id} (status: ${ticket.status}, approval: ${ticket.customer_approval_status}): ${eligibility.reason}`);
@@ -1949,7 +2013,7 @@ const processAuthoritativePaymentSettlement = async ({
         if (invRows[0].ticket_id) {
           const [lTks] = await connection.query('SELECT * FROM service_requests WHERE id = ? LIMIT 1', [invRows[0].ticket_id]);
           if (lTks.length > 0 && lTks[0].payment_status !== 'paid') {
-            const lEligibility = checkTicketPaymentEligibility(lTks[0], user, { allowSettlement: true });
+            const lEligibility = checkTicketPaymentEligibility(lTks[0], user, { allowSettlement: true, guestPaymentToken });
             if (!lEligibility.eligible) {
               await connection.rollback();
               return { success: false, statusCode: 400, message: `Payment settlement blocked: ${lEligibility.reason}` };
@@ -2001,16 +2065,21 @@ const processAuthoritativePaymentSettlement = async ({
            WHERE id = ?`,
           [paymentId, orderId, paymentMethod, resolvedInvoiceId]
         );
-      } else if (finalUserId) {
-        // Auto-generate official paid invoice
+      } else {
+        // Auto-generate official paid invoice (supports both registered users and guest customers)
         resolvedInvoiceId = await generateInvoiceId(connection);
-        const [uRows] = await connection.query('SELECT name FROM users WHERE id = ? LIMIT 1', [finalUserId]);
-        const clientName = uRows.length > 0 ? uRows[0].name : 'Customer';
+        let clientName = 'Guest Customer';
+        if (finalUserId) {
+          const [uRows] = await connection.query('SELECT name FROM users WHERE id = ? LIMIT 1', [finalUserId]);
+          if (uRows.length > 0 && uRows[0].name) clientName = uRows[0].name;
+        } else if (typeof tkRows !== 'undefined' && tkRows && tkRows.length > 0 && tkRows[0].customer_name) {
+          clientName = tkRows[0].customer_name;
+        }
 
         await connection.query(
           `INSERT INTO invoices (id, user_id, client_name, amount, currency, invoice_date, due_date, status, notes, payment_id, payment_order_id, payment_method, ticket_id, paid_at)
            VALUES (?, ?, ?, ?, 'INR', NOW(), NOW(), 'Paid', ?, ?, ?, ?, ?, NOW())`,
-          [resolvedInvoiceId, finalUserId, clientName, finalAmount, itemDescription, paymentId, orderId, paymentMethod, resolvedTicketId]
+          [resolvedInvoiceId, finalUserId || null, clientName, finalAmount, itemDescription, paymentId, orderId, paymentMethod, resolvedTicketId]
         );
 
         await connection.query(
@@ -2311,6 +2380,7 @@ const verifyPayment = async (req, res, next) => {
   const invoiceId = reqBody.invoiceId || reqBody.invoice_id;
   const ticketNumber = reqBody.ticketNumber || reqBody.ticket_number;
   const paymentMethod = reqBody.paymentMethod || reqBody.payment_method || 'card';
+  const guestPaymentToken = req.headers['x-guest-payment-token'] || reqBody.guestPaymentToken || req.query.guestPaymentToken;
 
   if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
     return res.status(400).json(formatResponse(false, 'Payment verification failed: Missing order, payment reference, or signature.'));
@@ -2353,6 +2423,7 @@ const verifyPayment = async (req, res, next) => {
       invoiceId,
       ticketNumber,
       user: req.user,
+      guestPaymentToken,
       ip: req.ip
     });
     return res.status(result.statusCode).json(formatResponse(result.success, result.message, result.data));

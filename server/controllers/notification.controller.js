@@ -310,10 +310,33 @@ const dispatchNotification = async (connOrPool, { userId, title, message, ticket
       [userId, title, message, ticketId, senderId]
     );
 
+    let resolvedUrl = url;
+    if (!resolvedUrl) {
+      let userRole = 'customer';
+      try {
+        const [uRows] = await conn.query('SELECT role FROM users WHERE id = ? LIMIT 1', [userId]);
+        if (uRows && uRows.length > 0 && uRows[0].role) {
+          userRole = uRows[0].role;
+        }
+      } catch (_) {}
+
+      if (ticketId) {
+        if (userRole === 'admin') resolvedUrl = `/admin/repair-tickets?search=${encodeURIComponent(ticketId)}`;
+        else if (userRole === 'technician') resolvedUrl = '/technician/assigned-tickets';
+        else if (userRole === 'company') resolvedUrl = `/company/repairs?ticket=${encodeURIComponent(ticketId)}`;
+        else resolvedUrl = `/repair/status?ticket=${encodeURIComponent(ticketId)}`;
+      } else {
+        if (userRole === 'admin') resolvedUrl = '/admin/notifications';
+        else if (userRole === 'technician') resolvedUrl = '/technician/notifications';
+        else if (userRole === 'company') resolvedUrl = '/company/repairs';
+        else resolvedUrl = '/notifications';
+      }
+    }
+
     pushService.sendPushToUser(userId, {
       title,
       body: message,
-      url: url || (ticketId ? `/repair/status?ticket=${ticketId}` : '/notifications'),
+      url: resolvedUrl,
       tag: tag || (ticketId ? `tkt-${ticketId}` : 'tekdoctor-alert')
     }).catch(err => logger.debug(`[Push] Dispatch error: ${err.message}`));
 

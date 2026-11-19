@@ -50,7 +50,7 @@ const {
 const { verifyUploadSignatures, stripProtectedFields } = require('../middleware/security.middleware');
 const { authenticate, optionalAuth, authorize } = require('../middleware/auth.middleware');
 const { verifyRecaptcha } = require('../middleware/recaptcha.middleware');
-const { apiLimiter } = require('../middleware/rateLimiter.middleware');
+const { apiLimiter, bookingLimiter, trackingLimiter } = require('../middleware/rateLimiter.middleware');
 
 // File upload configuration for service requests
 const repairUpload = upload.fields([
@@ -63,6 +63,7 @@ const workLogUpload = upload.single('workLogMedia');
 // Route: POST /api/repair-request (Optional Auth, guest submission allowed)
 router.post(
   '/',
+  bookingLimiter,
   optionalAuth,
   repairUpload,
   verifyUploadSignatures,
@@ -108,6 +109,7 @@ router.get(
 // Route: GET /api/repair-request/track/:id (Public Tracking with optional auth)
 router.get(
   '/track/:id',
+  trackingLimiter,
   optionalAuth,
   trackRequest
 );

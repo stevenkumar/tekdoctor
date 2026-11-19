@@ -7,10 +7,11 @@ const { pool } = require('../config/db.config');
 const { formatResponse, generateTicketNumber, generateInvoiceId, generateCustomerId } = require('../utils/helpers');
 const { resolveDeviceAmcEligibility } = require('../services/amc.service');
 const pushService = require('../services/push.service');
+const { dispatchNotification } = require('./notification.controller');
 const logger = require('../utils/logger');
 const { sendAdminNotification, sendCustomerNotification } = require('../utils/email.utils');
 const { logActivity } = require('../utils/activity.logger');
-const { generateToken, generateEstimateActionToken, verifyEstimateAuthorization, canTechnicianAccessTicket } = require('../utils/auth.helpers');
+const { generateToken, generateEstimateActionToken, verifyEstimateAuthorization, canTechnicianAccessTicket, generateGuestPaymentToken } = require('../utils/auth.helpers');
 
 const getFrontendBaseUrl = (req) => {
   const allowedOrigins = new Set();
@@ -45,7 +46,7 @@ const getFrontendBaseUrl = (req) => {
     } catch (_) {}
   }
 
-  return config.frontend?.url || config.server?.publicOrigin || Array.from(allowedOrigins)[0] || '';
+  return (config.frontend?.url || config.server?.publicOrigin || Array.from(allowedOrigins)[0] || '').replace(/\/+$/, '');
 };
 
 /**
@@ -760,6 +761,13 @@ const getRepairRequests = async (req, res, next) => {
     if (statusFilter && statusFilter !== 'all') {
       whereConditions.push('sr.status = ?');
       queryParams.push(statusFilter);
+    }
+
+    const approvalStatusFilter = req.query.customerApprovalStatus || req.query.approvalStatus;
+    const allowedApprovalStatuses = ['none', 'pending_approval', 'approved', 'rejected', 'on_hold', 'reapproval_requested'];
+    if (approvalStatusFilter && approvalStatusFilter !== 'all' && allowedApprovalStatuses.includes(approvalStatusFilter)) {
+      whereConditions.push('sr.customer_approval_status = ?');
+      queryParams.push(approvalStatusFilter);
     }
 
     if (priorityFilter && priorityFilter !== 'all') {
@@ -1571,6 +1579,14 @@ const updateRequestStatus = async (req, res, next) => {
         );
       }
 
+      // Technicians cannot cancel tickets (must contact Admin or use cancellation policy)
+      if (status === 'cancelled') {
+        await connection.rollback();
+        return res.status(403).json(
+          formatResponse(false, 'Unauthorized: Technicians cannot cancel repair tickets. Please contact an Administrator.')
+        );
+      }
+
       // Technicians cannot revert in_progress -> pending
       if (request.status === 'in_progress' && status === 'pending') {
         await connection.rollback();
@@ -1579,8 +1595,29 @@ const updateRequestStatus = async (req, res, next) => {
         );
       }
 
-      // Restrict technician from marking in_progress or completed before customer approves estimate
-      if ((status === 'in_progress' || status === 'completed') && request.customer_approval_status !== 'approved') {
+      // Check if ticket is explicitly covered by an active AMC contract
+      let isAmcTicket = Boolean(
+        (request.ticket_number && request.ticket_number.includes('AMC'))
+      );
+      if (!isAmcTicket && request.device_id) {
+        const [devRows] = await connection.query(
+          'SELECT is_amc, amc_tag FROM company_devices WHERE id = ? LIMIT 1',
+          [request.device_id]
+        );
+        if (devRows.length > 0 && (devRows[0].is_amc || devRows[0].amc_tag)) {
+          isAmcTicket = true;
+        }
+      }
+      if (!isAmcTicket && request.device_id) {
+        const [covRows] = await connection.query(
+          "SELECT id FROM amc_covered_devices WHERE device_id = ? AND status = 'active' LIMIT 1",
+          [request.device_id]
+        );
+        if (covRows.length > 0) isAmcTicket = true;
+      }
+
+      // Restrict technician from marking in_progress or completed before customer approves estimate (exempt for AMC-covered tickets)
+      if ((status === 'in_progress' || status === 'completed') && request.customer_approval_status !== 'approved' && !isAmcTicket) {
         await connection.rollback();
         return res.status(400).json(
           formatResponse(false, 'Cannot start or complete repair before the customer has approved the estimated repair cost.')
@@ -1594,6 +1631,12 @@ const updateRequestStatus = async (req, res, next) => {
 
     let updateQuery = 'UPDATE service_requests SET status = ?';
     const params = [status];
+
+    // If an Admin updates or overrides a ticket to 'in_progress', clear stale hold and sync approval
+    if (req.user?.role === 'admin' && status === 'in_progress') {
+      updateQuery += `, hold_start_date = NULL, hold_end_date = NULL, hold_reason = NULL, hold_notes = NULL,
+                      customer_approval_status = CASE WHEN customer_approval_status IN ('on_hold', 'rejected') THEN 'approved' ELSE customer_approval_status END`;
+    }
 
     // If technician assignment is passed
     if (assignedTechnicianId !== undefined) {
@@ -2449,9 +2492,16 @@ const trackRequest = async (req, res, next) => {
     const isInvoiceFinal = Boolean(linkedInvoice && (linkedInvoice.status === 'Final' || linkedInvoice.status === 'Paid'));
     const isInvoiceDraft = Boolean(linkedInvoice && linkedInvoice.status === 'Draft');
 
+    // Generate short-lived scoped guest payment token for unauthenticated customers
+    let guestPaymentToken = null;
+    if (!isAuthorizedStaff && !isOwner && !row.company_id && isVerified) {
+      guestPaymentToken = generateGuestPaymentToken(row.id, row.ticket_number);
+    }
+
     const trackingData = {
       id: row.id,
       ticketNumber: row.ticket_number,
+      guestPaymentToken,
       invoiceId: linkedInvoice ? linkedInvoice.id : null,
       invoiceStatus: linkedInvoice ? linkedInvoice.status : null,
       isInvoiceFinal,
@@ -2648,6 +2698,18 @@ const setRepairCharges = async (req, res, next) => {
     // Immutability rule: Never modify charges if already paid
     if (request.payment_status === 'paid') {
       return res.status(400).json(formatResponse(false, 'Cannot modify repair charges for an already settled/paid ticket.'));
+    }
+
+    // Check if an active Final or Paid commercial invoice exists for this ticket
+    const [activeInvs] = await connection.query(
+      "SELECT id, status, amount FROM invoices WHERE ticket_id = ? AND status IN ('Final', 'Paid') AND is_active = TRUE LIMIT 1",
+      [id]
+    );
+    if (activeInvs.length > 0) {
+      return res.status(400).json(formatResponse(
+        false,
+        `Cannot modify repair charges directly: Commercial invoice ${activeInvs[0].id} (₹${activeInvs[0].amount}) is in '${activeInvs[0].status}' status. Please revise the commercial invoice line items in the Billing portal instead.`
+      ));
     }
 
     const oldCost = request.repair_cost ? parseFloat(request.repair_cost) : (request.estimated_cost ? parseFloat(request.estimated_cost) : 0);
@@ -3282,6 +3344,26 @@ const cancelRepairRequest = async (req, res, next) => {
       logger.error('Failed to create in-app cancellation notification for admins: ' + notifErr.message);
     }
 
+    // Notify pre-assigned technician if assigned prior to cancellation
+    if (request.assigned_technician_id) {
+      try {
+        const ticketDisplay = request.ticket_number || `#${id}`;
+        const deviceDisplay = `${request.brand || ''} ${request.model_number || ''}`.trim() || 'Assigned Device';
+        await dispatchNotification(connection, {
+          userId: request.assigned_technician_id,
+          title: 'Repair Ticket Cancelled',
+          message: `Ticket ${ticketDisplay} (${deviceDisplay}) was cancelled by the customer.${reason ? ` Reason: ${reason}` : ''}`,
+          ticketId: id,
+          senderId: req.user.id,
+          url: '/technician/assigned-tickets',
+          tag: `ticket-cancel-${id}`
+        });
+        logger.info(`Assigned technician ${request.assigned_technician_id} notified of ticket ${id} cancellation.`);
+      } catch (techNotifErr) {
+        logger.error(`Failed to dispatch cancellation notification to assigned technician: ${techNotifErr.message}`);
+      }
+    }
+
     return res.status(200).json(formatResponse(true, 'Repair request cancelled successfully.', { id, status: 'cancelled' }));
   } catch (error) {
     next(error);
@@ -3437,12 +3519,30 @@ const acceptAssignment = async (req, res, next) => {
   try {
     const { id } = req.params;
     connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    const [rows] = await connection.query('SELECT pending_technician_id, assigned_technician_id, ticket_number, customer_name FROM service_requests WHERE id = ?', [id]);
-    if (rows.length === 0) return res.status(404).json(formatResponse(false, 'Request not found.'));
+    const [rows] = await connection.query(
+      'SELECT id, pending_technician_id, assigned_technician_id, ticket_number, customer_name, status FROM service_requests WHERE id = ? FOR UPDATE',
+      [id]
+    );
+    if (rows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json(formatResponse(false, 'Request not found.'));
+    }
 
     if (rows[0].pending_technician_id !== req.user.id) {
+      await connection.rollback();
       return res.status(403).json(formatResponse(false, 'You do not have permission to accept this assignment.'));
+    }
+
+    // Verify accepting technician is active
+    const [techRows] = await connection.query(
+      'SELECT id, is_active FROM users WHERE id = ? AND role = "technician" LIMIT 1',
+      [req.user.id]
+    );
+    if (techRows.length === 0 || !techRows[0].is_active) {
+      await connection.rollback();
+      return res.status(403).json(formatResponse(false, 'Technician account is inactive or not authorized.'));
     }
 
     // Update pending transfer history record
@@ -3456,19 +3556,21 @@ const acceptAssignment = async (req, res, next) => {
       [id]
     );
 
+    await connection.commit();
+
     await logActivity(req.user.id, 'repair', 'accept_assignment', 'service_requests', id, {}, req.ip);
 
-    // Notify Admin
+    // Notify Admin & former assigned technician
     try {
-      const [admins] = await connection.query("SELECT id FROM users WHERE role = 'admin'");
+      const [admins] = await pool.query("SELECT id FROM users WHERE role = 'admin' AND is_active = 1");
       for (const admin of admins) {
-        await connection.query(
+        await pool.query(
           'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
           [admin.id, 'Ticket Assignment Accepted', `Technician accepted assignment for Ticket ${rows[0].ticket_number || id}.`, id, req.user.id]
         );
       }
       if (rows[0].assigned_technician_id && rows[0].assigned_technician_id !== req.user.id) {
-        await connection.query(
+        await pool.query(
           'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
           [rows[0].assigned_technician_id, 'Transfer Accepted', `Your transfer request for Ticket ${rows[0].ticket_number || id} was accepted by the receiving technician.`, id, req.user.id]
         );
@@ -3477,6 +3579,9 @@ const acceptAssignment = async (req, res, next) => {
 
     return res.status(200).json(formatResponse(true, 'Assignment Accepted'));
   } catch (error) {
+    if (connection) {
+      try { await connection.rollback(); } catch (_) { }
+    }
     next(error);
   } finally {
     if (connection) connection.release();
@@ -3489,11 +3594,19 @@ const rejectAssignment = async (req, res, next) => {
     const { id } = req.params;
     const { reason } = req.body || {};
     connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    const [rows] = await connection.query('SELECT pending_technician_id, assigned_technician_id, ticket_number FROM service_requests WHERE id = ?', [id]);
-    if (rows.length === 0) return res.status(404).json(formatResponse(false, 'Request not found.'));
+    const [rows] = await connection.query(
+      'SELECT id, pending_technician_id, assigned_technician_id, ticket_number FROM service_requests WHERE id = ? FOR UPDATE',
+      [id]
+    );
+    if (rows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json(formatResponse(false, 'Request not found.'));
+    }
 
     if (rows[0].pending_technician_id !== req.user.id) {
+      await connection.rollback();
       return res.status(403).json(formatResponse(false, 'You do not have permission to reject this assignment.'));
     }
 
@@ -3508,19 +3621,21 @@ const rejectAssignment = async (req, res, next) => {
       [id]
     );
 
+    await connection.commit();
+
     await logActivity(req.user.id, 'repair', 'reject_assignment', 'service_requests', id, { reason }, req.ip);
 
     // Notify the original tech if they transferred it, and notify admins
     try {
-      const [admins] = await connection.query("SELECT id FROM users WHERE role = 'admin'");
+      const [admins] = await pool.query("SELECT id FROM users WHERE role = 'admin' AND is_active = 1");
       for (const admin of admins) {
-        await connection.query(
+        await pool.query(
           'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
           [admin.id, 'Ticket Assignment Rejected', `Technician rejected assignment for Ticket ${rows[0].ticket_number || id}.${reason ? ` Reason: ${reason}` : ''}`, id, req.user.id]
         );
       }
       if (rows[0].assigned_technician_id) {
-        await connection.query(
+        await pool.query(
           'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
           [rows[0].assigned_technician_id, 'Transfer Rejected', `Your transfer request for Ticket ${rows[0].ticket_number || id} was rejected.${reason ? ` Reason: ${reason}` : ''}`, id, req.user.id]
         );
@@ -3529,6 +3644,9 @@ const rejectAssignment = async (req, res, next) => {
 
     return res.status(200).json(formatResponse(true, 'Assignment Rejected'));
   } catch (error) {
+    if (connection) {
+      try { await connection.rollback(); } catch (_) { }
+    }
     next(error);
   } finally {
     if (connection) connection.release();
@@ -3539,22 +3657,53 @@ const transferTicket = async (req, res, next) => {
   let connection;
   try {
     const { id } = req.params;
-    const { targetTechnicianId, reason } = req.body;
-    connection = await pool.getConnection();
+    const { targetTechnicianId, reason } = req.body || {};
 
-    const [rows] = await connection.query('SELECT assigned_technician_id, ticket_number, status FROM service_requests WHERE id = ?', [id]);
-    if (rows.length === 0) return res.status(404).json(formatResponse(false, 'Request not found.'));
+    const targetIdNum = parseInt(targetTechnicianId, 10);
+    if (!targetIdNum || isNaN(targetIdNum) || targetIdNum <= 0) {
+      return res.status(400).json(formatResponse(false, 'Valid target technician ID is required.'));
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const [rows] = await connection.query(
+      'SELECT id, assigned_technician_id, pending_technician_id, ticket_number, status FROM service_requests WHERE id = ? FOR UPDATE',
+      [id]
+    );
+    if (rows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json(formatResponse(false, 'Request not found.'));
+    }
 
     if (['completed', 'delivered', 'cancelled'].includes(rows[0].status)) {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'Cannot transfer a completed, delivered, or cancelled ticket.'));
     }
 
     if (req.user.role === 'technician' && rows[0].assigned_technician_id !== req.user.id) {
+      await connection.rollback();
       return res.status(403).json(formatResponse(false, 'You can only transfer your own tasks.'));
     }
 
-    if (Number(targetTechnicianId) === Number(rows[0].assigned_technician_id)) {
+    if (targetIdNum === Number(rows[0].assigned_technician_id)) {
+      await connection.rollback();
       return res.status(400).json(formatResponse(false, 'Cannot transfer ticket to the currently assigned technician.'));
+    }
+
+    if (targetIdNum === Number(req.user.id)) {
+      await connection.rollback();
+      return res.status(400).json(formatResponse(false, 'Cannot transfer ticket to yourself.'));
+    }
+
+    // Validate target technician in DB
+    const [targetTech] = await connection.query(
+      'SELECT id, name, is_active FROM users WHERE id = ? AND role = "technician" AND is_active = 1 LIMIT 1',
+      [targetIdNum]
+    );
+    if (targetTech.length === 0) {
+      await connection.rollback();
+      return res.status(400).json(formatResponse(false, 'Target technician not found or is currently inactive.'));
     }
 
     // Cancel any previous pending transfer record for this ticket
@@ -3568,25 +3717,30 @@ const transferTicket = async (req, res, next) => {
       `INSERT INTO task_transfers 
        (repair_request_id, from_technician_id, to_technician_id, initiated_by_user_id, reason, status, transferred_at) 
        VALUES (?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)`,
-      [id, rows[0].assigned_technician_id || null, targetTechnicianId, req.user.id, reason || null]
+      [id, rows[0].assigned_technician_id || null, targetIdNum, req.user.id, reason || null]
     );
 
     await connection.query(
       'UPDATE service_requests SET pending_technician_id = ? WHERE id = ?',
-      [targetTechnicianId, id]
+      [targetIdNum, id]
     );
 
-    await logActivity(req.user.id, 'repair', 'transfer_ticket', 'service_requests', id, { targetTechnicianId, reason }, req.ip);
+    await connection.commit();
+
+    await logActivity(req.user.id, 'repair', 'transfer_ticket', 'service_requests', id, { targetTechnicianId: targetIdNum, reason }, req.ip);
 
     try {
-      await connection.query(
+      await pool.query(
         'INSERT INTO notifications (user_id, title, message, ticket_id, sender_id) VALUES (?, ?, ?, ?, ?)',
-        [targetTechnicianId, 'Ticket Transfer Request', `Ticket ${rows[0].ticket_number || id} has been requested for transfer to you. Reason: ${reason || 'None'}`, id, req.user.id]
+        [targetIdNum, 'Ticket Transfer Request', `Ticket ${rows[0].ticket_number || id} has been requested for transfer to you. Reason: ${reason || 'None'}`, id, req.user.id]
       );
     } catch (e) { }
 
     return res.status(200).json(formatResponse(true, 'Transfer Initiated'));
   } catch (error) {
+    if (connection) {
+      try { await connection.rollback(); } catch (_) { }
+    }
     next(error);
   } finally {
     if (connection) connection.release();
@@ -4034,7 +4188,7 @@ const submitDiagnosis = async (req, res, next) => {
     if (request.email) {
       try {
         const config = require('../config/app.config');
-        const frontendBaseUrl = config.frontend?.url || config.server?.publicOrigin || '';
+        const frontendBaseUrl = (config.frontend?.url || config.server?.publicOrigin || '').replace(/\/+$/, '');
 
         const approvalToken = generateEstimateActionToken({
           ticketId: id,

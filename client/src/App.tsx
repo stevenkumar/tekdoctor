@@ -142,7 +142,7 @@ function App() {
                     <Route path={ROUTES.TECHNICIAN_IN_PROGRESS} element={<TechnicianDashboard />} />
                     <Route path={ROUTES.TECHNICIAN_COMPLETED} element={<TechnicianDashboard />} />
                     <Route path={ROUTES.TECHNICIAN_DELIVERED} element={<TechnicianDashboard />} />
-                    <Route path={ROUTES.TECHNICIAN_NOTIFICATIONS} element={<TechnicianDashboard />} />
+                    <Route path={ROUTES.TECHNICIAN_NOTIFICATIONS} element={<UserNotifications />} />
                     <Route path={ROUTES.TECHNICIAN_PROFILE} element={<AdminProfile />} />
                     <Route path="/technician/my-tasks" element={<Navigate to={ROUTES.TECHNICIAN_ASSIGNED_TICKETS} replace />} />
                     <Route path="/technician/tasks" element={<Navigate to={ROUTES.TECHNICIAN_ASSIGNED_TICKETS} replace />} />

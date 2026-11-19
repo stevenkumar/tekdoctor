@@ -678,8 +678,16 @@ export default function TechnicianDashboard() {
             return;
         }
         if ((newStatus === 'in_progress' || newStatus === 'completed') && selectedTask) {
+            const isAmcTicket = Boolean(
+                selectedTask.isAmc ||
+                (selectedTask as any).is_amc ||
+                selectedTask.amcTag ||
+                (selectedTask as any).amc_tag ||
+                (selectedTask.ticketNumber && selectedTask.ticketNumber.includes('AMC')) ||
+                ((selectedTask as any).ticket_number && (selectedTask as any).ticket_number.includes('AMC'))
+            );
             const approval = selectedTask.customerApprovalStatus?.toLowerCase();
-            if (approval !== 'approved') {
+            if (approval !== 'approved' && !isAmcTicket) {
                 if (approval === 'pending_approval') {
                     toast.error("Cannot start or complete repair: Approximate budget is awaiting customer approval.");
                 } else if (approval === 'rejected' || approval === 'on_hold') {

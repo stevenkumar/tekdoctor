@@ -626,6 +626,7 @@ export interface ServiceRequestStatusUpdateResponse {
 
 export interface RepairFilters {
   status?: string;
+  customerApprovalStatus?: string;
   paymentStatus?: string;
   priority?: string;
   technicianId?: string | number;
@@ -674,6 +675,7 @@ export const repairApi = {
     if (filterObj) {
       if (filterObj.search) params.append('search', filterObj.search.trim());
       if (filterObj.status && filterObj.status !== 'all') params.append('status', filterObj.status);
+      if (filterObj.customerApprovalStatus && filterObj.customerApprovalStatus !== 'all') params.append('customerApprovalStatus', filterObj.customerApprovalStatus);
       if (filterObj.paymentStatus && filterObj.paymentStatus !== 'all') params.append('paymentStatus', filterObj.paymentStatus);
       if (filterObj.priority && filterObj.priority !== 'all') params.append('priority', filterObj.priority);
       if (filterObj.technicianId && filterObj.technicianId !== 'all') params.append('technicianId', filterObj.technicianId.toString());
