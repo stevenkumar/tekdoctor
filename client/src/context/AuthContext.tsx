@@ -21,6 +21,7 @@ export interface AuthUser {
   company_id?: string | null;
   permanent_company_id?: string | null;
   technician_id?: string | null;
+  hasPassword?: boolean;
 }
 
 interface AuthContextType {

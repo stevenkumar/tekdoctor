@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Mail, Lock, ArrowRight, Loader2, AlertCircle, Eye, EyeOff, ShieldCheck, KeyRound, RefreshCw, ArrowLeft, CheckCircle2 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import type { UserRole } from '@/context/AuthContext';
 import { useSiteContext } from '@/context/SiteContext';
@@ -61,8 +61,15 @@ export default function SignIn() {
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
 
   const { login } = useAuth();
+  const location = useLocation();
   const { flattenedSettings } = useSiteContext();
   const appName = flattenedSettings.company_name || 'TekDoctor';
+
+  // Read destination route from navigation state (e.g. from ProtectedAuthRoute)
+  const fromLocation = (location.state as any)?.from;
+  const redirectTarget = fromLocation?.pathname
+    ? `${fromLocation.pathname}${fromLocation.search || ''}`
+    : (typeof fromLocation === 'string' ? fromLocation : null);
 
   // Pre-warm Google reCAPTCHA so credentials submission is instant
   useEffect(() => {
@@ -139,8 +146,10 @@ export default function SignIn() {
         throw new Error('Authentication token or user information missing from server response.');
       }
 
-      const userData = { id, customer_id, name, email, role: role as UserRole, phone, company_id, avatar_url };
-      if (role === 'customer') {
+      const userData = { id, customer_id, name, email, role: role as UserRole, phone, company_id, avatar_url, hasPassword: result.data.data.hasPassword };
+      if (redirectTarget) {
+        login(token, userData, false, redirectTarget);
+      } else if (role === 'customer') {
         login(token, userData, false, ROUTES.HOME);
       } else {
         login(token, userData);
@@ -178,7 +187,11 @@ export default function SignIn() {
         throw new Error('Authentication token or user information missing from server response.');
       }
 
-      login(token, { id, name, email, role: role as UserRole });
+      if (redirectTarget) {
+        login(token, { id, name, email, role: role as UserRole }, false, redirectTarget);
+      } else {
+        login(token, { id, name, email, role: role as UserRole });
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Invalid or expired verification code.';
       setOtpError(msg);
@@ -372,7 +385,7 @@ export default function SignIn() {
 
                   <GoogleSignInButton
                     text="Continue with Google"
-                    redirectPath={ROUTES.HOME}
+                    redirectPath={redirectTarget || ROUTES.HOME}
                     onOtpRequired={handleGoogleOtpRequired}
                   />
                 </>

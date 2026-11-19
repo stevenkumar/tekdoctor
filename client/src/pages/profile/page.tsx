@@ -157,6 +157,8 @@ export default function ProfilePage() {
   });
 
   // Password Setter State
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -380,7 +382,17 @@ export default function ProfilePage() {
     setPassErrors({});
     setPassStatus({ type: '', message: '' });
 
+    const isExistingPasswordRequired = user?.hasPassword !== false;
     const tempErrors: Record<string, string> = {};
+
+    if (isExistingPasswordRequired) {
+      if (!currentPassword) {
+        tempErrors.currentPassword = 'Current password is required.';
+      } else if (password && currentPassword && password === currentPassword) {
+        tempErrors.password = 'New password must be different from your current password.';
+      }
+    }
+
     const passVal = validatePassword(password);
     if (!passVal.isValid) {
       tempErrors.password = passVal.error || 'Password must be at least 8 characters long.';
@@ -400,15 +412,18 @@ export default function ProfilePage() {
 
     setIsSubmittingPass(true);
     try {
-      const response = await authApi.setPassword(password, token);
+      const response = await authApi.setPassword(password, token, currentPassword || undefined);
       if (response.ok) {
         if (response.data && response.data.token) {
-          updateToken(response.data.token);
+          updateToken(response.data.token, user ? { ...user, hasPassword: true } : undefined);
         }
         setPassStatus({
           type: 'success',
-          message: '✓ Password established successfully! You can now sign in using this password on any device.'
+          message: isExistingPasswordRequired
+            ? '✓ Password updated successfully! All other active sessions have been invalidated for your security.'
+            : '✓ Password established successfully! You can now sign in using this password on any device.'
         });
+        setCurrentPassword('');
         setPassword('');
         setConfirmPassword('');
       } else {
@@ -1736,15 +1751,46 @@ export default function ProfilePage() {
               <div className="flex items-start gap-3 bg-zinc-950/40 border border-zinc-800/60 rounded-xl p-4 text-xs text-zinc-400 leading-relaxed">
                 <Info size={16} className="text-neon-cyan shrink-0 mt-0.5" />
                 <div>
-                  If you auto-registered as a guest while booking a repair, setting a password here lets you sign into TekDoctor from any phone, laptop, or browser using <span className="text-zinc-200 font-mono font-semibold">{user.email}</span>.
+                  {user.hasPassword !== false ? (
+                    <>Updating your password will immediately secure your account and invalidate all other active sessions across other devices.</>
+                  ) : (
+                    <>If you auto-registered as a guest or signed in with Google, setting a password here lets you sign into TekDoctor from any device using <span className="text-zinc-200 font-mono font-semibold">{user.email}</span>.</>
+                  )}
                 </div>
               </div>
 
               <form onSubmit={handleSetPassword} className="space-y-4" noValidate>
+                {user.hasPassword !== false && (
+                  <div>
+                    <label htmlFor="currentPasswordInput" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">
+                      Current Password *
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showCurrentPassword ? 'text' : 'password'}
+                        id="currentPasswordInput"
+                        value={currentPassword}
+                        onChange={(e) => setCurrentPassword(e.target.value)}
+                        placeholder="Enter your current password"
+                        className={`w-full bg-zinc-950/60 border ${passErrors.currentPassword ? 'border-red-500' : 'border-zinc-800 focus:border-neon-cyan'} rounded-xl p-3 pr-10 text-sm text-white focus:outline-none`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white p-1 cursor-pointer"
+                        tabIndex={-1}
+                      >
+                        {showCurrentPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </div>
+                    {passErrors.currentPassword && <p className="text-red-400 text-xs mt-1 font-mono">{passErrors.currentPassword}</p>}
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label htmlFor="newPasswordInput" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">
-                      New Password *
+                      {user.hasPassword !== false ? 'New Password *' : 'Password *'}
                     </label>
                     <div className="relative">
                       <input
@@ -1804,7 +1850,7 @@ export default function ProfilePage() {
                       Updating Security Credentials...
                     </>
                   ) : (
-                    'Set New Password'
+                    user.hasPassword !== false ? 'Update Password' : 'Set New Password'
                   )}
                 </button>
               </form>

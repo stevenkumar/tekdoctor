@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { lazy, Suspense } from 'react';
 import { AuthProvider } from './context/AuthContext';
 import { SiteProvider } from './context/SiteContext';
@@ -15,6 +15,7 @@ import AdminLayout from './layouts/AdminLayout';
 import ProtectedAdminRoute from './components/ProtectedAdminRoute';
 import ProtectedTechnicianRoute from './components/ProtectedTechnicianRoute';
 import ProtectedCompanyRoute from './components/ProtectedCompanyRoute';
+import ProtectedAuthRoute from './components/ProtectedAuthRoute';
 import CompanyLayout from './layouts/CompanyLayout';
 import ErrorBoundary from './components/ErrorBoundary';
 
@@ -189,8 +190,15 @@ function App() {
                   <Route path={ROUTES.SHOP} element={<ShopPage />} />
                   <Route path={ROUTES.SHOP_V2} element={<ShopV2Page />} />
                   <Route path={ROUTES.PROTOCOL} element={<RepairProtocolPage />} />
-                  <Route path={ROUTES.PROFILE} element={<ProfilePage />} />
-                  <Route path={ROUTES.NOTIFICATIONS} element={<UserNotifications />} />
+
+                  {/* ── Protected Authenticated User Area (Customer / All Roles) ── */}
+                  <Route element={<ProtectedAuthRoute />}>
+                    <Route element={<ErrorBoundary fallbackTitle="User Portal Error"><Outlet /></ErrorBoundary>}>
+                      <Route path={ROUTES.PROFILE} element={<ProfilePage />} />
+                      <Route path={ROUTES.NOTIFICATIONS} element={<UserNotifications />} />
+                    </Route>
+                  </Route>
+
                   <Route path={ROUTES.VERIFY_CERTIFICATE} element={<AmcCertificateVerification />} />
                   <Route path="/verify-certificate/:code" element={<AmcCertificateVerification />} />
                   <Route path={ROUTES.AMC} element={<AmcPage />} />

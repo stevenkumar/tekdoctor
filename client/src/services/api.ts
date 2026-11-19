@@ -168,6 +168,7 @@ export interface UserResponseData {
   mobile?: string | null;
   avatar_url?: string;
   company_id?: string | null;
+  hasPassword?: boolean;
 }
 
 export interface NotificationItem {
@@ -251,14 +252,14 @@ export const authApi = {
     });
   },
 
-  setPassword: async (password: string, token: string): Promise<SafeResponse<{ success: boolean; message: string; token?: string }>> => {
-    return safeFetch<{ success: boolean; message: string; token?: string }>(getUrl('/api/auth/set-password'), {
+  setPassword: async (password: string, token: string, currentPassword?: string): Promise<SafeResponse<{ success: boolean; message: string; token?: string; hasPassword?: boolean }>> => {
+    return safeFetch<{ success: boolean; message: string; token?: string; hasPassword?: boolean }>(getUrl('/api/auth/set-password'), {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
       },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, newPassword: password, currentPassword: currentPassword || undefined }),
     });
   },
 
