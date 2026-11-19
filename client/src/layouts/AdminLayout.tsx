@@ -307,7 +307,7 @@ export default function AdminLayout() {
 
                 {/* Page content */}
                 <div className="flex-1 p-2.5 sm:p-4 md:p-6 lg:p-8 overflow-x-hidden">
-                    <ErrorBoundary key={location.pathname} fallbackTitle="Admin Workspace Error">
+                    <ErrorBoundary key={location.pathname} fallbackTitle={user?.role === 'technician' ? 'Technician Workspace Error' : 'Admin Workspace Error'}>
                         <Suspense fallback={<SkeletonDashboard />}>
                             <Outlet />
                         </Suspense>

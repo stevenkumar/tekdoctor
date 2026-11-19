@@ -479,21 +479,19 @@ export default function TechnicianTaskWorkspace({
             toast.error("Tickets in progress cannot be reverted to Pending.");
             return;
         }
-        if (newStatus === 'in_progress') {
+        if (newStatus === 'in_progress' || newStatus === 'completed') {
             const approval = task.customerApprovalStatus?.toLowerCase();
-            if (approval && approval !== 'none' && approval !== 'approved') {
+            if (approval !== 'approved') {
                 if (approval === 'pending_approval') {
-                    toast.error("Cannot start repair: Approximate budget is awaiting customer approval.");
-                    return;
+                    toast.error("Cannot start or complete repair: Approximate budget is awaiting customer approval.");
+                } else if (approval === 'rejected' || approval === 'on_hold') {
+                    toast.error("Cannot start or complete repair: Customer declined the repair estimate (Ticket is On Hold).");
+                } else if (approval === 'auto_cancelled') {
+                    toast.error("Cannot start or complete repair: Customer approval window has expired and ticket is cancelled.");
+                } else {
+                    toast.error("Cannot start or complete repair: Please submit diagnosis and estimate for customer approval first.");
                 }
-                if (approval === 'rejected' || approval === 'on_hold') {
-                    toast.error("Cannot start repair: Customer declined the repair estimate (Ticket is On Hold).");
-                    return;
-                }
-                if (approval === 'auto_cancelled') {
-                    toast.error("Cannot start repair: Customer approval window has expired and ticket is cancelled.");
-                    return;
-                }
+                return;
             }
         }
         setStatusLoading(true);
