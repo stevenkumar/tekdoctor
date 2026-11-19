@@ -20,8 +20,29 @@ export default function PaymentPage() {
   const [searchParams] = useSearchParams();
   const invoiceId = paramInvoiceId || searchParams.get('id') || searchParams.get('invoiceId') || '';
   const navigate = useNavigate();
-  const { token } = useAuth();
+  const { token, user, isAuthenticated } = useAuth();
   const shouldReduceMotion = useReducedMotion();
+
+  const handleReturnNavigation = () => {
+    if (user?.role === 'admin') {
+      navigate(ROUTES.BILLING);
+    } else if (user?.role === 'company') {
+      navigate(ROUTES.COMPANY_BILLING);
+    } else if (user?.role === 'technician') {
+      navigate(ROUTES.TECHNICIAN_DASHBOARD);
+    } else if (isAuthenticated) {
+      navigate(ROUTES.PROFILE);
+    } else {
+      const ticketParam = invoice?.ticket_number || invoice?.ticket_id;
+      navigate(ticketParam ? `${ROUTES.REPAIR_STATUS}?ticket=${encodeURIComponent(ticketParam)}` : ROUTES.REPAIR_STATUS);
+    }
+  };
+
+  const getReturnLabel = () => {
+    if (user?.role === 'admin' || user?.role === 'company') return 'Return to Invoices';
+    if (isAuthenticated) return 'Return to Dashboard';
+    return 'Return to Ticket Tracker';
+  };
 
   const [invoice, setInvoice] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -288,10 +309,10 @@ export default function PaymentPage() {
               Print Tax Invoice
             </button>
             <button
-              onClick={() => navigate(ROUTES.BILLING)}
+              onClick={handleReturnNavigation}
               className="w-full bg-zinc-900/60 hover:bg-zinc-900 text-zinc-400 hover:text-white font-mono text-xs uppercase tracking-wider py-3 px-4 rounded-xl transition-colors border border-zinc-800 cursor-pointer"
             >
-              Return to Invoices
+              {getReturnLabel()}
             </button>
           </div>
         </motion.div>
@@ -326,10 +347,10 @@ export default function PaymentPage() {
             </p>
           </div>
           <button
-            onClick={() => navigate(ROUTES.BILLING)}
+            onClick={handleReturnNavigation}
             className="w-full bg-zinc-900 hover:bg-zinc-800 text-white font-mono text-xs uppercase tracking-wider py-3.5 px-4 rounded-xl transition-colors border border-zinc-800 cursor-pointer"
           >
-            Return to Invoices
+            {getReturnLabel()}
           </button>
         </motion.div>
       </div>
@@ -355,10 +376,10 @@ export default function PaymentPage() {
             </p>
           </div>
           <button
-            onClick={() => navigate(ROUTES.BILLING)}
+            onClick={handleReturnNavigation}
             className="w-full bg-zinc-900 hover:bg-zinc-800 text-white font-mono text-xs uppercase tracking-wider py-3.5 px-4 rounded-xl transition-colors border border-zinc-800 cursor-pointer"
           >
-            Return to Invoices
+            {getReturnLabel()}
           </button>
         </motion.div>
       </div>
@@ -462,10 +483,10 @@ export default function PaymentPage() {
               </>
             )}
             <button
-              onClick={() => navigate(ROUTES.BILLING)}
+              onClick={handleReturnNavigation}
               className="w-full bg-zinc-900 hover:bg-zinc-800 text-white font-mono text-xs uppercase tracking-wider py-3.5 px-4 rounded-xl transition-colors border border-zinc-800 cursor-pointer"
             >
-              Return to Invoices
+              {getReturnLabel()}
             </button>
           </div>
         </motion.div>

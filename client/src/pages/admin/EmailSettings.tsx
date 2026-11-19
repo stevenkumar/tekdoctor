@@ -92,11 +92,42 @@ export default function EmailSettings() {
             <div className="border border-zinc-900 bg-zinc-900/20 rounded-2xl p-4 sm:p-6 space-y-4">
                 {fields.map(f => (
                     <div key={f.key} className="space-y-1.5">
-                        <label className="text-xs text-zinc-400 font-semibold tracking-wide uppercase flex items-center gap-1.5"><f.icon size={12} />{f.label}</label>
+                        <div className="flex items-center justify-between">
+                            <label className="text-xs text-zinc-400 font-semibold tracking-wide uppercase flex items-center gap-1.5"><f.icon size={12} />{f.label}</label>
+                            {f.key === 'smtp_password' && (
+                                settings.smtp_password === '__CLEAR__' ? (
+                                    <span className="text-[10px] text-amber-400 font-mono flex items-center gap-1.5">
+                                        [Will be cleared on save]
+                                        <button
+                                            type="button"
+                                            onClick={() => setSettings(p => ({ ...p, smtp_password: '' }))}
+                                            className="text-neon-cyan hover:underline cursor-pointer"
+                                        >
+                                            Undo
+                                        </button>
+                                    </span>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (window.confirm('Are you sure you want to clear the stored SMTP password?')) {
+                                                setSettings(p => ({ ...p, smtp_password: '__CLEAR__' }));
+                                            }
+                                        }}
+                                        className="text-[10px] text-rose-400 hover:text-rose-300 font-mono hover:underline cursor-pointer"
+                                    >
+                                        Clear Password
+                                    </button>
+                                )
+                            )}
+                        </div>
                         <input
-                            type={f.type || 'text'} value={settings[f.key] || ''} placeholder={f.placeholder}
+                            type={f.type || 'text'}
+                            value={settings[f.key] === '__CLEAR__' ? '' : (settings[f.key] || '')}
+                            placeholder={settings[f.key] === '__CLEAR__' ? '[Password cleared — click Save to apply]' : f.placeholder}
+                            disabled={settings[f.key] === '__CLEAR__'}
                             onChange={e => setSettings(p => ({ ...p, [f.key]: e.target.value }))}
-                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-neon-cyan transition-colors" />
+                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-neon-cyan transition-colors disabled:opacity-60 font-mono text-xs" />
                     </div>
                 ))}
             </div>

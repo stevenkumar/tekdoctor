@@ -434,24 +434,53 @@ export default function WebsiteSettings() {
 
                     {/* Google Client Secret */}
                     <div className="space-y-2">
-                        <label className="text-xs text-zinc-400 font-semibold tracking-wide uppercase">Google Client Secret</label>
+                        <div className="flex items-center justify-between">
+                            <label className="text-xs text-zinc-400 font-semibold tracking-wide uppercase">Google Client Secret</label>
+                            {editedValues.google_client_secret === '__CLEAR__' ? (
+                                <span className="text-[10px] text-amber-400 font-mono flex items-center gap-1.5">
+                                    [Will be cleared on save]
+                                    <button
+                                        type="button"
+                                        onClick={() => setEditedValues(p => { const copy = { ...p }; delete copy.google_client_secret; return copy; })}
+                                        className="text-neon-cyan hover:underline cursor-pointer"
+                                    >
+                                        Undo
+                                    </button>
+                                </span>
+                            ) : settings.integrations?.google_client_secret ? (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (window.confirm('Are you sure you want to clear the stored Google Client Secret?')) {
+                                            setEditedValues(p => ({ ...p, google_client_secret: '__CLEAR__' }));
+                                        }
+                                    }}
+                                    className="text-[10px] text-rose-400 hover:text-rose-300 font-mono hover:underline cursor-pointer"
+                                >
+                                    Clear Secret
+                                </button>
+                            ) : null}
+                        </div>
                         <div className="relative">
                             <input
                                 id="google_client_secret"
                                 type={showGoogleSecret ? 'text' : 'password'}
-                                value={editedValues.google_client_secret !== undefined ? editedValues.google_client_secret : ''}
+                                value={editedValues.google_client_secret === '__CLEAR__' ? '' : (editedValues.google_client_secret !== undefined ? editedValues.google_client_secret : '')}
                                 onChange={e => setEditedValues(p => ({ ...p, google_client_secret: e.target.value }))}
-                                placeholder="••••••••"
-                                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 pr-10 text-sm text-white focus:outline-none focus:border-neon-cyan font-mono text-xs"
+                                placeholder={editedValues.google_client_secret === '__CLEAR__' ? '[Secret cleared — click Save to apply]' : '••••••••'}
+                                disabled={editedValues.google_client_secret === '__CLEAR__'}
+                                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 pr-10 text-sm text-white focus:outline-none focus:border-neon-cyan font-mono text-xs disabled:opacity-60"
                             />
-                            <button
-                                type="button"
-                                onClick={() => setShowGoogleSecret(p => !p)}
-                                className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors p-1"
-                                aria-label="Toggle Secret Visibility"
-                            >
-                                {showGoogleSecret ? <EyeOff size={16} /> : <Eye size={16} />}
-                            </button>
+                            {editedValues.google_client_secret !== '__CLEAR__' && (
+                                <button
+                                    type="button"
+                                    onClick={() => setShowGoogleSecret(p => !p)}
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors p-1"
+                                    aria-label="Toggle Secret Visibility"
+                                >
+                                    {showGoogleSecret ? <EyeOff size={16} /> : <Eye size={16} />}
+                                </button>
+                            )}
                         </div>
                         <p className="text-[10px] text-zinc-500">Encrypted at rest with AES-256-GCM. Never exposed publicly. Leave masked to keep current secret.</p>
                     </div>
@@ -514,24 +543,53 @@ export default function WebsiteSettings() {
 
                     {/* Secret Key (v3 Fallback) */}
                     <div className="space-y-2">
-                        <label className="text-xs text-zinc-400 font-semibold tracking-wide uppercase">reCAPTCHA Secret Key (Standard v3 Fallback)</label>
+                        <div className="flex items-center justify-between">
+                            <label className="text-xs text-zinc-400 font-semibold tracking-wide uppercase">reCAPTCHA Secret Key (Standard v3 Fallback)</label>
+                            {editedValues.recaptcha_secret_key === '__CLEAR__' ? (
+                                <span className="text-[10px] text-amber-400 font-mono flex items-center gap-1.5">
+                                    [Will be cleared on save]
+                                    <button
+                                        type="button"
+                                        onClick={() => setEditedValues(p => { const copy = { ...p }; delete copy.recaptcha_secret_key; return copy; })}
+                                        className="text-neon-cyan hover:underline cursor-pointer"
+                                    >
+                                        Undo
+                                    </button>
+                                </span>
+                            ) : settings.security?.recaptcha_secret_key ? (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (window.confirm('Are you sure you want to clear the stored reCAPTCHA Secret Key?')) {
+                                            setEditedValues(p => ({ ...p, recaptcha_secret_key: '__CLEAR__' }));
+                                        }
+                                    }}
+                                    className="text-[10px] text-rose-400 hover:text-rose-300 font-mono hover:underline cursor-pointer"
+                                >
+                                    Clear Secret
+                                </button>
+                            ) : null}
+                        </div>
                         <div className="relative">
                             <input
                                 id="recaptcha_secret_key"
                                 type={showRecaptchaSecret ? 'text' : 'password'}
-                                value={editedValues.recaptcha_secret_key !== undefined ? editedValues.recaptcha_secret_key : ''}
+                                value={editedValues.recaptcha_secret_key === '__CLEAR__' ? '' : (editedValues.recaptcha_secret_key !== undefined ? editedValues.recaptcha_secret_key : '')}
                                 onChange={e => setEditedValues(p => ({ ...p, recaptcha_secret_key: e.target.value }))}
-                                placeholder="••••••••"
-                                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 pr-10 text-sm text-white focus:outline-none focus:border-neon-cyan font-mono text-xs"
+                                placeholder={editedValues.recaptcha_secret_key === '__CLEAR__' ? '[Secret cleared — click Save to apply]' : '••••••••'}
+                                disabled={editedValues.recaptcha_secret_key === '__CLEAR__'}
+                                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 pr-10 text-sm text-white focus:outline-none focus:border-neon-cyan font-mono text-xs disabled:opacity-60"
                             />
-                            <button
-                                type="button"
-                                onClick={() => setShowRecaptchaSecret(p => !p)}
-                                className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors p-1"
-                                aria-label="Toggle Secret Key Visibility"
-                            >
-                                {showRecaptchaSecret ? <EyeOff size={16} /> : <Eye size={16} />}
-                            </button>
+                            {editedValues.recaptcha_secret_key !== '__CLEAR__' && (
+                                <button
+                                    type="button"
+                                    onClick={() => setShowRecaptchaSecret(p => !p)}
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors p-1"
+                                    aria-label="Toggle Secret Key Visibility"
+                                >
+                                    {showRecaptchaSecret ? <EyeOff size={16} /> : <Eye size={16} />}
+                                </button>
+                            )}
                         </div>
                         <p className="text-[10px] text-zinc-500">Encrypted at rest with AES-256-GCM. Used for backend fallback assessment.</p>
                     </div>

@@ -3,6 +3,7 @@ import { Suspense, useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { ROUTES } from '@/config/routes';
 import { SkeletonDashboard } from '@/components/Skeleton';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import { useSiteContext } from '@/context/SiteContext';
 import { appConfig } from '@/config/appConfig';
 import { getMediaUrl } from '@/utils/media';
@@ -306,9 +307,11 @@ export default function AdminLayout() {
 
                 {/* Page content */}
                 <div className="flex-1 p-2.5 sm:p-4 md:p-6 lg:p-8 overflow-x-hidden">
-                    <Suspense fallback={<SkeletonDashboard />}>
-                        <Outlet />
-                    </Suspense>
+                    <ErrorBoundary key={location.pathname} fallbackTitle="Admin Workspace Error">
+                        <Suspense fallback={<SkeletonDashboard />}>
+                            <Outlet />
+                        </Suspense>
+                    </ErrorBoundary>
                 </div>
             </main>
         </div>
