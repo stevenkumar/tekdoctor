@@ -329,10 +329,26 @@ const validateSignIn = validate([
 
 const validateSetPassword = validate([
   body('password')
-    .notEmpty().withMessage('Password is required.')
-    .isLength({ min: 8, max: 128 }).withMessage('Password must be between 8 and 128 characters.')
-    .matches(/[A-Z]/).withMessage('Password must contain at least one uppercase letter.')
-    .matches(/[0-9]/).withMessage('Password must contain at least one number.')
+    .custom((val, { req }) => {
+      const targetPass = val || req.body.newPassword;
+      if (!targetPass || (typeof targetPass === 'string' && !targetPass.trim())) {
+        throw new Error('Password is required.');
+      }
+      if (typeof targetPass !== 'string' || targetPass.length < 8 || targetPass.length > 128) {
+        throw new Error('Password must be between 8 and 128 characters.');
+      }
+      if (!/[A-Z]/.test(targetPass)) {
+        throw new Error('Password must contain at least one uppercase letter.');
+      }
+      if (!/[0-9]/.test(targetPass)) {
+        throw new Error('Password must contain at least one number.');
+      }
+      return true;
+    }),
+  body('currentPassword')
+    .optional({ nullable: true, checkFalsy: true })
+    .isString()
+    .withMessage('Current password must be a string.')
 ]);
 
 const validateForgotPassword = validate([

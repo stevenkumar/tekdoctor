@@ -342,6 +342,13 @@ const sendOtpEmail = async ({ toEmail, otpCode, purpose = 'login', expiresInMinu
     return sendCustomerNotification(toEmail, subject, htmlContent);
 };
 
+/**
+ * Resolves the sanitized frontend base URL with no trailing slash.
+ */
+const getCleanFrontendUrl = () => {
+    return (config.frontend?.url || config.server?.publicOrigin || 'https://thetekdoctor.com').replace(/\/+$/, '');
+};
+
 module.exports = {
     sendAdminNotification,
     sendCustomerNotification,
@@ -349,5 +356,6 @@ module.exports = {
     getEmailConfig,
     clearEmailConfigCache,
     resolveTlsConfig,
-    sanitizeErrorMessage
+    sanitizeErrorMessage,
+    getCleanFrontendUrl
 };

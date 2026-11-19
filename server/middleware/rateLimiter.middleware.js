@@ -46,6 +46,26 @@ const certVerifyLimiter = rateLimit({
   skip: (req) => config.env === 'test' && req.headers['x-bypass-rate-limit'] === 'test-bypass'
 });
 
+// Dedicated rate limiter for public repair bookings
+const bookingLimiter = rateLimit({
+  windowMs: config.rateLimits.booking?.windowMs || 15 * 60 * 1000,
+  max: config.rateLimits.booking?.max || 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: formatResponse(false, 'Too many repair requests submitted from this IP. Please try again after 15 minutes.'),
+  skip: isDevOrLocal
+});
+
+// Dedicated rate limiter for public ticket tracking lookup (prevents 4-digit mobile enumeration)
+const trackingLimiter = rateLimit({
+  windowMs: config.rateLimits.tracking?.windowMs || 15 * 60 * 1000,
+  max: config.rateLimits.tracking?.max || 25,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: formatResponse(false, 'Too many tracking attempts from this IP. Please try again after 15 minutes.'),
+  skip: isDevOrLocal
+});
+
 // Route-level alias reusing existing global rate limiter configuration
 const apiLimiter = globalLimiter;
 
@@ -54,5 +74,7 @@ module.exports = {
   apiLimiter,
   authLimiter,
   contactLimiter,
-  certVerifyLimiter
+  certVerifyLimiter,
+  bookingLimiter,
+  trackingLimiter
 };

@@ -191,7 +191,15 @@ const corsOptionsDelegate = (req, callback) => {
       origin: true,
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Company-ID']
+      allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'X-Requested-With',
+        'X-Company-ID',
+        'X-Guest-Payment-Token',
+        'X-Draft-Session-Token',
+        'X-Tracking-Token'
+      ]
     });
   }
 
@@ -214,7 +222,15 @@ const corsOptionsDelegate = (req, callback) => {
       origin: true,
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Company-ID']
+      allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'X-Requested-With',
+        'X-Company-ID',
+        'X-Guest-Payment-Token',
+        'X-Draft-Session-Token',
+        'X-Tracking-Token'
+      ]
     });
   }
 
@@ -306,7 +322,7 @@ const getFrontendIndexHtml = () => {
 // ─── Block accidental exposure of backend source / secrets ─────
 // Strict static file extension whitelist to prevent serving .sql dumps, .log files, .md docs, etc.
 const ALLOWED_STATIC_EXTENSIONS = new Set([
-  '.js', '.css', '.html', '.png', '.jpg', '.jpeg', '.webp', '.svg', '.ico', '.woff', '.woff2', '.json', '.txt'
+  '.js', '.css', '.html', '.png', '.jpg', '.jpeg', '.webp', '.svg', '.ico', '.woff', '.woff2', '.json', '.txt', '.xml', '.webmanifest'
 ]);
 
 const BLOCKED_TOP_LEVEL = new Set([
@@ -378,8 +394,19 @@ uniqueStaticDirs.forEach(dir => {
     dotfiles: 'deny',
     maxAge: config.isProduction ? '1d' : 0,
     setHeaders: (res, filePath) => {
-      // Hashed assets in Vite build (/assets/*) get immutable long-term caching
-      if (filePath.includes(`${path.sep}assets${path.sep}`) || filePath.includes('/assets/')) {
+      const lower = filePath.toLowerCase();
+      // Service Worker & Web Manifest must not be cached aggressively to allow instant PWA updates
+      if (lower.endsWith(`${path.sep}sw.js`) || lower.endsWith('/sw.js') || lower.endsWith('sw.js')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.setHeader('Service-Worker-Allowed', '/');
+      } else if (lower.endsWith('manifest.json') || lower.endsWith('.webmanifest')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      } else if (filePath.includes(`${path.sep}assets${path.sep}`) || filePath.includes('/assets/')) {
+        // Hashed assets in Vite build (/assets/*) get immutable long-term caching
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       }
     }

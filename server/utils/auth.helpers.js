@@ -590,6 +590,48 @@ const generatePendingChangePasswordToken = (user, sessionId) => {
   );
 };
 
+/**
+ * Generate a cryptographically secure, time-limited token for unauthenticated guest Razorpay checkout.
+ * Scoped strictly to the specific ticket ID and ticket number for 30 minutes.
+ * 
+ * @param {number|string} ticketId - Repair ticket ID
+ * @param {string} ticketNumber - Ticket number (e.g. TD-001-01)
+ * @returns {string} Signed JWT token valid for 30 minutes
+ */
+const generateGuestPaymentToken = (ticketId, ticketNumber) => {
+  return jwt.sign(
+    {
+      purpose: 'guest_payment',
+      ticketId: Number(ticketId),
+      ticketNumber: ticketNumber ? String(ticketNumber) : null
+    },
+    config.jwt.secret,
+    { expiresIn: '30m', algorithm: 'HS256' }
+  );
+};
+
+/**
+ * Verify a guest payment token.
+ * Validates signature, expiration, purpose === 'guest_payment', and presence of ticketId.
+ * 
+ * @param {string} token - Signed JWT guest payment token
+ * @returns {{ valid: boolean, decoded?: Object, error?: string }}
+ */
+const verifyGuestPaymentToken = (token) => {
+  if (!token || typeof token !== 'string') {
+    return { valid: false, error: 'No token provided' };
+  }
+  try {
+    const decoded = jwt.verify(token.trim(), config.jwt.secret, { algorithms: ['HS256'] });
+    if (decoded.purpose !== 'guest_payment' || !decoded.ticketId) {
+      return { valid: false, error: 'Invalid token purpose or missing ticket identification' };
+    }
+    return { valid: true, decoded };
+  } catch (err) {
+    return { valid: false, error: err.message };
+  }
+};
+
 module.exports = {
   generateToken,
   generateEstimateActionToken,
@@ -597,6 +639,8 @@ module.exports = {
   canTechnicianAccessTicket,
   generateGuestInvoiceAccessToken,
   verifyInvoiceAuthorization,
+  generateGuestPaymentToken,
+  verifyGuestPaymentToken,
   generateOtpCode,
   hashOtp,
   verifyOtpHash,

@@ -257,6 +257,14 @@ const config = {
     certVerify: {
       windowMs: 15 * 60 * 1000,
       max: parseInt(process.env.RATE_LIMIT_CERT_VERIFY_MAX, 10) || 30
+    },
+    booking: {
+      windowMs: 15 * 60 * 1000,
+      max: env === 'development' || env === 'test' ? 1000 : (parseInt(process.env.RATE_LIMIT_BOOKING_MAX, 10) || 10)
+    },
+    tracking: {
+      windowMs: 15 * 60 * 1000,
+      max: env === 'development' || env === 'test' ? 2500 : (parseInt(process.env.RATE_LIMIT_TRACKING_MAX, 10) || 25)
     }
   },
 
