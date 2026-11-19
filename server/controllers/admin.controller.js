@@ -457,13 +457,22 @@ const deleteCustomer = async (req, res, next) => {
         const [existing] = await connection.query('SELECT id, name, role, is_active FROM users WHERE id = ? LIMIT 1', [id]);
         if (existing.length === 0) return res.status(404).json(formatResponse(false, 'User not found.'));
 
+        // [SEC-ADM-01] Prevent cross-admin deactivation and enforce customer role scope
+        if (existing[0].role === 'admin') {
+            return res.status(403).json(formatResponse(false, 'Administrator accounts cannot be deactivated via this endpoint.'));
+        }
+        if (existing[0].role !== 'customer') {
+            return res.status(400).json(formatResponse(false, 'This endpoint is only for customer accounts.'));
+        }
+
+        // Deactivate customer and invalidate existing JWT sessions via token_version increment
         await connection.query(
-            'UPDATE users SET is_active = 0, deactivated_at = NOW(), deactivated_by = ?, deactivation_reason = ? WHERE id = ?',
+            'UPDATE users SET is_active = 0, token_version = token_version + 1, deactivated_at = NOW(), deactivated_by = ?, deactivation_reason = ? WHERE id = ?',
             [req.user.id, reason || 'Deactivated by admin', id]
         );
         await logActivity(connection, req.user.id, 'deactivate_customer', 'user', id, { name: existing[0].name, reason }, req.ip);
 
-        return res.json(formatResponse(true, 'User deactivated successfully.'));
+        return res.json(formatResponse(true, 'Customer deactivated successfully.'));
     } catch (error) {
         next(error);
     } finally {
@@ -477,8 +486,12 @@ const reactivateCustomer = async (req, res, next) => {
         connection = await pool.getConnection();
         const { id } = req.params;
 
-        const [existing] = await connection.query('SELECT id, name FROM users WHERE id = ? LIMIT 1', [id]);
+        const [existing] = await connection.query('SELECT id, name, role FROM users WHERE id = ? LIMIT 1', [id]);
         if (existing.length === 0) return res.status(404).json(formatResponse(false, 'User not found.'));
+
+        if (existing[0].role !== 'customer') {
+            return res.status(400).json(formatResponse(false, 'This endpoint is only for customer accounts.'));
+        }
 
         await connection.query(
             'UPDATE users SET is_active = 1, deactivated_at = NULL, deactivated_by = NULL, deactivation_reason = NULL WHERE id = ?',
@@ -486,7 +499,7 @@ const reactivateCustomer = async (req, res, next) => {
         );
         await logActivity(connection, req.user.id, 'reactivate_customer', 'user', id, { name: existing[0].name }, req.ip);
 
-        return res.json(formatResponse(true, 'User reactivated successfully.'));
+        return res.json(formatResponse(true, 'Customer reactivated successfully.'));
     } catch (error) {
         next(error);
     } finally {
@@ -994,6 +1007,16 @@ const updateSettings = async (req, res, next) => {
             const isSecret = isSecretKey(key);
 
             if (isSecret) {
+                // [CFG-ADM-01] Explicit secret clearing support (e.g. '__CLEAR__' or { clear: true })
+                const isExplicitClear = value === '__CLEAR__' || (typeof value === 'object' && value !== null && value.clear === true);
+                if (isExplicitClear) {
+                    await connection.query(
+                        'INSERT INTO site_settings (setting_key, setting_value, setting_group) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE setting_value = ?, setting_group = ?',
+                        [key, '', keyGroup, '', keyGroup]
+                    );
+                    continue;
+                }
+
                 // If omitted, blank, or unchanged masked placeholder, preserve existing stored secret without overwriting
                 if (value === undefined || value === null || isMaskedPlaceholder(value)) {
                     continue;
