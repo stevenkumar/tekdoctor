@@ -682,6 +682,108 @@ const publicVerifyCertificate = async (req, res, next) => {
   }
 };
 
+// ── Self-Serve Checkout ─────────────────────────────────────────────────
+
+const createPublicCheckout = async (req, res, next) => {
+  try {
+    const {
+      planId,
+      companyName,
+      contactPerson,
+      email,
+      phone,
+      address,
+      state,
+      gstNumber,
+      password
+    } = req.body;
+
+    const result = await amcService.createPublicAmcCheckout({
+      planId,
+      companyName,
+      contactPerson,
+      email,
+      phone,
+      address,
+      state,
+      gstNumber,
+      password
+    });
+
+    return res.status(201).json(formatResponse(true, 'AMC checkout session created successfully.', result));
+  } catch (error) {
+    if (
+      error.message.includes('already exists') ||
+      error.message.includes('not found or inactive') ||
+      error.message.includes('disabled')
+    ) {
+      return res.status(400).json(formatResponse(false, error.message));
+    }
+    next(error);
+  }
+};
+
+const confirmPublicCheckout = async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
+
+    const result = await amcService.confirmAmcCheckout({
+      token,
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature
+    });
+
+    return res.json(formatResponse(true, 'AMC checkout payment confirmed and provisioned successfully.', result));
+  } catch (error) {
+    if (
+      error.message.includes('signature') ||
+      error.message.includes('not found') ||
+      error.message.includes('mismatch') ||
+      error.message.includes('match')
+    ) {
+      return res.status(400).json(formatResponse(false, error.message));
+    }
+    next(error);
+  }
+};
+
+const getCheckoutStatus = async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    const result = await amcService.getAmcCheckoutStatus(token);
+    return res.json(formatResponse(true, 'AMC checkout status retrieved successfully.', result));
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      return res.status(404).json(formatResponse(false, error.message));
+    }
+    next(error);
+  }
+};
+
+const createCompanyCheckout = async (req, res, next) => {
+  try {
+    const { planId } = req.body;
+    const companyUserId = req.user?.id;
+
+    const result = await amcService.createCompanyAmcCheckout({
+      planId,
+      companyUserId
+    });
+
+    return res.status(201).json(formatResponse(true, 'Company AMC checkout session created successfully.', result));
+  } catch (error) {
+    if (
+      error.message.includes('not found') ||
+      error.message.includes('disabled')
+    ) {
+      return res.status(400).json(formatResponse(false, error.message));
+    }
+    next(error);
+  }
+};
+
 module.exports = {
   getAdminOverview,
   getPublicPlans,
@@ -720,6 +822,10 @@ module.exports = {
   retryAdminReminder,
   processMaintenanceExpiries,
   processMaintenanceReminders,
-  publicVerifyCertificate
+  publicVerifyCertificate,
+  createPublicCheckout,
+  confirmPublicCheckout,
+  getCheckoutStatus,
+  createCompanyCheckout
 };
 

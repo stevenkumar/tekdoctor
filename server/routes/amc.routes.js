@@ -1,7 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, authorize } = require('../middleware/auth.middleware');
-const { certVerifyLimiter } = require('../middleware/rateLimiter.middleware');
+const { certVerifyLimiter, amcCheckoutLimiter } = require('../middleware/rateLimiter.middleware');
+const {
+  validatePublicAmcCheckout,
+  validateConfirmAmcCheckout,
+  validateCompanyAmcCheckout
+} = require('../middleware/validate.middleware');
 const {
   getAdminOverview,
   getPublicPlans,
@@ -40,12 +45,21 @@ const {
   retryAdminReminder,
   processMaintenanceExpiries,
   processMaintenanceReminders,
-  publicVerifyCertificate
+  publicVerifyCertificate,
+  createPublicCheckout,
+  confirmPublicCheckout,
+  getCheckoutStatus,
+  createCompanyCheckout
 } = require('../controllers/amc.controller');
 
 // ── Public Routes ───────────────────────────────────────────────────────
 // Anyone can view active public plans
 router.get('/plans', getPublicPlans);
+
+// Public Self-Serve AMC Checkout
+router.post('/public/checkout', amcCheckoutLimiter, validatePublicAmcCheckout, createPublicCheckout);
+router.post('/public/checkout/:token/confirm', amcCheckoutLimiter, validateConfirmAmcCheckout, confirmPublicCheckout);
+router.get('/public/checkout/:token/status', amcCheckoutLimiter, getCheckoutStatus);
 
 // Public Certificate Verification (safe, sanitized metadata only, rate limited)
 router.get('/public/verify-certificate/:code', certVerifyLimiter, publicVerifyCertificate);
@@ -59,6 +73,7 @@ router.get('/contracts/:id/certificate', authenticate, authorize('admin', 'compa
 
 // ── Company Routes ──────────────────────────────────────────────────────
 router.get('/company/plans', authenticate, authorize('company'), getPublicPlans);
+router.post('/company/checkout', authenticate, authorize('company'), validateCompanyAmcCheckout, createCompanyCheckout);
 router.post('/company/requests', authenticate, authorize('company'), createRequest);
 router.get('/company/requests', authenticate, authorize('company'), getCompanyRequests);
 router.get('/company/contracts', authenticate, authorize('company'), getCompanyContracts);

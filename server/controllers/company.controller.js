@@ -13,6 +13,7 @@ const { sendAdminNotification, sendCustomerNotification } = require('../utils/em
 const pushService = require('../services/push.service');
 
 const { logActivity } = require('../utils/activity.logger');
+const { getBooleanSetting } = require('../utils/settings');
 
 const getFrontendBaseUrl = (req) => {
     const allowedOrigins = new Set();
@@ -134,6 +135,17 @@ const assertTenantOwnership = async (connection, targetCompanyId, { branchId, em
 // ── Company Auth Controllers ──────────────────────────────────────────
 
 const registerCompany = async (req, res, next) => {
+    // Check if self-registration is enabled via site_settings
+    const isSelfRegEnabled = await getBooleanSetting('company_self_registration_enabled', true);
+    if (!isSelfRegEnabled) {
+        return res.status(403).json({
+            success: false,
+            message: 'Company accounts are created when you purchase an AMC plan.',
+            redirect: '/amc',
+            data: { redirect: '/amc' }
+        });
+    }
+
     const {
         companyName,
         contactPerson,

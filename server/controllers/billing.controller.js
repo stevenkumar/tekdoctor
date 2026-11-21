@@ -9,6 +9,7 @@ const { logActivity } = require('../utils/activity.logger');
 const { canTechnicianAccessTicket, generateGuestInvoiceAccessToken, verifyInvoiceAuthorization, verifyGuestPaymentToken } = require('../utils/auth.helpers');
 const { sendCustomerNotification } = require('../utils/email.utils');
 const pushService = require('../services/push.service');
+const amcService = require('../services/amc.service');
 
 const getFrontendBaseUrl = (req) => {
   const allowedOrigins = new Set();
@@ -2591,6 +2592,39 @@ const handleRazorpayWebhook = async (req, res, next) => {
           return res.status(200).json({ status: 'ignored_unsettled_state' });
         }
 
+        // Check if orderId belongs to an AMC checkout
+        const [chkRows] = await pool.query(
+          'SELECT id FROM amc_checkouts WHERE razorpay_order_id = ? LIMIT 1',
+          [orderId]
+        );
+
+        if (chkRows.length > 0) {
+          try {
+            const settleRes = await amcService.settleAmcCheckout({
+              orderId,
+              paymentId,
+              amountPaise: webhookAmount,
+              method: paymentMethod,
+              gatewayResponse: payment
+            });
+
+            if (settleRes.status === 'provisioned' || settleRes.status === 'needs_attention') {
+              return res.status(200).json({ status: 'ok' });
+            }
+
+            if (settleRes.status === 'mismatch') {
+              logger.warn(`AMC checkout webhook amount mismatch for order ${orderId}`);
+              return res.status(200).json({ status: 'ok', warning: 'amount_mismatch' });
+            }
+
+            logger.error(`AMC checkout webhook settlement returned unexpected status: ${settleRes.status}`);
+            return res.status(500).json({ status: 'error', message: 'Settlement did not complete.' });
+          } catch (settleErr) {
+            logger.error(`AMC checkout webhook settlement error for order ${orderId}: ${settleErr.message}`);
+            return res.status(500).json({ status: 'error', message: settleErr.message });
+          }
+        }
+
         const result = await processAuthoritativePaymentSettlement({
           orderId,
           paymentId,
@@ -2614,6 +2648,20 @@ const handleRazorpayWebhook = async (req, res, next) => {
       const paymentId = payment?.id;
       const errorDesc = payment?.error_description || payment?.error_reason || 'Payment failed at gateway.';
       if (orderId) {
+        // If order in amc_checkouts: mark payments row failed, keep checkout status 'created', return 200 { status: 'ok' }
+        const [amcChk] = await pool.query(
+          'SELECT id FROM amc_checkouts WHERE razorpay_order_id = ? LIMIT 1',
+          [orderId]
+        );
+
+        if (amcChk.length > 0) {
+          await pool.query(
+            "UPDATE payments SET status = 'failed', payment_id = ?, error_message = ? WHERE order_id = ? AND status != 'paid'",
+            [paymentId || null, errorDesc, orderId]
+          );
+          return res.status(200).json({ status: 'ok' });
+        }
+
         let conn;
         try {
           conn = await pool.getConnection();

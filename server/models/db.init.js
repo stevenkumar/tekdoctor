@@ -546,6 +546,7 @@ const createBaseTables = async (connection) => {
       id INT AUTO_INCREMENT PRIMARY KEY,
       payment_id VARCHAR(100) UNIQUE NULL,
       order_id VARCHAR(100) NOT NULL,
+      amc_contract_id INT NULL,
       ticket_id INT NULL,
       invoice_id VARCHAR(50) NULL,
       user_id INT NULL,
@@ -573,6 +574,7 @@ const createBaseTables = async (connection) => {
       FOREIGN KEY (collected_by) REFERENCES users(id) ON DELETE SET NULL,
       FOREIGN KEY (verified_by) REFERENCES users(id) ON DELETE SET NULL,
       INDEX idx_pmt_order (order_id),
+      INDEX idx_pmt_amc_contract (amc_contract_id),
       INDEX idx_pmt_status (status),
       INDEX idx_pmt_ticket (ticket_id),
       INDEX idx_pmt_invoice (invoice_id),
@@ -850,6 +852,51 @@ const createBaseTables = async (connection) => {
       INDEX idx_amc_rem_next_retry (delivery_status, next_retry_at, retry_count)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
+  // 30. AMC Checkouts Table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS amc_checkouts (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      checkout_token CHAR(36) UNIQUE NOT NULL,
+      source ENUM('public', 'existing_company') NOT NULL,
+      company_user_id INT NULL,
+      plan_id INT NULL,
+      plan_code VARCHAR(50) NULL,
+      plan_name VARCHAR(150) NULL,
+      device_capacity INT NOT NULL DEFAULT 0,
+      duration_months INT NOT NULL DEFAULT 12,
+      price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      discount_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      total_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      currency VARCHAR(10) DEFAULT 'INR',
+      company_name VARCHAR(150) NULL,
+      contact_person VARCHAR(100) NULL,
+      email VARCHAR(255) NULL,
+      phone VARCHAR(20) NULL,
+      address TEXT NULL,
+      state VARCHAR(60) NULL,
+      gst_number VARCHAR(15) NULL,
+      password_hash VARCHAR(255) NULL,
+      razorpay_order_id VARCHAR(100) UNIQUE NULL,
+      razorpay_payment_id VARCHAR(100) NULL,
+      status ENUM('created', 'paid', 'company_created', 'contract_created', 'provisioned', 'needs_attention', 'expired', 'cancelled') DEFAULT 'created',
+      provisioned_user_id INT NULL,
+      contract_id INT NULL,
+      error_message TEXT NULL,
+      attempts INT DEFAULT 0,
+      expires_at DATETIME NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (company_user_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (plan_id) REFERENCES amc_plans(id) ON DELETE SET NULL,
+      FOREIGN KEY (provisioned_user_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (contract_id) REFERENCES amc_contracts(id) ON DELETE SET NULL,
+      INDEX idx_chk_email (email),
+      INDEX idx_chk_status (status),
+      INDEX idx_chk_expires_at (expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
 };
 
 // ─── Default Repair Protocol Homepage Content ────────────────────────────────
@@ -933,7 +980,12 @@ const seedDefaultDataIfEmpty = async (connection) => {
     ['invoice_default_items', defaultCatalogItems, 'billing'],
     ['amc_reminder_milestones_days', '30,15,7,1', 'amc'],
     ['amc_reminder_retry_base_minutes', '15', 'amc'],
-    ['amc_business_timezone', 'Asia/Kolkata', 'amc']
+    ['amc_business_timezone', 'Asia/Kolkata', 'amc'],
+    ['company_self_registration_enabled', 'true', 'amc'],
+    ['amc_self_serve_enabled', 'true', 'amc'],
+    ['amc_auto_approve_replacements', 'true', 'amc'],
+    ['amc_replacement_max_swaps', '2', 'amc'],
+    ['amc_checkout_expiry_minutes', '60', 'amc']
   ];
 
   const [settingsCount] = await connection.query('SELECT COUNT(*) as cnt FROM site_settings');
@@ -2143,6 +2195,111 @@ const MIGRATIONS = [
       await addColumnSafe(connection, 'company_devices', 'branch_id INT NULL', 'branch_id');
       await addColumnSafe(connection, 'company_devices', 'employee_id INT NULL', 'employee_id');
       console.log('[Migration:2026_20] Verified and added branch_id & employee_id columns in B2B tables.');
+    }
+  },
+  {
+    version: '2026_21_add_amc_contract_id_to_payments',
+    name: 'Add amc_contract_id and index to payments table',
+    isSatisfied: async (connection) => {
+      const hasCol = await checkColumnExists(connection, 'payments', 'amc_contract_id');
+      const hasIdx = await checkIndexExists(connection, 'payments', 'idx_pmt_amc_contract');
+      return Boolean(hasCol && hasIdx);
+    },
+    apply: async (connection) => {
+      await addColumnSafe(connection, 'payments', 'amc_contract_id INT NULL', 'amc_contract_id');
+      await addIndexSafe(connection, 'payments', 'idx_pmt_amc_contract', 'amc_contract_id');
+      console.log('[Migration:2026_21] Added amc_contract_id and idx_pmt_amc_contract to payments.');
+    }
+  },
+  {
+    version: '2026_22_amc_checkouts',
+    name: 'Add amc_checkouts table and seed AMC self-serve settings',
+    isSatisfied: async (connection) => {
+      const tableExists = await checkTableExists(connection, 'amc_checkouts');
+      if (!tableExists) return false;
+
+      const hasEmailIdx = await checkIndexExists(connection, 'amc_checkouts', 'idx_chk_email');
+      const hasStatusIdx = await checkIndexExists(connection, 'amc_checkouts', 'idx_chk_status');
+      const hasExpiresIdx = await checkIndexExists(connection, 'amc_checkouts', 'idx_chk_expires_at');
+      if (!hasEmailIdx || !hasStatusIdx || !hasExpiresIdx) return false;
+
+      const [settings] = await connection.query(`
+        SELECT COUNT(*) as cnt FROM site_settings 
+        WHERE setting_key IN (
+          'company_self_registration_enabled',
+          'amc_self_serve_enabled',
+          'amc_auto_approve_replacements',
+          'amc_replacement_max_swaps',
+          'amc_checkout_expiry_minutes'
+        )
+      `);
+      return settings[0]?.cnt === 5;
+    },
+    apply: async (connection) => {
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS amc_checkouts (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          checkout_token CHAR(36) UNIQUE NOT NULL,
+          source ENUM('public', 'existing_company') NOT NULL,
+          company_user_id INT NULL,
+          plan_id INT NULL,
+          plan_code VARCHAR(50) NULL,
+          plan_name VARCHAR(150) NULL,
+          device_capacity INT NOT NULL DEFAULT 0,
+          duration_months INT NOT NULL DEFAULT 12,
+          price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+          discount_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+          tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+          total_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+          currency VARCHAR(10) DEFAULT 'INR',
+          company_name VARCHAR(150) NULL,
+          contact_person VARCHAR(100) NULL,
+          email VARCHAR(255) NULL,
+          phone VARCHAR(20) NULL,
+          address TEXT NULL,
+          state VARCHAR(60) NULL,
+          gst_number VARCHAR(15) NULL,
+          password_hash VARCHAR(255) NULL,
+          razorpay_order_id VARCHAR(100) UNIQUE NULL,
+          razorpay_payment_id VARCHAR(100) NULL,
+          status ENUM('created', 'paid', 'company_created', 'contract_created', 'provisioned', 'needs_attention', 'expired', 'cancelled') DEFAULT 'created',
+          provisioned_user_id INT NULL,
+          contract_id INT NULL,
+          error_message TEXT NULL,
+          attempts INT DEFAULT 0,
+          expires_at DATETIME NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (company_user_id) REFERENCES users(id) ON DELETE SET NULL,
+          FOREIGN KEY (plan_id) REFERENCES amc_plans(id) ON DELETE SET NULL,
+          FOREIGN KEY (provisioned_user_id) REFERENCES users(id) ON DELETE SET NULL,
+          FOREIGN KEY (contract_id) REFERENCES amc_contracts(id) ON DELETE SET NULL,
+          INDEX idx_chk_email (email),
+          INDEX idx_chk_status (status),
+          INDEX idx_chk_expires_at (expires_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      `);
+
+      await addIndexSafe(connection, 'amc_checkouts', 'idx_chk_email', 'email');
+      await addIndexSafe(connection, 'amc_checkouts', 'idx_chk_status', 'status');
+      await addIndexSafe(connection, 'amc_checkouts', 'idx_chk_expires_at', 'expires_at');
+
+      const amcSettings = [
+        ['company_self_registration_enabled', 'true', 'amc'],
+        ['amc_self_serve_enabled', 'true', 'amc'],
+        ['amc_auto_approve_replacements', 'true', 'amc'],
+        ['amc_replacement_max_swaps', '2', 'amc'],
+        ['amc_checkout_expiry_minutes', '60', 'amc']
+      ];
+
+      for (const [key, value, group] of amcSettings) {
+        await connection.query(`
+          INSERT IGNORE INTO site_settings (setting_key, setting_value, setting_group)
+          VALUES (?, ?, ?)
+        `, [key, value, group]);
+      }
+
+      console.log('[Migration:2026_22] Created amc_checkouts table and seeded AMC self-serve settings.');
     }
   }
 ];

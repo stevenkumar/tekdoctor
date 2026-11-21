@@ -911,7 +911,15 @@ const SETTING_KEY_GROUPS = {
     invoice_prefix: 'billing',
     default_gst_rate: 'billing',
     invoice_gst_enabled: 'billing',
-    invoice_default_items: 'billing'
+    invoice_default_items: 'billing',
+    company_self_registration_enabled: 'amc',
+    amc_self_serve_enabled: 'amc',
+    amc_auto_approve_replacements: 'amc',
+    amc_replacement_max_swaps: 'amc',
+    amc_checkout_expiry_minutes: 'amc',
+    amc_reminder_milestones_days: 'amc',
+    amc_reminder_retry_base_minutes: 'amc',
+    amc_business_timezone: 'amc'
 };
 
 const updateSettings = async (req, res, next) => {

@@ -1,9 +1,12 @@
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const { pool } = require('../config/db.config');
 const config = require('../config/app.config');
 const logger = require('../utils/logger');
-const { generateInvoiceId, allocateNextCompanyAmcContractNumber } = require('../utils/helpers');
+const { generateInvoiceId, generateCompanyId, allocateNextCompanyAmcContractNumber } = require('../utils/helpers');
 const { sendAdminNotification, sendCustomerNotification } = require('../utils/email.utils');
+const { getSetting, getBooleanSetting } = require('../utils/settings');
+const { normalizePhoneNumber } = require('../middleware/validate.middleware');
 
 /**
  * Helper to resolve numeric company user ID from either numeric ID or string code (e.g. 'CMP-001').
@@ -200,6 +203,51 @@ const addDaysOnly = (dateStr, days) => {
   const d = new Date(clean + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
+};
+
+/**
+ * Inclusive calendar-month math in Asia/Kolkata timezone:
+ * start = business today in YYYY-MM-DD.
+ * end = add duration_months, then minus 1 day (e.g. 2026-04-01 + 12m = 2027-03-31; 2026-03-31 + 1m = 2026-04-30).
+ * Handles short-month overflow correctly by clamping target day before subtracting 1 day.
+ */
+const addMonthsCorrect = (startDateStr, durationMonths) => {
+  const clean = formatDateOnly(startDateStr);
+  if (!clean) return null;
+  const [yStr, mStr, dStr] = clean.split('-');
+  const y = parseInt(yStr, 10);
+  const m = parseInt(mStr, 10);
+  const d = parseInt(dStr, 10);
+
+  const monthsToAdd = parseInt(durationMonths, 10) || 0;
+  const totalMonths = (y * 12) + (m - 1) + monthsToAdd;
+  const targetYear = Math.floor(totalMonths / 12);
+  const targetMonth = (totalMonths % 12) + 1; // 1-12
+
+  // Days in start month
+  const daysInStartMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const isStartLastDay = (d === daysInStartMonth);
+
+  // Days in target month
+  const daysInTargetMonth = new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate();
+
+  let resYear, resMonth, resDay;
+  if (isStartLastDay) {
+    // If starting on the last day of a month (e.g., 2026-03-31), 1 month coverage ends on the last day of target month (2026-04-30)
+    resYear = targetYear;
+    resMonth = targetMonth;
+    resDay = daysInTargetMonth;
+  } else {
+    // Clamp target day to target month before subtracting 1 day
+    const clampedDay = Math.min(d, daysInTargetMonth);
+    const targetDate = new Date(Date.UTC(targetYear, targetMonth - 1, clampedDay));
+    targetDate.setUTCDate(targetDate.getUTCDate() - 1);
+    resYear = targetDate.getUTCFullYear();
+    resMonth = targetDate.getUTCMonth() + 1;
+    resDay = targetDate.getUTCDate();
+  }
+
+  return `${resYear}-${String(resMonth).padStart(2, '0')}-${String(resDay).padStart(2, '0')}`;
 };
 
 /**
@@ -1702,6 +1750,236 @@ const updateContractStatus = async ({ contractId, adminUserId, status, reason })
 };
 
 /**
+ * Shared Helper: Create commercial invoice for AMC contract payment with GST split (CGST+SGST or IGST).
+ * Inserts invoices + invoice_line_items, fills cgst_amount/sgst_amount/igst_amount, gst_type, is_interstate.
+ */
+const createAmcInvoice = async (connection, { contract, clientName = null, note = null }) => {
+  const companyUserId = contract.company_id;
+
+  // Resolve client name if not provided
+  let effectiveClientName = clientName;
+  let companyProfile = null;
+  const [profiles] = await connection.query('SELECT company_name, gst_number, address FROM company_profiles WHERE user_id = ?', [companyUserId]);
+  if (profiles.length > 0) companyProfile = profiles[0];
+
+  if (!effectiveClientName || effectiveClientName === 'Corporate Client') {
+    const [users] = await connection.query('SELECT name FROM users WHERE id = ?', [companyUserId]);
+    effectiveClientName = companyProfile?.company_name || users[0]?.name || effectiveClientName || 'Corporate Client';
+  }
+
+  // Determine interstate vs intra-state
+  let isInterstate = false;
+  if (contract.is_interstate !== null && contract.is_interstate !== undefined) {
+    isInterstate = Boolean(contract.is_interstate);
+  } else if (contract.gst_type === 'inter') {
+    isInterstate = true;
+  } else if (contract.gst_type === 'intra') {
+    isInterstate = false;
+  } else {
+    // Resolve seller state code from site_settings.gstin (first 2 characters), falling back to 27 if missing or invalid
+    let businessStateCode = '27';
+    try {
+      const [settingsRows] = await connection.query(
+        "SELECT setting_value FROM site_settings WHERE setting_key = 'gstin' LIMIT 1"
+      );
+      if (settingsRows.length > 0 && settingsRows[0].setting_value) {
+        const gstinVal = String(settingsRows[0].setting_value).trim();
+        if (gstinVal.length >= 2 && /^\d{2}$/.test(gstinVal.substring(0, 2))) {
+          businessStateCode = gstinVal.substring(0, 2);
+        }
+      }
+    } catch (_) {
+      // Keep fallback '27'
+    }
+
+    const companyGstin = companyProfile?.gst_number ? String(companyProfile.gst_number).trim() : null;
+    const companyAddress = companyProfile?.address ? String(companyProfile.address).toLowerCase() : null;
+
+    if (companyGstin && companyGstin.length >= 2) {
+      const compStateCode = companyGstin.substring(0, 2);
+      if (/^\d{2}$/.test(compStateCode) && compStateCode !== businessStateCode) {
+        isInterstate = true;
+      }
+    } else if (companyAddress && !companyAddress.includes('maharashtra') && (
+      companyAddress.includes('karnataka') ||
+      companyAddress.includes('delhi') ||
+      companyAddress.includes('tamil nadu') ||
+      companyAddress.includes('gujarat') ||
+      companyAddress.includes('telangana')
+    )) {
+      isInterstate = true;
+    }
+  }
+
+  const gstType = isInterstate ? 'inter' : 'intra';
+  const totalTax = parseFloat(contract.tax_amount || 0);
+  const subtotal = parseFloat(contract.price || 0);
+  const totalAmount = parseFloat(contract.total_amount || (subtotal + totalTax));
+  const discountAmount = parseFloat(contract.discount_amount || 0);
+  const taxableAmount = Math.max(0, subtotal - discountAmount);
+  const taxRate = 18.00;
+
+  let cgstRate = 0.00;
+  let sgstRate = 0.00;
+  let igstRate = 0.00;
+  let cgstAmount = 0.00;
+  let sgstAmount = 0.00;
+  let igstAmount = 0.00;
+
+  if (isInterstate) {
+    igstRate = taxRate;
+    igstAmount = totalTax;
+  } else {
+    cgstRate = Math.round((taxRate / 2) * 100) / 100;
+    sgstRate = Math.round((taxRate / 2) * 100) / 100;
+    cgstAmount = Math.round((totalTax / 2) * 100) / 100;
+    sgstAmount = Math.round((totalTax - cgstAmount) * 100) / 100;
+  }
+
+  const invoiceId = await generateInvoiceId(connection);
+  const invoiceNote = note || `AMC Contract Payment: ${contract.contract_number} (${contract.plan_name})`;
+
+  await connection.query(`
+    INSERT INTO invoices (
+      id, user_id, client_name, amount, subtotal, tax_amount,
+      cgst_amount, sgst_amount, igst_amount, is_interstate, gst_type,
+      cgst_rate, sgst_rate, igst_rate, discount_amount, taxable_amount,
+      currency, invoice_date, due_date, status, notes
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'Paid', ?)
+  `, [
+    invoiceId,
+    companyUserId,
+    effectiveClientName,
+    totalAmount,
+    subtotal,
+    totalTax,
+    cgstAmount,
+    sgstAmount,
+    igstAmount,
+    isInterstate,
+    gstType,
+    cgstRate,
+    sgstRate,
+    igstRate,
+    discountAmount,
+    taxableAmount,
+    contract.currency || 'INR',
+    invoiceNote
+  ]);
+
+  await connection.query(`
+    INSERT INTO invoice_line_items (
+      invoice_id, description, hsn_sac, quantity, unit_price, total, tax_rate, tax_amount
+    ) VALUES (?, ?, '9987', 1, ?, ?, ?, ?)
+  `, [
+    invoiceId,
+    `AMC Plan: ${contract.plan_name} (${contract.device_capacity} Devices)`,
+    subtotal,
+    subtotal,
+    taxRate,
+    totalTax
+  ]);
+
+  return invoiceId;
+};
+
+/**
+ * Shared Helper: Finalizes contract activation upon payment settlement.
+ * Performs activation UPDATE of amc_contracts, amc_covered_devices date sync, and amc_contract_history insert.
+ */
+const finalizePaidContract = async (connection, {
+  contract,
+  invoiceId,
+  actorUserId = null,
+  action = 'PAYMENT_VERIFIED',
+  details = null
+}) => {
+  const shouldActivate = contract.approval_status === 'approved';
+  const nextStatus = shouldActivate ? 'active' : (contract.status === 'offered' ? 'accepted' : contract.status);
+  const start = contract.start_date ? formatDateOnly(contract.start_date) : formatDateOnly(new Date());
+  const end = contract.end_date ? formatDateOnly(contract.end_date) : formatDateOnly(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+
+  await connection.query(`
+    UPDATE amc_contracts
+    SET payment_status = 'paid', invoice_id = ?, status = ?, start_date = ?, end_date = ?
+    WHERE id = ?
+  `, [invoiceId, nextStatus, start, end, contract.id]);
+
+  if (shouldActivate) {
+    await connection.query(`
+      UPDATE amc_covered_devices
+      SET coverage_start_date = ?, coverage_end_date = ?
+      WHERE contract_id = ? AND status = 'active'
+    `, [start, end, contract.id]);
+  }
+
+  const historyDetails = details
+    ? (typeof details === 'string' ? details : JSON.stringify(details))
+    : JSON.stringify({ invoiceId, activated: shouldActivate });
+
+  await connection.query(`
+    INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+    VALUES (?, ?, ?, ?)
+  `, [contract.id, action, actorUserId || null, historyDetails]);
+
+  return nextStatus;
+};
+
+/**
+ * Shared Helper: Creates an order on Razorpay API, or generates non-production fallback.
+ * Strictly fails closed in production when credentials are unconfigured or API returns error.
+ */
+const createRazorpayOrder = async ({ amountPaise, currency = 'INR', receipt, notes = {} }) => {
+  const keyId = config.razorpay?.keyId || '';
+  const keySecret = config.razorpay?.keySecret || '';
+
+  const isRazorpayConfigured = Boolean(
+    keyId &&
+    keySecret &&
+    !keySecret.includes('YourKeySecret') &&
+    !keySecret.includes('demo')
+  );
+
+  let orderId = null;
+
+  if (isRazorpayConfigured) {
+    try {
+      const authHeader = 'Basic ' + Buffer.from(`${keyId}:${keySecret}`).toString('base64');
+      const res = await fetch('https://api.razorpay.com/v1/orders', {
+        method: 'POST',
+        headers: {
+          'Authorization': authHeader,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          amount: amountPaise,
+          currency,
+          receipt,
+          notes
+        })
+      });
+      const orderData = await res.json();
+      if (!res.ok || !orderData || !orderData.id) {
+        const errorDesc = orderData?.error?.description || `HTTP ${res.status}`;
+        throw new Error(`Razorpay order creation failed: ${errorDesc}`);
+      }
+      orderId = orderData.id;
+    } catch (orderErr) {
+      logger.error(`Razorpay API order creation failed: ${orderErr.message}`);
+      throw new Error(`Failed to create Razorpay payment order: ${orderErr.message}`);
+    }
+  } else {
+    // Fake order ID fallback permitted ONLY in non-production
+    if (config.isProduction) {
+      throw new Error('Payment gateway is not configured with live credentials.');
+    }
+    orderId = `order_amc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  }
+
+  return { orderId, keyId, isConfigured: isRazorpayConfigured };
+};
+
+/**
  * 16. Create AMC Contract Payment Order (Razorpay / Online)
  */
 const createContractPaymentOrder = async ({ contractId, companyId, userId }) => {
@@ -1721,47 +1999,24 @@ const createContractPaymentOrder = async ({ contractId, companyId, userId }) => 
   }
 
   const totalAmount = parseFloat(contract.total_amount);
-  const keyId = config.razorpay?.keyId || '';
-  const keySecret = config.razorpay?.keySecret || '';
   const currency = contract.currency || 'INR';
 
-  let orderId = `order_amc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-
-  // If live Razorpay keys are configured, create real Razorpay order
-  if (keyId && keySecret && !keySecret.includes('YourKeySecret') && !keySecret.includes('demo')) {
-    try {
-      const authHeader = 'Basic ' + Buffer.from(`${keyId}:${keySecret}`).toString('base64');
-      const res = await fetch('https://api.razorpay.com/v1/orders', {
-        method: 'POST',
-        headers: {
-          'Authorization': authHeader,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          amount: Math.round(totalAmount * 100), // in paise
-          currency,
-          receipt: `amc_${contract.id}`,
-          notes: {
-            contract_id: String(contract.id),
-            contract_number: contract.contract_number,
-            company_id: String(resolvedCompanyId)
-          }
-        })
-      });
-      const orderData = await res.json();
-      if (orderData && orderData.id) {
-        orderId = orderData.id;
-      }
-    } catch (orderErr) {
-      logger.warn(`Razorpay API order creation fallback: ${orderErr.message}`);
+  const { orderId, keyId } = await createRazorpayOrder({
+    amountPaise: Math.round(totalAmount * 100),
+    currency,
+    receipt: `amc_${contract.id}`,
+    notes: {
+      contract_id: String(contract.id),
+      contract_number: contract.contract_number,
+      company_id: String(resolvedCompanyId)
     }
-  }
+  });
 
-  // Insert payment record
+  // Insert payment record with amc_contract_id
   await pool.query(`
-    INSERT INTO payments (order_id, user_id, company_id, amount, currency, status, gateway, reference_note)
-    VALUES (?, ?, ?, ?, ?, 'created', 'razorpay', ?)
-  `, [orderId, userId, resolvedCompanyId, totalAmount, currency, `AMC Contract: ${contract.contract_number}`]);
+    INSERT INTO payments (order_id, amc_contract_id, user_id, company_id, amount, currency, status, gateway, reference_note)
+    VALUES (?, ?, ?, ?, ?, ?, 'created', 'razorpay', ?)
+  `, [orderId, contract.id, userId, resolvedCompanyId, totalAmount, currency, `AMC Contract: ${contract.contract_number}`]);
 
   return {
     orderId,
@@ -1776,102 +2031,160 @@ const createContractPaymentOrder = async ({ contractId, companyId, userId }) => 
 
 /**
  * 17. Verify AMC Contract Payment (Razorpay signature verification)
+ * Atomic verification with row locking, contract payment binding, and post-commit notifications.
  */
 const verifyContractPayment = async ({ contractId, companyId, razorpayOrderId, razorpayPaymentId, razorpaySignature, userId }) => {
-  const resolvedCompanyId = await resolveCompanyUserId(pool, companyId);
-  const [contracts] = await pool.query(
-    'SELECT * FROM amc_contracts WHERE id = ? AND company_id = ?',
-    [contractId, resolvedCompanyId]
-  );
-  if (contracts.length === 0) throw new Error('Contract not found.');
+  const connection = await pool.getConnection();
+  let contract = null;
+  let resolvedCompanyId = null;
+  let invoiceId = null;
+  let nextStatus = null;
 
-  const contract = contracts[0];
-  if (contract.status === 'rejected' || contract.approval_status === 'rejected') {
-    throw new Error('Cannot verify payment for a rejected contract offer.');
-  }
+  try {
+    await connection.beginTransaction();
 
-  // Idempotency: avoid duplicate invoices on verification replays
-  if (contract.payment_status === 'paid') {
-    return {
-      success: true,
-      contractId,
-      invoiceId: contract.invoice_id,
-      paymentStatus: 'paid',
-      status: contract.status
-    };
-  }
+    resolvedCompanyId = await resolveCompanyUserId(connection, companyId);
+    const [contracts] = await connection.query(
+      'SELECT * FROM amc_contracts WHERE id = ? AND company_id = ? FOR UPDATE',
+      [contractId, resolvedCompanyId]
+    );
+    if (contracts.length === 0) throw new Error('Contract not found.');
 
-  const keySecret = config.razorpay?.keySecret;
-
-  // Strict signature verification when real keys are configured
-  if (keySecret && !keySecret.includes('YourKeySecret') && !keySecret.includes('demo')) {
-    const expectedSignature = crypto
-      .createHmac('sha256', keySecret)
-      .update(`${razorpayOrderId}|${razorpayPaymentId}`)
-      .digest('hex');
-    const bufExpected = Buffer.from(expectedSignature, 'utf8');
-    const bufReceived = Buffer.from(razorpaySignature || '', 'utf8');
-    const isSignatureValid = bufExpected.length === bufReceived.length && crypto.timingSafeEqual(bufExpected, bufReceived);
-    if (!isSignatureValid) {
-      await pool.query('UPDATE payments SET status = "failed", error_message = "Invalid signature" WHERE order_id = ?', [razorpayOrderId]);
-      await pool.query('UPDATE amc_contracts SET payment_status = "failed" WHERE id = ?', [contractId]);
-      throw new Error('Payment signature verification failed.');
+    contract = contracts[0];
+    if (contract.status === 'rejected' || contract.approval_status === 'rejected') {
+      throw new Error('Cannot verify payment for a rejected contract offer.');
     }
+
+    // Idempotency: avoid duplicate invoices on verification replays
+    if (contract.payment_status === 'paid') {
+      await connection.commit();
+      return {
+        success: true,
+        contractId,
+        invoiceId: contract.invoice_id,
+        paymentStatus: 'paid',
+        status: contract.status
+      };
+    }
+
+    const keySecret = config.razorpay?.keySecret || '';
+    const isDemoOrMissing = !keySecret || keySecret.includes('YourKeySecret') || keySecret.includes('demo');
+
+    // 1. Production/demo-keys fail-closed check
+    if (config.isProduction && isDemoOrMissing) {
+      throw new Error('Payment verification unavailable: Live Razorpay credentials required in production.');
+    }
+
+    // 2. HMAC signature verification (timingSafeEqual)
+    // Signature verification (skipped ONLY when !config.isProduction AND keys are demo/placeholder)
+    if (!isDemoOrMissing) {
+      let isSignatureValid = false;
+      if (razorpaySignature && razorpayOrderId && razorpayPaymentId) {
+        const expectedSignature = crypto
+          .createHmac('sha256', keySecret)
+          .update(`${razorpayOrderId}|${razorpayPaymentId}`)
+          .digest('hex');
+        const bufExpected = Buffer.from(expectedSignature, 'utf8');
+        const bufReceived = Buffer.from(razorpaySignature, 'utf8');
+        isSignatureValid = bufExpected.length === bufReceived.length && crypto.timingSafeEqual(bufExpected, bufReceived);
+      }
+
+      if (!isSignatureValid) {
+        // Rollback transaction
+        try {
+          await connection.rollback();
+        } catch (_) {}
+
+        // In a SEPARATE statement update ONLY the payments row that matches order_id AND company_id
+        // AND (amc_contract_id = contract.id OR the legacy reference_note match)
+        // AND status IN ('created','processing') to status 'failed'
+        await pool.query(`
+          UPDATE payments
+          SET status = 'failed', error_message = 'Invalid signature'
+          WHERE order_id = ?
+            AND company_id = ?
+            AND (amc_contract_id = ? OR (amc_contract_id IS NULL AND reference_note = CONCAT('AMC Contract: ', ?)))
+            AND status IN ('created', 'processing')
+        `, [razorpayOrderId, resolvedCompanyId, contract.id, contract.contract_number]);
+
+        // and set the contract payment_status 'failed' as before
+        await pool.query(
+          "UPDATE amc_contracts SET payment_status = 'failed' WHERE id = ?",
+          [contract.id]
+        );
+
+        // throw the SAME error message the phase 2 test expects ('Payment signature verification failed.')
+        throw new Error('Payment signature verification failed.');
+      }
+    }
+
+    // 3. Binding checks (order, company, gateway, status, amount, contract).
+    // Allow status 'failed' with payment_id IS NULL so a legitimate retry after a bad signature can still be verified.
+    const [paymentRows] = await connection.query(`
+      SELECT * FROM payments
+      WHERE order_id = ?
+        AND company_id = ?
+        AND gateway = 'razorpay'
+        AND (
+          status IN ('created', 'processing')
+          OR (status = 'failed' AND payment_id IS NULL)
+        )
+        AND amount = ?
+        AND (amc_contract_id = ? OR (amc_contract_id IS NULL AND reference_note = CONCAT('AMC Contract: ', ?)))
+      LIMIT 1
+      FOR UPDATE
+    `, [razorpayOrderId, resolvedCompanyId, contract.total_amount, contract.id, contract.contract_number]);
+
+    if (paymentRows.length === 0) {
+      throw new Error('Payment does not belong to this contract.');
+    }
+
+    const paymentRow = paymentRows[0];
+
+    // 4. Duplicate razorpayPaymentId check against other payments rows
+    if (razorpayPaymentId) {
+      const [existingPaymentRows] = await connection.query(
+        'SELECT id, order_id FROM payments WHERE payment_id = ? AND id <> ? LIMIT 1 FOR UPDATE',
+        [razorpayPaymentId, paymentRow.id]
+      );
+      if (existingPaymentRows.length > 0) {
+        throw new Error(`Razorpay payment ID ${razorpayPaymentId} has already been used.`);
+      }
+    }
+
+    // 5. Settlement (payments paid, createAmcInvoice, finalizePaidContract)
+    await connection.query(`
+      UPDATE payments 
+      SET payment_id = ?, status = 'paid', verification_status = 'verified', verified_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [razorpayPaymentId, paymentRow.id]);
+
+    // Create commercial invoice via shared helper
+    invoiceId = await createAmcInvoice(connection, {
+      contract,
+      note: `AMC Contract Payment: ${contract.contract_number} (${contract.plan_name})`
+    });
+
+    // Finalize contract via shared helper
+    nextStatus = await finalizePaidContract(connection, {
+      contract,
+      invoiceId,
+      actorUserId: userId || null,
+      action: 'PAYMENT_VERIFIED',
+      details: { razorpayPaymentId, razorpayOrderId, invoiceId, amount: contract.total_amount, activated: contract.approval_status === 'approved' }
+    });
+
+    await connection.commit();
+  } catch (err) {
+    try {
+      await connection.rollback();
+    } catch (_) {}
+    throw err;
+  } finally {
+    connection.release();
   }
 
-  // Update payment record
-  await pool.query(`
-    UPDATE payments 
-    SET payment_id = ?, status = 'paid', verification_status = 'verified', verified_at = CURRENT_TIMESTAMP
-    WHERE order_id = ?
-  `, [razorpayPaymentId, razorpayOrderId]);
-
-  // Create commercial invoice
-  const [profiles] = await pool.query('SELECT company_name FROM company_profiles WHERE user_id = ?', [resolvedCompanyId]);
-  const [users] = await pool.query('SELECT name FROM users WHERE id = ?', [resolvedCompanyId]);
-  const clientName = profiles[0]?.company_name || users[0]?.name || 'Corporate Client';
-  const invoiceId = await generateInvoiceId(pool);
-
-  await pool.query(`
-    INSERT INTO invoices (
-      id, user_id, client_name, amount, subtotal, tax_amount, currency, invoice_date, due_date, status, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'Paid', ?)
-  `, [
-    invoiceId, resolvedCompanyId, clientName,
-    contract.total_amount, contract.price, contract.tax_amount || 0,
-    contract.currency || 'INR', `AMC Contract Payment: ${contract.contract_number} (${contract.plan_name})`
-  ]);
-
-  await pool.query(`
-    INSERT INTO invoice_line_items (invoice_id, description, quantity, unit_price, total, tax_amount)
-    VALUES (?, ?, 1, ?, ?, ?)
-  `, [invoiceId, `AMC Plan: ${contract.plan_name} (${contract.device_capacity} Devices)`, contract.price, contract.price, contract.tax_amount || 0]);
-
-  // Update contract
-  const shouldActivate = contract.approval_status === 'approved';
-  const start = contract.start_date ? formatDateOnly(contract.start_date) : formatDateOnly(new Date());
-  const end = contract.end_date ? formatDateOnly(contract.end_date) : formatDateOnly(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
-
-  await pool.query(`
-    UPDATE amc_contracts
-    SET payment_status = 'paid', invoice_id = ?, status = ?, start_date = ?, end_date = ?
-    WHERE id = ?
-  `, [invoiceId, shouldActivate ? 'active' : (contract.status === 'offered' ? 'accepted' : contract.status), start, end, contractId]);
-
-  if (shouldActivate) {
-    await pool.query(`
-      UPDATE amc_covered_devices
-      SET coverage_start_date = ?, coverage_end_date = ?
-      WHERE contract_id = ? AND status = 'active'
-    `, [start, end, contractId]);
-  }
-
-  await pool.query(`
-    INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
-    VALUES (?, 'PAYMENT_VERIFIED', ?, ?)
-  `, [contractId, userId || null, JSON.stringify({ razorpayPaymentId, razorpayOrderId, invoiceId, amount: contract.total_amount, activated: shouldActivate })]);
-
-  // Notify admin & company
+  // Send notifications AFTER commit
   await sendAmcNotification({
     role: 'admin',
     title: `AMC Payment Verified (${contract.contract_number})`,
@@ -1880,7 +2193,7 @@ const verifyContractPayment = async ({ contractId, companyId, razorpayOrderId, r
   await sendAmcNotification({
     userId: resolvedCompanyId,
     title: `Payment Receipt: AMC Contract ${contract.contract_number}`,
-    message: `Your payment of ₹${contract.total_amount} was successfully verified. Invoice ${invoiceId} is generated.${shouldActivate ? ' Your AMC coverage is now ACTIVE.' : ' Contract is awaiting final admin approval.'}`
+    message: `Your payment of ₹${contract.total_amount} was successfully verified. Invoice ${invoiceId} is generated.${nextStatus === 'active' ? ' Your AMC coverage is now ACTIVE.' : ' Contract is awaiting final admin approval.'}`
   });
 
   return {
@@ -1888,7 +2201,7 @@ const verifyContractPayment = async ({ contractId, companyId, razorpayOrderId, r
     contractId,
     invoiceId,
     paymentStatus: 'paid',
-    status: shouldActivate ? 'active' : contract.status
+    status: nextStatus
   };
 };
 
@@ -1913,10 +2226,11 @@ const initiateContractOfflinePayment = async ({ contractId, companyId, paymentMe
 
   const orderId = `offline_amc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
+  // Store amc_contract_id on the payments row
   await pool.query(`
-    INSERT INTO payments (order_id, user_id, company_id, amount, currency, payment_method, status, gateway, reference_note)
-    VALUES (?, ?, ?, ?, ?, ?, 'pending_verification', 'offline', ?)
-  `, [orderId, userId, resolvedCompanyId, contract.total_amount, contract.currency || 'INR', paymentMethod, `AMC Ref: ${referenceNumber || 'N/A'}. Contract: ${contract.contract_number}. ${notes || ''}`]);
+    INSERT INTO payments (order_id, amc_contract_id, user_id, company_id, amount, currency, payment_method, status, gateway, reference_note)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_verification', 'offline', ?)
+  `, [orderId, contract.id, userId, resolvedCompanyId, contract.total_amount, contract.currency || 'INR', paymentMethod, `AMC Ref: ${referenceNumber || 'N/A'}. Contract: ${contract.contract_number}. ${notes || ''}`]);
 
   await pool.query('UPDATE amc_contracts SET payment_status = "pending_verification" WHERE id = ?', [contractId]);
 
@@ -2010,53 +2324,23 @@ const verifyContractOfflinePayment = async ({ contractId, adminUserId, decision,
         `, [contract.company_id, paymentRow.id, offlineResolution.priorHistoryOrderIds]);
       }
 
-      // Generate invoice atomically inside the transaction
-      const [profiles] = await connection.query('SELECT company_name FROM company_profiles WHERE user_id = ?', [contract.company_id]);
-      const [users] = await connection.query('SELECT name FROM users WHERE id = ?', [contract.company_id]);
-      const clientName = profiles[0]?.company_name || users[0]?.name || 'Corporate Client';
-      const invoiceId = await generateInvoiceId(connection);
+      // Generate invoice atomically via shared helper
+      const invoiceId = await createAmcInvoice(connection, {
+        contract,
+        note: `AMC Contract Payment (Offline): ${contract.contract_number} (${contract.plan_name})`
+      });
 
-      await connection.query(`
-        INSERT INTO invoices (
-          id, user_id, client_name, amount, subtotal, tax_amount, currency, invoice_date, due_date, status, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'Paid', ?)
-      `, [
-        invoiceId, contract.company_id, clientName,
-        contract.total_amount, contract.price, contract.tax_amount || 0,
-        contract.currency || 'INR', `AMC Contract Payment (Offline): ${contract.contract_number} (${contract.plan_name})`
-      ]);
-
-      await connection.query(`
-        INSERT INTO invoice_line_items (invoice_id, description, quantity, unit_price, total, tax_amount)
-        VALUES (?, ?, 1, ?, ?, ?)
-      `, [invoiceId, `AMC Plan: ${contract.plan_name} (${contract.device_capacity} Devices)`, contract.price, contract.price, contract.tax_amount || 0]);
-
-      const shouldActivate = contract.approval_status === 'approved';
-      const nextContractStatus = shouldActivate ? 'active' : (contract.status === 'offered' ? 'accepted' : contract.status);
-      const start = contract.start_date ? formatDateOnly(contract.start_date) : formatDateOnly(new Date());
-      const end = contract.end_date ? formatDateOnly(contract.end_date) : formatDateOnly(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
-
-      await connection.query(`
-        UPDATE amc_contracts
-        SET payment_status = 'paid', invoice_id = ?, status = ?, start_date = ?, end_date = ?
-        WHERE id = ?
-      `, [invoiceId, nextContractStatus, start, end, contractId]);
-
-      if (shouldActivate) {
-        await connection.query(`
-          UPDATE amc_covered_devices
-          SET coverage_start_date = ?, coverage_end_date = ?
-          WHERE contract_id = ? AND status = 'active'
-        `, [start, end, contractId]);
-      }
-
-      await connection.query(`
-        INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
-        VALUES (?, 'OFFLINE_PAYMENT_VERIFIED', ?, ?)
-      `, [contractId, adminUserId, JSON.stringify({ invoiceId, adminNotes, activated: shouldActivate, orderId: paymentRow.order_id || null })]);
+      // Finalize contract via shared helper
+      const nextContractStatus = await finalizePaidContract(connection, {
+        contract,
+        invoiceId,
+        actorUserId: adminUserId,
+        action: 'OFFLINE_PAYMENT_VERIFIED',
+        details: { invoiceId, adminNotes, activated: contract.approval_status === 'approved', orderId: paymentRow.order_id || null }
+      });
 
       await connection.commit();
-      verifiedResult = { success: true, contractId, paymentStatus: 'paid', invoiceId, status: nextContractStatus, shouldActivate };
+      verifiedResult = { success: true, contractId, paymentStatus: 'paid', invoiceId, status: nextContractStatus, shouldActivate: contract.approval_status === 'approved' };
     } else {
       const [payRejectRes] = await connection.query(`
         UPDATE payments
@@ -3432,10 +3716,653 @@ const retryReminder = async (reminderId, adminUserId = null) => {
   };
 };
 
+/**
+ * 23. Public AMC Self-Serve Checkout Session Creator
+ */
+const createPublicAmcCheckout = async ({
+  planId,
+  companyName,
+  contactPerson,
+  email,
+  phone,
+  address,
+  state,
+  gstNumber,
+  password
+}) => {
+  const isEnabled = await getBooleanSetting('amc_self_serve_enabled', true);
+  if (!isEnabled) {
+    throw new Error('AMC self-serve purchases are currently disabled.');
+  }
+
+  // 1. Fetch Plan
+  const [plans] = await pool.query('SELECT * FROM amc_plans WHERE id = ? AND is_active = 1', [planId]);
+  if (plans.length === 0) {
+    throw new Error('AMC Plan not found or inactive.');
+  }
+  const plan = plans[0];
+
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const cleanPhone = normalizePhoneNumber(phone);
+  const rawPhone = String(phone || '').trim().replace(/[\s\-()]/g, '');
+  const unadornedPhone = cleanPhone ? cleanPhone.replace(/^\+91/, '') : rawPhone;
+  const phoneVariants = Array.from(new Set([cleanPhone, rawPhone, unadornedPhone].filter(Boolean)));
+
+  // 2. Pre-check email and phone uniqueness in users
+  const [existingUsers] = await pool.query(
+    'SELECT id FROM users WHERE email = ? OR phone IN (?) LIMIT 1',
+    [cleanEmail, phoneVariants]
+  );
+  if (existingUsers.length > 0) {
+    throw new Error('An account with this email or phone number already exists. Please log in or use another.');
+  }
+
+  // 3. Compute price, tax, total strictly on server
+  const basePrice = parseFloat(plan.base_price || 0);
+  const discountAmount = 0.00;
+  const gstRateSetting = await getSetting('default_gst_rate', '18');
+  const taxRate = parseFloat(gstRateSetting) || 18.00;
+  const taxAmount = Math.round((basePrice * taxRate / 100) * 100) / 100;
+  const totalAmount = Math.round((basePrice + taxAmount) * 100) / 100;
+
+  // 4. Hash password with bcryptjs salt 12
+  const salt = await bcrypt.genSalt(12);
+  const passwordHash = await bcrypt.hash(password, salt);
+
+  // 5. Generate token & Razorpay order
+  const checkoutToken = crypto.randomUUID();
+  const receipt = `chk_${checkoutToken.replace(/-/g, '').substring(0, 14)}`;
+  const { orderId, keyId } = await createRazorpayOrder({
+    amountPaise: Math.round(totalAmount * 100),
+    currency: 'INR',
+    receipt,
+    notes: {
+      checkout_token: checkoutToken,
+      email: cleanEmail
+    }
+  });
+
+  // 6. Insert amc_checkouts record with expires_at = NOW() + 30 MINUTE
+  const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+  await pool.query(`
+    INSERT INTO amc_checkouts (
+      checkout_token, source, company_user_id, plan_id, plan_code, plan_name,
+      device_capacity, duration_months, price, discount_amount, tax_amount, total_amount, currency,
+      company_name, contact_person, email, phone, address, state, gst_number,
+      password_hash, razorpay_order_id, status, expires_at
+    ) VALUES (?, 'public', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?)
+  `, [
+    checkoutToken,
+    plan.id,
+    plan.plan_code,
+    plan.name,
+    plan.default_device_capacity,
+    plan.duration_months,
+    basePrice,
+    discountAmount,
+    taxAmount,
+    totalAmount,
+    companyName.trim(),
+    contactPerson.trim(),
+    cleanEmail,
+    cleanPhone,
+    address.trim(),
+    state.trim(),
+    gstNumber ? gstNumber.trim().toUpperCase() : null,
+    passwordHash,
+    orderId,
+    expiresAt
+  ]);
+
+  // 7. Insert payments row
+  await pool.query(`
+    INSERT INTO payments (order_id, user_id, company_id, amount, currency, status, gateway, reference_note)
+    VALUES (?, NULL, NULL, ?, 'INR', 'created', 'razorpay', ?)
+  `, [orderId, totalAmount, `AMC Checkout: ${checkoutToken}`]);
+
+  return {
+    checkoutToken,
+    razorpayOrderId: orderId,
+    amount: totalAmount,
+    currency: 'INR',
+    keyId,
+    plan: {
+      id: plan.id,
+      name: plan.name,
+      deviceCapacity: plan.default_device_capacity,
+      durationMonths: plan.duration_months
+    }
+  };
+};
+
+/**
+ * 24. Company AMC Self-Serve Checkout Session Creator (Existing Authenticated Company)
+ */
+const createCompanyAmcCheckout = async ({ planId, companyUserId }) => {
+  const isEnabled = await getBooleanSetting('amc_self_serve_enabled', true);
+  if (!isEnabled) {
+    throw new Error('AMC self-serve purchases are currently disabled.');
+  }
+
+  // 1. Fetch user and company profile
+  const resolvedId = await resolveCompanyUserId(pool, companyUserId);
+  const [users] = await pool.query('SELECT * FROM users WHERE id = ?', [resolvedId]);
+  if (users.length === 0) {
+    throw new Error('Company account not found.');
+  }
+  const user = users[0];
+
+  const [profiles] = await pool.query('SELECT * FROM company_profiles WHERE user_id = ?', [resolvedId]);
+  const profile = profiles[0] || {};
+
+  // 2. Fetch Plan
+  const [plans] = await pool.query('SELECT * FROM amc_plans WHERE id = ? AND is_active = 1', [planId]);
+  if (plans.length === 0) {
+    throw new Error('AMC Plan not found or inactive.');
+  }
+  const plan = plans[0];
+
+  // 3. Price calculation
+  const basePrice = parseFloat(plan.base_price || 0);
+  const discountAmount = 0.00;
+  const gstRateSetting = await getSetting('default_gst_rate', '18');
+  const taxRate = parseFloat(gstRateSetting) || 18.00;
+  const taxAmount = Math.round((basePrice * taxRate / 100) * 100) / 100;
+  const totalAmount = Math.round((basePrice + taxAmount) * 100) / 100;
+
+  // 4. Generate token & Razorpay order
+  const checkoutToken = crypto.randomUUID();
+  const receipt = `chk_${checkoutToken.replace(/-/g, '').substring(0, 14)}`;
+  const { orderId, keyId } = await createRazorpayOrder({
+    amountPaise: Math.round(totalAmount * 100),
+    currency: 'INR',
+    receipt,
+    notes: {
+      checkout_token: checkoutToken,
+      company_id: String(resolvedId),
+      email: user.email
+    }
+  });
+
+  const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+  const compName = profile.company_name || user.name || 'Company Client';
+  const contactPerson = profile.contact_person || user.name || 'Contact Person';
+  const phone = user.phone || profile.phone_number || '';
+  const address = profile.address || '';
+  const state = profile.state || '';
+  const gstNumber = profile.gst_number || null;
+
+  await pool.query(`
+    INSERT INTO amc_checkouts (
+      checkout_token, source, company_user_id, plan_id, plan_code, plan_name,
+      device_capacity, duration_months, price, discount_amount, tax_amount, total_amount, currency,
+      company_name, contact_person, email, phone, address, state, gst_number,
+      password_hash, razorpay_order_id, status, expires_at
+    ) VALUES (?, 'existing_company', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'created', ?)
+  `, [
+    checkoutToken,
+    resolvedId,
+    plan.id,
+    plan.plan_code,
+    plan.name,
+    plan.default_device_capacity,
+    plan.duration_months,
+    basePrice,
+    discountAmount,
+    taxAmount,
+    totalAmount,
+    compName,
+    contactPerson,
+    user.email,
+    phone,
+    address,
+    state,
+    gstNumber,
+    orderId,
+    expiresAt
+  ]);
+
+  await pool.query(`
+    INSERT INTO payments (order_id, user_id, company_id, amount, currency, status, gateway, reference_note)
+    VALUES (?, ?, ?, ?, 'INR', 'created', 'razorpay', ?)
+  `, [orderId, resolvedId, resolvedId, totalAmount, `AMC Checkout: ${checkoutToken}`]);
+
+  return {
+    checkoutToken,
+    razorpayOrderId: orderId,
+    amount: totalAmount,
+    currency: 'INR',
+    keyId,
+    plan: {
+      id: plan.id,
+      name: plan.name,
+      deviceCapacity: plan.default_device_capacity,
+      durationMonths: plan.duration_months
+    }
+  };
+};
+
+/**
+ * 25. Get AMC Checkout Status
+ */
+const getAmcCheckoutStatus = async (token) => {
+  if (!token) throw new Error('Checkout token is required.');
+  const [rows] = await pool.query('SELECT * FROM amc_checkouts WHERE checkout_token = ?', [token]);
+  if (rows.length === 0) {
+    throw new Error('Checkout session not found.');
+  }
+  const chk = rows[0];
+  return {
+    checkoutToken: chk.checkout_token,
+    status: chk.status,
+    planName: chk.plan_name,
+    totalAmount: parseFloat(chk.total_amount),
+    currency: chk.currency,
+    razorpayOrderId: chk.razorpay_order_id,
+    provisionedUserId: chk.provisioned_user_id,
+    contractId: chk.contract_id,
+    errorMessage: chk.error_message,
+    expiresAt: chk.expires_at
+  };
+};
+
+/**
+ * 26. Confirm AMC Checkout (Client payment confirmation with HMAC verification)
+ */
+const confirmAmcCheckout = async ({ token, razorpayOrderId, razorpayPaymentId, razorpaySignature }) => {
+  const [rows] = await pool.query('SELECT * FROM amc_checkouts WHERE checkout_token = ?', [token]);
+  if (rows.length === 0) {
+    throw new Error('Checkout session not found.');
+  }
+  const checkout = rows[0];
+
+  if (checkout.razorpay_order_id !== razorpayOrderId) {
+    throw new Error('Order ID does not match checkout session.');
+  }
+
+  // Signature verification
+  const keySecret = config.razorpay?.keySecret || '';
+  const isGatewayConfigured = Boolean(
+    config.razorpay?.keyId &&
+    keySecret &&
+    !keySecret.includes('YourKeySecret') &&
+    !keySecret.includes('demo')
+  );
+
+  if (config.isProduction && !isGatewayConfigured) {
+    throw new Error('Payment gateway is not configured with live credentials.');
+  }
+
+  if (isGatewayConfigured) {
+    const body = razorpayOrderId + '|' + razorpayPaymentId;
+    const expectedSignature = crypto
+      .createHmac('sha256', keySecret)
+      .update(body)
+      .digest('hex');
+
+    const isSigValid = (
+      typeof razorpaySignature === 'string' &&
+      razorpaySignature.length === expectedSignature.length &&
+      crypto.timingSafeEqual(Buffer.from(razorpaySignature), Buffer.from(expectedSignature))
+    );
+
+    if (!isSigValid) {
+      throw new Error('Payment signature verification failed.');
+    }
+  }
+
+  const result = await settleAmcCheckout({
+    orderId: razorpayOrderId,
+    paymentId: razorpayPaymentId,
+    amountPaise: Math.round(parseFloat(checkout.total_amount) * 100),
+    method: 'razorpay'
+  });
+
+  return result;
+};
+
+/**
+ * 27. Settle AMC Checkout (Authoritative atomic provisioning engine)
+ */
+const settleAmcCheckout = async ({
+  orderId,
+  paymentId,
+  amountPaise = null,
+  method = 'razorpay',
+  gatewayResponse = null
+}) => {
+  const lockConn = await pool.getConnection();
+  const lockName = `amc_settle_${orderId}`;
+  let lockAcquired = false;
+
+  try {
+    const [lockRows] = await lockConn.query('SELECT GET_LOCK(?, 15) AS lock_acquired', [lockName]);
+    lockAcquired = lockRows[0]?.lock_acquired === 1;
+    if (!lockAcquired) {
+      throw new Error('Could not acquire settlement lock for order.');
+    }
+
+    const [chkRows] = await lockConn.query('SELECT * FROM amc_checkouts WHERE razorpay_order_id = ? FOR UPDATE', [orderId]);
+    if (chkRows.length === 0) {
+      throw new Error('AMC checkout not found for order.');
+    }
+    const checkout = chkRows[0];
+
+    // Idempotency: Return already provisioned result
+    if (checkout.status === 'provisioned') {
+      return {
+        success: true,
+        status: 'provisioned',
+        alreadyProvisioned: true,
+        contractId: checkout.contract_id,
+        companyUserId: checkout.provisioned_user_id,
+        checkoutToken: checkout.checkout_token
+      };
+    }
+
+    if (checkout.status === 'needs_attention') {
+      return {
+        success: false,
+        status: 'needs_attention',
+        error: checkout.error_message || 'Checkout requires admin attention.',
+        checkoutToken: checkout.checkout_token
+      };
+    }
+
+    // Amount check (e.g. from webhook paise)
+    if (amountPaise !== null) {
+      const expectedPaise = Math.round(parseFloat(checkout.total_amount) * 100);
+      if (Number(amountPaise) !== expectedPaise) {
+        logger.warn(`AMC checkout amount mismatch for order ${orderId}: expected ${expectedPaise} paise, received ${amountPaise} paise`);
+        return {
+          success: false,
+          status: 'mismatch',
+          error: 'Payment amount mismatch.'
+        };
+      }
+    }
+
+    // Mark payment and checkout as paid
+    await lockConn.query(`
+      UPDATE payments
+      SET status = 'paid', payment_id = ?, payment_method = ?, gateway_response = ?, verification_status = 'verified', verified_at = CURRENT_TIMESTAMP
+      WHERE order_id = ?
+    `, [paymentId || null, method, gatewayResponse ? JSON.stringify(gatewayResponse) : null, orderId]);
+
+    await lockConn.query(`
+      UPDATE amc_checkouts
+      SET status = 'paid', razorpay_payment_id = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [paymentId || null, checkout.id]);
+
+    // Company Creation Phase
+    let companyUserId = checkout.provisioned_user_id || checkout.company_user_id;
+
+    if (checkout.source === 'public' && !companyUserId) {
+      const cleanPhone = normalizePhoneNumber(checkout.phone);
+      const rawPhone = String(checkout.phone || '').trim().replace(/[\s\-()]/g, '');
+      const unadornedPhone = cleanPhone ? cleanPhone.replace(/^\+91/, '') : rawPhone;
+      const phoneVariants = Array.from(new Set([cleanPhone, rawPhone, unadornedPhone].filter(Boolean)));
+
+      const [existingUsers] = await lockConn.query(
+        'SELECT id FROM users WHERE email = ? OR phone IN (?) LIMIT 1',
+        [checkout.email, phoneVariants]
+      );
+
+      if (existingUsers.length > 0) {
+        const errorMsg = 'Email or phone number registered by another account prior to settlement.';
+        logger.warn(`Checkout ${checkout.checkout_token} conflict: ${errorMsg}`);
+        await lockConn.query(`
+          UPDATE amc_checkouts
+          SET status = 'needs_attention', error_message = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `, [errorMsg, checkout.id]);
+
+        await sendAmcNotification({
+          role: 'admin',
+          title: 'AMC Checkout Needs Attention',
+          message: `Checkout token ${checkout.checkout_token} for "${checkout.company_name}" received payment, but email (${checkout.email}) or phone (${checkout.phone}) is already registered by another account.`
+        });
+
+        return {
+          success: false,
+          status: 'needs_attention',
+          error: errorMsg,
+          checkoutToken: checkout.checkout_token
+        };
+      }
+
+      const companyCode = await generateCompanyId(lockConn);
+
+      const [userResult] = await lockConn.query(`
+        INSERT INTO users (name, email, password, role, phone, is_active, company_id)
+        VALUES (?, ?, ?, 'company', ?, 1, ?)
+      `, [
+        checkout.company_name,
+        checkout.email,
+        checkout.password_hash,
+        checkout.phone,
+        companyCode
+      ]);
+      companyUserId = userResult.insertId;
+
+      const fullAddress = checkout.state && !checkout.address.toLowerCase().includes(checkout.state.toLowerCase())
+        ? `${checkout.address}, ${checkout.state}`
+        : checkout.address;
+
+      await lockConn.query(`
+        INSERT INTO company_profiles (
+          user_id, company_id, company_name, contact_person, phone_number,
+          address, gst_number, amc_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Active')
+      `, [
+        companyUserId,
+        companyCode,
+        checkout.company_name,
+        checkout.contact_person,
+        checkout.phone,
+        fullAddress,
+        checkout.gst_number || null
+      ]);
+
+      await lockConn.query(`
+        UPDATE amc_checkouts
+        SET status = 'company_created', provisioned_user_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [companyUserId, checkout.id]);
+    } else if (checkout.source === 'existing_company') {
+      companyUserId = checkout.company_user_id;
+      await lockConn.query(`
+        UPDATE amc_checkouts
+        SET status = 'company_created', provisioned_user_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [companyUserId, checkout.id]);
+    }
+
+    // Contract Creation Phase
+    let contractId = checkout.contract_id;
+    let contractNumber = null;
+
+    if (!contractId) {
+      const startDate = getBusinessTodayStr();
+      const endDate = addMonthsCorrect(startDate, checkout.duration_months);
+
+      const contractResult = await createContractWithSequenceRetry({
+        companyId: companyUserId,
+        insertOperation: async (conn, allocatedNumber) => {
+          const [cRes] = await conn.query(`
+            INSERT INTO amc_contracts (
+              contract_number, company_id, request_id, plan_id, contract_type,
+              plan_name, device_capacity, price, discount_amount, tax_amount, total_amount,
+              terms_and_conditions, start_date, end_date,
+              status, approval_status, payment_status, created_by
+            ) VALUES (?, ?, NULL, ?, 'standard', ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'offered', 'approved', 'paid', NULL)
+          `, [
+            allocatedNumber,
+            companyUserId,
+            checkout.plan_id,
+            checkout.plan_name,
+            checkout.device_capacity,
+            checkout.price,
+            checkout.discount_amount || 0,
+            checkout.tax_amount,
+            checkout.total_amount,
+            startDate,
+            endDate
+          ]);
+
+          await conn.query(`
+            INSERT INTO amc_contract_history (contract_id, action, performed_by, details)
+            VALUES (?, 'CONTRACT_CREATED', NULL, ?)
+          `, [cRes.insertId, JSON.stringify({
+            contractNumber: allocatedNumber,
+            planName: checkout.plan_name,
+            deviceCapacity: checkout.device_capacity,
+            totalAmount: checkout.total_amount,
+            source: checkout.source
+          })]);
+
+          return { id: cRes.insertId };
+        }
+      });
+
+      contractId = contractResult.id;
+      contractNumber = contractResult.contractNumber;
+
+      await lockConn.query(`
+        UPDATE amc_checkouts
+        SET status = 'contract_created', contract_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [contractId, checkout.id]);
+    }
+
+    // Invoice Creation and Finalization
+    const finalizeConn = await pool.getConnection();
+    try {
+      await finalizeConn.beginTransaction();
+
+      const [cRows] = await finalizeConn.query('SELECT * FROM amc_contracts WHERE id = ? FOR UPDATE', [contractId]);
+      const contract = cRows[0];
+      if (!contractNumber) contractNumber = contract.contract_number;
+
+      let invoiceId = contract.invoice_id;
+      if (!invoiceId) {
+        invoiceId = await createAmcInvoice(finalizeConn, {
+          contract,
+          companyUserId,
+          note: `AMC Plan Self-Serve Checkout: ${contract.contract_number} (${contract.plan_name})`
+        });
+      }
+
+      await finalizePaidContract(finalizeConn, {
+        contract,
+        invoiceId,
+        actorUserId: null,
+        action: 'CHECKOUT_PROVISIONED',
+        details: {
+          checkoutToken: checkout.checkout_token,
+          invoiceId,
+          paymentId,
+          orderId
+        }
+      });
+
+      await finalizeConn.query(`
+        UPDATE payments
+        SET company_id = ?, user_id = ?, amc_contract_id = ?
+        WHERE order_id = ?
+      `, [companyUserId, companyUserId, contractId, orderId]);
+
+      await finalizeConn.query(`
+        UPDATE amc_checkouts
+        SET status = 'provisioned', password_hash = NULL, contract_id = ?, provisioned_user_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [contractId, companyUserId, checkout.id]);
+
+      await finalizeConn.commit();
+    } catch (finErr) {
+      await finalizeConn.rollback();
+      throw finErr;
+    } finally {
+      finalizeConn.release();
+    }
+
+    // Post-commit notifications
+    try {
+      if (checkout.source === 'public') {
+        const loginUrl = `${(config.frontend?.url || 'https://thetekdoctor.com').replace(/\/+$/, '')}/login`;
+        await sendCustomerNotification(
+          checkout.email,
+          `Welcome to TekDoctor - AMC Plan ${checkout.plan_name} Activated`,
+          `<p>Hello ${checkout.contact_person || checkout.company_name},</p>
+           <p>Your Annual Maintenance Contract <strong>${contractNumber}</strong> (${checkout.plan_name}) has been successfully activated!</p>
+           <p>You can access your company portal here: <a href="${loginUrl}">${loginUrl}</a></p>
+           <p>Log in using your registered email: <strong>${checkout.email}</strong> and the password you created during checkout.</p>
+           <p>You may now assign up to ${checkout.device_capacity} devices to this contract.</p>`
+        );
+      }
+
+      await sendAmcNotification({
+        userId: companyUserId,
+        title: `AMC Contract Activated (${contractNumber})`,
+        message: `Your AMC contract ${contractNumber} (${checkout.plan_name}) is active. You can now select up to ${checkout.device_capacity} devices for coverage.`
+      });
+
+      await sendAmcNotification({
+        role: 'admin',
+        title: `New AMC Contract Provisioned (${contractNumber})`,
+        message: `Company "${checkout.company_name}" completed self-serve AMC checkout for plan "${checkout.plan_name}" (${contractNumber}). Total: ₹${checkout.total_amount}.`
+      });
+    } catch (notifErr) {
+      logger.error(`Error sending checkout post-commit notifications: ${notifErr.message}`);
+    }
+
+    return {
+      success: true,
+      status: 'provisioned',
+      contractId,
+      contractNumber,
+      companyUserId,
+      checkoutToken: checkout.checkout_token
+    };
+
+  } finally {
+    if (lockAcquired) {
+      try {
+        await lockConn.query('SELECT RELEASE_LOCK(?)', [lockName]);
+      } catch (relErr) {
+        logger.error(`Error releasing settlement lock: ${relErr.message}`);
+      }
+    }
+    lockConn.release();
+  }
+};
+
+/**
+ * 28. Sweep Expired Checkout Sessions
+ */
+const processCheckoutExpiries = async (connectionOrPool = pool) => {
+  const db = connectionOrPool || pool;
+  const [result] = await db.query(`
+    UPDATE amc_checkouts
+    SET status = 'expired', updated_at = CURRENT_TIMESTAMP
+    WHERE status = 'created' AND expires_at < CURRENT_TIMESTAMP
+  `);
+  return result.affectedRows || 0;
+};
+
 module.exports = {
   addDaysOnly,
+  addMonthsCorrect,
   formatDateOnly,
   getBusinessTodayStr,
+  createRazorpayOrder,
+  createPublicAmcCheckout,
+  createCompanyAmcCheckout,
+  getAmcCheckoutStatus,
+  confirmAmcCheckout,
+  settleAmcCheckout,
+  processCheckoutExpiries,
   resolveDeviceAmcEligibility,
   checkContractCapacity,
   assignDevicesToCoverage,
@@ -3461,6 +4388,8 @@ module.exports = {
   verifyContractPayment,
   initiateContractOfflinePayment,
   verifyContractOfflinePayment,
+  createAmcInvoice,
+  finalizePaidContract,
   sendAmcNotification,
   processContractExpiries,
   processExpiryReminders,

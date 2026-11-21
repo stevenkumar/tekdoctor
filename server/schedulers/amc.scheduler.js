@@ -97,11 +97,18 @@ const runAmcMaintenanceSweep = async (pool) => {
       logger.info(`[AMC Scheduler] Dispatched ${deadlineResults.remindersSent} selection deadline alerts.`);
     }
 
+    // 4. Process checkout session expiries
+    const expiredCheckoutsCount = await amcService.processCheckoutExpiries(connection);
+    if (expiredCheckoutsCount > 0) {
+      logger.info(`[AMC Scheduler] Processed ${expiredCheckoutsCount} expired AMC checkouts.`);
+    }
+
     logger.info('[AMC Scheduler] AMC maintenance sweep completed successfully.');
     return {
       expiryResults,
       reminderResults,
-      deadlineResults
+      deadlineResults,
+      expiredCheckoutsCount
     };
   });
 };

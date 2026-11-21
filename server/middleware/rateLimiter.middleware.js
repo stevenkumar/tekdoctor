@@ -66,6 +66,16 @@ const trackingLimiter = rateLimit({
   skip: isDevOrLocal
 });
 
+// Dedicated rate limiter for public AMC self-serve checkout
+const amcCheckoutLimiter = rateLimit({
+  windowMs: config.rateLimits?.amcCheckout?.windowMs || 15 * 60 * 1000,
+  max: config.rateLimits?.amcCheckout?.max || 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: formatResponse(false, 'Too many checkout attempts from this IP. Please try again after 15 minutes.'),
+  skip: isDevOrLocal
+});
+
 // Route-level alias reusing existing global rate limiter configuration
 const apiLimiter = globalLimiter;
 
@@ -76,5 +86,6 @@ module.exports = {
   contactLimiter,
   certVerifyLimiter,
   bookingLimiter,
-  trackingLimiter
+  trackingLimiter,
+  amcCheckoutLimiter
 };

@@ -1426,6 +1426,91 @@ const validateUpdateProfile = validate([
     .customSanitizer(normalizePhoneNumber)
 ]);
 
+const validatePublicAmcCheckout = validate([
+  body('planId')
+    .notEmpty().withMessage('Plan ID is required.')
+    .isInt({ min: 1 }).withMessage('Valid Plan ID is required.'),
+  body('companyName')
+    .trim()
+    .notEmpty().withMessage('Company name is required.')
+    .isLength({ min: 2, max: 150 }).withMessage('Company name must be between 2 and 150 characters.'),
+  body('contactPerson')
+    .trim()
+    .notEmpty().withMessage('Contact person name is required.')
+    .isLength({ min: 2, max: 100 }).withMessage('Contact person name must be between 2 and 100 characters.'),
+  body('email')
+    .trim()
+    .notEmpty().withMessage('Corporate email is required.')
+    .isEmail().withMessage('Please provide a valid corporate email.')
+    .isLength({ max: 255 }).withMessage('Email cannot exceed 255 characters.')
+    .normalizeEmail(),
+  body('password')
+    .notEmpty().withMessage('Password is required.')
+    .isLength({ min: 8, max: 128 }).withMessage('Password must be between 8 and 128 characters.')
+    .matches(/[A-Z]/).withMessage('Password must contain at least one uppercase letter.')
+    .matches(/[0-9]/).withMessage('Password must contain at least one number.'),
+  body('phone')
+    .trim()
+    .notEmpty().withMessage('Phone number is required.')
+    .custom((value) => {
+      const str = String(value).trim();
+      const clean = str.replace(/[\s\-()]/g, '');
+      let national = clean;
+      if (clean.startsWith('+91') && clean.length === 13) {
+        national = clean.slice(3);
+      }
+      if (!/^[6-9]\d{9}$/.test(national) || /^(\d)\1{9}$/.test(national)) {
+        throw new Error('Enter a valid 10-digit mobile number.');
+      }
+      return true;
+    })
+    .customSanitizer(normalizePhoneNumber),
+  body('address')
+    .trim()
+    .notEmpty().withMessage('Address is required.'),
+  body('state')
+    .trim()
+    .notEmpty().withMessage('State is required.')
+    .isLength({ min: 2, max: 60 }).withMessage('Valid state is required.'),
+  body('gstNumber')
+    .optional({ checkFalsy: true })
+    .trim()
+    .custom((value) => {
+      if (!value) return true;
+      const g = String(value).trim().toUpperCase();
+      if (g.length !== 15) {
+        throw new Error('Enter a valid 15-character GSTIN.');
+      }
+      const gstinRegex = /^(0[1-9]|[1-2][0-9]|3[0-8]|97|99)[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+      if (!gstinRegex.test(g)) {
+        throw new Error('Enter a valid 15-character GSTIN.');
+      }
+      if (!isValidGstinChecksum(g)) {
+        throw new Error('Enter a valid 15-character GSTIN.');
+      }
+      return true;
+    })
+    .customSanitizer(value => (value ? String(value).trim().toUpperCase() : null))
+]);
+
+const validateConfirmAmcCheckout = validate([
+  body('razorpayOrderId')
+    .trim()
+    .notEmpty().withMessage('Razorpay order ID is required.'),
+  body('razorpayPaymentId')
+    .trim()
+    .notEmpty().withMessage('Razorpay payment ID is required.'),
+  body('razorpaySignature')
+    .trim()
+    .notEmpty().withMessage('Razorpay signature is required.')
+]);
+
+const validateCompanyAmcCheckout = validate([
+  body('planId')
+    .notEmpty().withMessage('Plan ID is required.')
+    .isInt({ min: 1 }).withMessage('Valid Plan ID is required.')
+]);
+
 module.exports = {
   validate,
   isValidName,
@@ -1475,6 +1560,9 @@ module.exports = {
   validateUpdateCustomer,
   validateAdminProfile,
   validateUpdateProfile,
+  validatePublicAmcCheckout,
+  validateConfirmAmcCheckout,
+  validateCompanyAmcCheckout,
   isValidGstinChecksum,
   isValidUrl,
   findStateKey,
